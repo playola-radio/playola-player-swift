@@ -6,6 +6,17 @@
 //
 
 import SwiftUI
+import PlayolaPlayer
+
+func playOrPause() {
+  let spin = PPSpin(
+    key: "testKey",
+    audioFileURL: URL(string: "https://test.com")!,
+    startTime: Date(),
+    beginFadeOutTime: Date(),
+    spinInfo: [:])
+  print(spin)
+}
 
 struct ContentView: View {
     var body: some View {
@@ -13,7 +24,9 @@ struct ContentView: View {
             Image(systemName: "globe")
                 .imageScale(.large)
                 .foregroundStyle(.tint)
-            Text("Hello, world!")
+          Button("Play") {
+            playOrPause()
+          }
         }
         .padding()
     }
