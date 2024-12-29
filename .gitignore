@@ -1,8 +1,11 @@
 .DS_Store
-/.build
-/Packages
-xcuserdata/
-DerivedData/
-.swiftpm/configuration/registries.json
-.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
-.netrc
+*.xccheckout
+*.xcscmblueprint
+xcuserdata
+
+**/Secrets.xcconfig
+# probably should remove this later
+Package.resolved
+
+fastlane/test_output
+fastlane/report.xml
