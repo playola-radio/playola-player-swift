@@ -22,10 +22,26 @@ final public class PlayolaPlayer: Sendable {
   public func play(stationId: String) async throws {
     let url = baseUrl.appending(path: "/stations/\(stationId)/schedule")
     do {
-      let (data, response) = try await URLSession.shared.data(from: url)
+      let (data, _) = try await URLSession.shared.data(from: url)
       let decoder = JSONDecoderWithIsoFull()
       let spins = try decoder.decode([Spin].self, from: data)
-      print(spins)
+      let schedule = Schedule(stationId: spins[0].stationId, spins: spins)
+      let spinToPlay = schedule.current.first!
+      guard let audioBlock = spinToPlay.audioBlock else {
+        print("shit")
+        return
+      }
+      let firstPPSpin = PPSpin(
+        key: spinToPlay.id,
+        audioFileURL: URL(string: audioBlock.downloadUrl),
+        startTime: spinToPlay.airtime,
+        beginFadeOutTime: spinToPlay.airtime + TimeInterval(audioBlock.endOfMessageMS / 1000),
+        spinInfo: [:])
+      let fileDownloader = FileDownloader()
+      fileDownloader.download(url: firstPPSpin.audioFileUrl) { progress in
+        print("here we are: \(progress)")
+      }
+
     } catch (let error) {
       throw error
     }
