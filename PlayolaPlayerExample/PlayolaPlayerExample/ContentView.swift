@@ -9,13 +9,9 @@ import SwiftUI
 import PlayolaPlayer
 
 func playOrPause() {
-  let spin = PPSpin(
-    key: "testKey",
-    audioFileURL: URL(string: "https://test.com")!,
-    startTime: Date(),
-    beginFadeOutTime: Date(),
-    spinInfo: [:])
-  print(spin)
+  Task {
+    try! await PlayolaPlayer.shared.play(stationId: "f3864734-de35-414f-b0b3-e6909b0b77bd")
+  }
 }
 
 struct ContentView: View {
