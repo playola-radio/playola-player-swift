@@ -24,7 +24,8 @@ public struct PPSpin {
               beginFadeOutTime: Date,
               foregroundVolumeTime: Date? = nil,
               backgroundVolumeTime: Date? = nil,
-              spinInfo: [String : Any]) {
+              spinInfo: [String : Any],
+              downloader: FileDownloader? = nil) {
     self.key = key
     self.audioFileUrl = audioFileURL
     self.startTime = startTime

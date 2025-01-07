@@ -11,11 +11,14 @@ import os.log
 let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
 
 final public class PlayolaPlayer: Sendable {
+  let fileDownloadManager: FileDownloadManager!
   public static let shared: PlayolaPlayer = {
     let instance = PlayolaPlayer()
     return instance
   }()
-  private init() {}
+  private init() {
+    self.fileDownloadManager = FileDownloadManager()
+  }
 
   private static let logger = OSLog(subsystem: "PlayolaPlayer", category: "PlayolaPlayer")
 
@@ -37,13 +40,29 @@ final public class PlayolaPlayer: Sendable {
         startTime: spinToPlay.airtime,
         beginFadeOutTime: spinToPlay.airtime + TimeInterval(audioBlock.endOfMessageMS / 1000),
         spinInfo: [:])
-      let fileDownloader = FileDownloader()
-      fileDownloader.download(url: firstPPSpin.audioFileUrl) { progress in
-        print("here we are: \(progress)")
+      await downloadAndSchedulePPSpin(firstPPSpin)
+      fileDownloadManager.downloadFile(remoteUrl: firstPPSpin.audioFileUrl) { progress in
+        print("TOP LEVEL PROGRESS: \(progress)")
+      } onCompletion: { url in
+        print("Completed saving file to: \(url)")
       }
 
     } catch (let error) {
       throw error
     }
   }
+
+  @MainActor
+  private func downloadAndSchedulePPSpin(_ ppSpin: PPSpin) async {
+    fileDownloadManager.downloadFile(remoteUrl: ppSpin.audioFileUrl) { progress in
+      print("TOP LEVEL PROGRESS: \(progress)")
+    } onCompletion: { localUrl in
+      let currentTimeInSeconds = Date().timeIntervalSince(ppSpin.startTime)
+      let player = AudioPlayer()
+      player.loadFile(with: localUrl)
+      player.play(from: currentTimeInSeconds, to: nil)
+    }
+
+  }
 }
+  

@@ -6,54 +6,61 @@
 //
 
 import Foundation
+import SwiftUI
 
+@Observable
 public final class FileDownloader: NSObject, @unchecked Sendable {
-    var totalDownloaded: Float = 0 {
-        didSet {
-            self.handleDownloadedProgressPercent?(totalDownloaded)
-        }
-    }
-    typealias progressClosure = ((Float) -> Void)
-    var handleDownloadedProgressPercent: progressClosure!
+  public static let subfolderName = "AudioFiles"
+  var remoteUrl: URL!
+  var localUrl: URL!
+  var handleProgressBlock: ((Float) -> Void)?
+  var handleCompletionBlock: ((URL) -> Void)?
 
-    // MARK: - Properties
-    private var configuration: URLSessionConfiguration
-    private lazy var session: URLSession = {
-        let session = URLSession(configuration: configuration, delegate: self, delegateQueue: .main)
+  // MARK: - Properties
+  private var configuration: URLSessionConfiguration = URLSessionConfiguration.background(withIdentifier: "backgroundTasks")
+  private var session: URLSession!
 
-        return session
-    }()
-
-    // MARK: - Initialization
-    override init() {
-        self.configuration = URLSessionConfiguration.background(withIdentifier: "backgroundTasks")
-
-        super.init()
-    }
-
-    func download(url: URL, progress: ((Float) -> Void)?) {
-        /// bind progress closure to View
-        self.handleDownloadedProgressPercent = progress
-
-        let task = session.downloadTask(with: url)
-        task.resume()
-    }
-
+  public init(remoteUrl: URL,
+              localUrl: URL,
+              onProgress: ((Float) -> Void)?,
+              onCompletion: ((URL) -> Void)?) {
+    super.init()
+    self.remoteUrl = remoteUrl
+    self.localUrl = localUrl
+    self.handleProgressBlock = onProgress
+    self.handleCompletionBlock = onCompletion
+    self.session = URLSession(configuration: configuration,
+                              delegate: self,
+                              delegateQueue: .main)
+    let task = session.downloadTask(with: remoteUrl)
+    task.resume()
+  }
 }
 
 extension FileDownloader: URLSessionDownloadDelegate {
   public func urlSession(_ session: URLSession,
-                    downloadTask: URLSessionDownloadTask,
-                    didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64,
-                    totalBytesExpectedToWrite: Int64) {
-        self.totalDownloaded = Float(totalBytesWritten) / Float(totalBytesExpectedToWrite)
-    print("TotalDownloaded: \(totalDownloaded)")
+                         downloadTask: URLSessionDownloadTask,
+                         didWriteData bytesWritten: Int64,
+                         totalBytesWritten: Int64,
+                         totalBytesExpectedToWrite: Int64) {
+    let totalDownloaded = Float(totalBytesWritten) / Float(totalBytesExpectedToWrite)
+    handleProgressBlock?(totalDownloaded)
+  }
+
+  public func urlSession(_ session: URLSession,
+                         downloadTask: URLSessionDownloadTask,
+                         didFinishDownloadingTo location: URL) {
+    let manager = FileManager()
+    guard !manager.fileExists(atPath: localUrl.path) else {
+      print("file exists already")
+      return
     }
 
-    public func urlSession(_ session: URLSession,
-                    downloadTask: URLSessionDownloadTask,
-                    didFinishDownloadingTo location: URL) {
-        print("downloaded")
+    do {
+      try manager.moveItem(at: location, to: localUrl)
+    } catch let error {
+      print(error)
     }
+    handleCompletionBlock?(localUrl)
+  }
 }

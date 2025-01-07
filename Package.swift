@@ -24,6 +24,6 @@ let package = Package(
         .testTarget(
             name: "PlayolaPlayerTests",
             dependencies: ["PlayolaPlayer"]
-        ),
+        )
     ]
 )
