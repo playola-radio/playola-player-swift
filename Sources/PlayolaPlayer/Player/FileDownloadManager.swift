@@ -10,6 +10,7 @@ import SwiftUI
 @Observable
 public final class FileDownloadManager: Sendable {
   public static let subfolderName = "AudioFiles"
+  public static let shared = FileDownloadManager()
 
   public func completeFileExists(path: String) -> Bool {
     return FileManager.default.fileExists(atPath: path)
@@ -49,15 +50,16 @@ public final class FileDownloadManager: Sendable {
     let localUrl = localURLFromRemoteURL(remoteUrl)
 
     guard !completeFileExists(path: localUrl.path) else {
+      print("detected file exists at path: \(localUrl.path)")
       onProgress?(1.0)
       onCompletion?(localUrl)
       return
     }
+    print("file not detected at path: \(localUrl.path)")
 
     let downloader = FileDownloader(remoteUrl: remoteUrl,
                                     localUrl: localUrl,
                                     onProgress: onProgress,
                                     onCompletion: onCompletion)
-
   }
 }

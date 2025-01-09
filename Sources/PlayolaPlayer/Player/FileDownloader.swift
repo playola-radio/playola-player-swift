@@ -52,7 +52,7 @@ extension FileDownloader: URLSessionDownloadDelegate {
                          didFinishDownloadingTo location: URL) {
     let manager = FileManager()
     guard !manager.fileExists(atPath: localUrl.path) else {
-      print("file exists already")
+      print("file exists already at \(localUrl.path)")
       return
     }
 

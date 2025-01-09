@@ -10,7 +10,7 @@ import Foundation
 
 public class DateProviderMock: DateProvider {
   var mockDate: Date!
-  init(mockDate: Date) {
+  init(mockDate: Date = .now) {
     self.mockDate = mockDate
   }
   override public func now() -> Date {

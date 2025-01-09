@@ -53,18 +53,6 @@ open class PlayolaMainMixer: NSObject {
         self.delegate?.player(self, didPlayBuffer: buffer)
     }
 
-    // ------------------------------------------------------------------------------
-    //                  Singleton
-    // ------------------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------------
-    //                      class func sharedInstance()
-    // -----------------------------------------------------------------------------
-    /// provides a Singleton of the PlayolaMainMixer for all to use
-    ///
-    /// - returns:
-    ///    `PlayolaMainMixer` - the central PlayolaAPI Service instance
-    ///
-    /// ----------------------------------------------------------------------------
-  @MainActor public static let shared: PlayolaMainMixer = PlayolaMainMixer()
+  @MainActor
+  public static let shared: PlayolaMainMixer = PlayolaMainMixer()
 }

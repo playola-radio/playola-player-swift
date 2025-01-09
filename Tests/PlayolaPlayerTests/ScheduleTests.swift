@@ -9,7 +9,7 @@ import Foundation
 import Testing
 @testable import PlayolaPlayer
 
-struct Test {
+struct ScheduleTests {
   var schedule: Schedule = .mock
 
   @Test("'current' advances to the correct point in the schedule.")
@@ -22,5 +22,4 @@ struct Test {
       #expect(newSchedule.current.count == newSchedule.spins.count - 4)
       #expect(newSchedule.current[0] == newSchedule.spins[4])
     }
-
 }

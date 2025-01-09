@@ -14,10 +14,23 @@ public struct Spin: Codable, Sendable {
   let updatedAt: Date
   let audioBlock: AudioBlock?
 
+  // dependency injection
+  var dateProvider: DateProvider! = .shared
+
   var endtime: Date {
     return airtime + TimeInterval((audioBlock?.endOfMessageMS ?? 0) / 1000)
   }
+
+  var isPlaying: Bool {
+    return airtime <= dateProvider.now() &&
+          dateProvider.now() <= endtime
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, stationId, airtime, createdAt, updatedAt, audioBlock
+  }
 }
+
 
 extension Spin: Equatable {
   public static func ==(lhs: Spin, rhs: Spin) -> Bool {
@@ -28,7 +41,7 @@ extension Spin: Equatable {
 }
 
 extension Spin {
-  public var mock: Spin {
+  public static var mock: Spin {
     return Schedule.mock.spins[0]
   }
 }

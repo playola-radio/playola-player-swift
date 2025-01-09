@@ -10,7 +10,7 @@ import PlayolaPlayer
 
 func playOrPause() {
   Task {
-    try! await PlayolaPlayer.shared.play(stationId: "f3864734-de35-414f-b0b3-e6909b0b77bd")
+    try! await PlayolaStationPlayer.shared.play(stationId: "f3864734-de35-414f-b0b3-e6909b0b77bd")
   }
 }
 
