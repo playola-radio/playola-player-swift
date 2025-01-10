@@ -7,26 +7,26 @@
 import Foundation
 
 public struct AudioBlock: Codable, Sendable {
-  let id: String
-  let title: String
-  let artist: String
-  let durationMS: Int
-  let endOfMessageMS: Int
-  let beginningOfOutroMS: Int
-  let endOfIntroMS: Int
-  let lengthOfOutroMS: Int
-  let downloadUrl: String
-  let s3Key: String
-  let s3BucketName: String
-  let type: String
-  let createdAt: Date
-  let updatedAt: Date
-  let album: String?
-  let popularity: Int?
-  let youTubeId: Int?
-  let isrc: String?
-  let spotifyId: String?
-  let imageUrl: String?
+  public let id: String
+  public let title: String
+  public let artist: String
+  public let durationMS: Int
+  public let endOfMessageMS: Int
+  public let beginningOfOutroMS: Int
+  public let endOfIntroMS: Int
+  public let lengthOfOutroMS: Int
+  public let downloadUrl: String
+  public let s3Key: String
+  public let s3BucketName: String
+  public let type: String
+  public let createdAt: Date
+  public let updatedAt: Date
+  public let album: String?
+  public let popularity: Int?
+  public let youTubeId: Int?
+  public let isrc: String?
+  public let spotifyId: String?
+  public let imageUrl: String?
 }
 
 extension AudioBlock {

@@ -14,6 +14,8 @@ import os.log
 public class SpinPlayer {
   public var duration: Double = 0
 
+  public var startNotificationTimer: Timer?
+
   // dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
   private var fileDownloadManager: FileDownloadManager!
@@ -140,13 +142,18 @@ public class SpinPlayer {
   }
 
   public func loadAndSchedule(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
+    print("loadAndSchedule for \(spin.audioBlock?.title ?? "dunno")")
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl, let audioFileUrl = URL(string: audioFileUrlStr) else { return }
+
+    print("loadAndSchedule 2 for \(spin.audioBlock?.title ?? "dunno")")
 
     fileDownloadManager.downloadFile(remoteUrl: audioFileUrl) { progress in
       onDownloadProgress?(progress)
     } onCompletion: { localUrl in
+      print("download complete for \(spin.audioBlock?.title ?? "dunno")")
       onDownloadCompletion?(localUrl)
       self.loadFile(with: localUrl)
+      print("\(spin.audioBlock?.title ?? "dunno") isPlaying? \(spin.isPlaying)")
       if spin.isPlaying {
         let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
         self.play(from: currentTimeInSeconds, to: nil)
@@ -170,7 +177,17 @@ public class SpinPlayer {
       let avAudiotime = avAudioTimeFromDate(date: at)
       print("Scheduling play at datetime: \(at), avAudioTime:\(avAudiotime)")
       playerNode.play(at: avAudiotime)
-      delegate?.player(self, didChangePlaybackState: true)
+
+      // for now, fire a 
+      self.startNotificationTimer = Timer(fire: at,
+                                          interval: 0,
+                                          repeats: false, block: { timer in
+        DispatchQueue.main.async {
+          self.delegate?.player(self, didChangePlaybackState: true)
+        }
+      })
+      RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
+
     } catch {
       os_log("Error starting engine: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
     }

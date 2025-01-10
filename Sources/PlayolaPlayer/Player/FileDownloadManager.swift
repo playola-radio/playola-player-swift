@@ -8,9 +8,12 @@
 import SwiftUI
 
 @Observable
-public final class FileDownloadManager: Sendable {
+@MainActor
+public final class FileDownloadManager {
   public static let subfolderName = "AudioFiles"
   public static let shared = FileDownloadManager()
+
+  private var downloaders: Set<FileDownloader> = Set()
 
   public func completeFileExists(path: String) -> Bool {
     return FileManager.default.fileExists(atPath: path)
@@ -60,6 +63,10 @@ public final class FileDownloadManager: Sendable {
     let downloader = FileDownloader(remoteUrl: remoteUrl,
                                     localUrl: localUrl,
                                     onProgress: onProgress,
-                                    onCompletion: onCompletion)
+                                    onCompletion: { downloader in
+      self.downloaders.remove(downloader)
+      onCompletion?(downloader.localUrl)
+    })
+    self.downloaders.insert(downloader)
   }
 }

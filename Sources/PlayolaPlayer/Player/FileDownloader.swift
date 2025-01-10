@@ -14,7 +14,7 @@ public final class FileDownloader: NSObject, @unchecked Sendable {
   var remoteUrl: URL!
   var localUrl: URL!
   var handleProgressBlock: ((Float) -> Void)?
-  var handleCompletionBlock: ((URL) -> Void)?
+  var handleCompletionBlock: ((FileDownloader) -> Void)?
 
   // MARK: - Properties
   private var configuration: URLSessionConfiguration = URLSessionConfiguration.background(withIdentifier: "backgroundTasks")
@@ -23,7 +23,7 @@ public final class FileDownloader: NSObject, @unchecked Sendable {
   public init(remoteUrl: URL,
               localUrl: URL,
               onProgress: ((Float) -> Void)?,
-              onCompletion: ((URL) -> Void)?) {
+              onCompletion: ((FileDownloader) -> Void)?) {
     super.init()
     self.remoteUrl = remoteUrl
     self.localUrl = localUrl
@@ -53,14 +53,21 @@ extension FileDownloader: URLSessionDownloadDelegate {
     let manager = FileManager()
     guard !manager.fileExists(atPath: localUrl.path) else {
       print("file exists already at \(localUrl.path)")
+      handleProgressBlock?(1.0)
+      handleCompletionBlock?(self)
+      self.handleProgressBlock = nil
+      self.handleCompletionBlock = nil
       return
     }
 
     do {
       try manager.moveItem(at: location, to: localUrl)
     } catch let error {
+      print("error moving file")
       print(error)
     }
-    handleCompletionBlock?(localUrl)
+    handleCompletionBlock?(self)
+    self.handleProgressBlock = nil
+    self.handleCompletionBlock = nil
   }
 }

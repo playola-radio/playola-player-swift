@@ -12,14 +12,24 @@ import AVFAudio
 let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
 
 @MainActor
+@Observable
 final public class PlayolaStationPlayer: Sendable {
   var stationId: String?   // TODO: Change this to Station model
+  var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManager!
 
   var activeSpinPlayers: [String: SpinPlayer] = [:]
   var idleSpinPlayers: [SpinPlayer] = []
 
   public static let shared = PlayolaStationPlayer()
+
+  public enum State {
+    case loading(Float)
+    case playing(AudioBlock)
+    case idle
+  }
+
+  public var state: PlayolaStationPlayer.State = .idle
 
   private init() {
     self.fileDownloadManager = FileDownloadManager()
@@ -39,11 +49,14 @@ final public class PlayolaStationPlayer: Sendable {
     activeSpinPlayers[spin.id] = spinPlayer
     if spin.isPlaying {
       spinPlayer.loadAndSchedule(spin, onDownloadProgress: { progress in
-        print(progress)
+        self.state = .loading(progress)
       }, onDownloadCompletion: { localUrl in
         completion?()
+        self.state = .playing(spin.audioBlock!)
+        self.updatePlayerState()
       })
     } else {
+      print("not playing")
       spinPlayer.loadAndSchedule(spin)
     }
   }
@@ -86,8 +99,8 @@ final public class PlayolaStationPlayer: Sendable {
   public func play(stationId: String) async throws {
     self.stationId = stationId
     do {
-      let schedule = try await getUpdatedSchedule(stationId: stationId)
-      let spinToPlay = schedule.current.first!
+      self.currentSchedule = try await getUpdatedSchedule(stationId: stationId)
+      guard let spinToPlay = currentSchedule?.current.first else { return }
       scheduleSpin(spin: spinToPlay) {
         Task {
           await self.scheduleUpcomingSpins()
@@ -97,11 +110,19 @@ final public class PlayolaStationPlayer: Sendable {
       throw error
     }
   }
+
+  private func updatePlayerState() {
+    if let nowPlaying = currentSchedule?.current.first?.audioBlock {
+      self.state = .playing(nowPlaying)
+    }
+  }
 }
 
 
 extension PlayolaStationPlayer: SpinPlayerDelegate {
-  nonisolated public func player(_ player: SpinPlayer, didChangePlaybackState isPlaying: Bool) {
+   public func player(_ player: SpinPlayer, didChangePlaybackState isPlaying: Bool) {
+     print("called")
+    updatePlayerState()
     Task {
       do {
         await self.scheduleUpcomingSpins()

@@ -8,6 +8,7 @@ import AVFoundation
 import Foundation
 
 /// Handles communicating `Player` events
+@MainActor
 public protocol SpinPlayerDelegate: AnyObject {
     /// Notifies the `Player` has either started or stopped playing audio
     func player(_ player: SpinPlayer, didChangePlaybackState isPlaying: Bool)
