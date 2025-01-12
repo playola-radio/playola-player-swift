@@ -48,16 +48,15 @@ final public class PlayolaStationPlayer: Sendable {
     let spinPlayer = getAvailableSpinPlayer()
     activeSpinPlayers[spin.id] = spinPlayer
     if spin.isPlaying {
-      spinPlayer.loadAndSchedule(spin, onDownloadProgress: { progress in
+      spinPlayer.load(spin, onDownloadProgress: { progress in
         self.state = .loading(progress)
       }, onDownloadCompletion: { localUrl in
         completion?()
         self.state = .playing(spin.audioBlock!)
-        self.updatePlayerState()
       })
     } else {
-      print("not playing")
-      spinPlayer.loadAndSchedule(spin)
+      spinPlayer.load(spin)
+      completion?()
     }
   }
 
@@ -110,19 +109,16 @@ final public class PlayolaStationPlayer: Sendable {
       throw error
     }
   }
-
-  private func updatePlayerState() {
-    if let nowPlaying = currentSchedule?.current.first?.audioBlock {
-      self.state = .playing(nowPlaying)
-    }
-  }
 }
 
 
 extension PlayolaStationPlayer: SpinPlayerDelegate {
-   public func player(_ player: SpinPlayer, didChangePlaybackState isPlaying: Bool) {
-     print("called")
-    updatePlayerState()
+  public func player(_ player: SpinPlayer, startedPlaying spin: Spin) {
+    print("Successfully called startedPlaying with\(spin.audioBlock?.title ?? "---")")
+    if let audioBlock = spin.audioBlock {
+      self.state = .playing(audioBlock)
+    }
+
     Task {
       do {
         await self.scheduleUpcomingSpins()
@@ -131,6 +127,7 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
       }
     }
   }
+
 
   nonisolated public func player(_ player: SpinPlayer, didPlayFile file: AVAudioFile, atTime time: TimeInterval, withBuffer buffer: AVAudioPCMBuffer) {
     print("didPlayFile")

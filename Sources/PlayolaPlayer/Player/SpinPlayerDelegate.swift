@@ -11,7 +11,7 @@ import Foundation
 @MainActor
 public protocol SpinPlayerDelegate: AnyObject {
     /// Notifies the `Player` has either started or stopped playing audio
-    func player(_ player: SpinPlayer, didChangePlaybackState isPlaying: Bool)
+    func player(_ player: SpinPlayer, startedPlaying spin: Spin)
 
     /// Notifies everytime the `Player` receives a new audio tap event that contains the current time and buffer of audio data played
     func player(_ player: SpinPlayer,

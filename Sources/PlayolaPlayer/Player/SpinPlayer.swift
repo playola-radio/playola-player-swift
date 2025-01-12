@@ -13,6 +13,7 @@ import os.log
 @MainActor
 public class SpinPlayer {
   public var duration: Double = 0
+  public var spin: Spin?
 
   public var startNotificationTimer: Timer?
 
@@ -85,23 +86,6 @@ public class SpinPlayer {
   
   // MARK: Playback
   
-  /// Begins playback (starts engine and player node)
-  func play() {
-    os_log("%@ - %d", log: SpinPlayer.logger, type: .default, #function, #line)
-    
-    guard !isPlaying, let _ = currentFile else {
-      return
-    }
-    
-    do {
-      try engine.start()
-      playerNode.play()
-      delegate?.player(self, didChangePlaybackState: true)
-    } catch {
-      os_log("Error starting engine: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
-    }
-  }
-  
   public func stop() {
     if !engine.isRunning {
       do {
@@ -117,7 +101,7 @@ public class SpinPlayer {
   }
   
   /// play a segment of the song immediately
-  private func play(from: Double, to: Double? = nil) {
+  private func playNow(from: Double, to: Double? = nil) {
     do {
       try engine.start()
       
@@ -131,8 +115,10 @@ public class SpinPlayer {
       playerNode.stop()
       playerNode.scheduleSegment(currentFile!, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil, completionHandler: nil)
       playerNode.play()
-      
-      delegate?.player(self, didChangePlaybackState: true)
+
+      if let spin {
+        delegate?.player(self, startedPlaying: spin)
+      }
     } catch {
       os_log("Error starting engine: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
     }
@@ -141,12 +127,14 @@ public class SpinPlayer {
   public func scheduleFade(at: Date, startingVolume: Float, endingVolume: Float) {
   }
 
-  public func loadAndSchedule(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
+  public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
     print("loadAndSchedule for \(spin.audioBlock?.title ?? "dunno")")
+    self.spin = spin
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl, let audioFileUrl = URL(string: audioFileUrlStr) else { return }
 
     print("loadAndSchedule 2 for \(spin.audioBlock?.title ?? "dunno")")
 
+    print("download starting for \(spin.audioBlock?.title ?? "dunno")")
     fileDownloadManager.downloadFile(remoteUrl: audioFileUrl) { progress in
       onDownloadProgress?(progress)
     } onCompletion: { localUrl in
@@ -156,8 +144,9 @@ public class SpinPlayer {
       print("\(spin.audioBlock?.title ?? "dunno") isPlaying? \(spin.isPlaying)")
       if spin.isPlaying {
         let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
-        self.play(from: currentTimeInSeconds, to: nil)
+        self.playNow(from: currentTimeInSeconds)
       } else {
+        print("Scheduling Play for \(spin.audioBlock?.title)")
         self.schedulePlay(at: spin.airtime)
       }
     }
@@ -183,7 +172,8 @@ public class SpinPlayer {
                                           interval: 0,
                                           repeats: false, block: { timer in
         DispatchQueue.main.async {
-          self.delegate?.player(self, didChangePlaybackState: true)
+          guard let spin = self.spin else { return }
+          self.delegate?.player(self, startedPlaying: spin)
         }
       })
       RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
@@ -203,7 +193,7 @@ public class SpinPlayer {
     
     playerNode.pause()
     engine.pause()
-    delegate?.player(self, didChangePlaybackState: false)
+//    delegate?.player(self, didChangePlaybackState: false)
   }
   
   // MARK: File Loading

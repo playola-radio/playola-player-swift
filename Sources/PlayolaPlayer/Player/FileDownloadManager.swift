@@ -51,21 +51,17 @@ public final class FileDownloadManager {
                             onProgress: ((Float) -> Void)?,
                             onCompletion: ((URL) -> Void)?) {
     let localUrl = localURLFromRemoteURL(remoteUrl)
-
-    guard !completeFileExists(path: localUrl.path) else {
-      print("detected file exists at path: \(localUrl.path)")
-      onProgress?(1.0)
+    guard !FileManager().fileExists(atPath: localUrl.path) else {
       onCompletion?(localUrl)
       return
     }
-    print("file not detected at path: \(localUrl.path)")
-
+    
     let downloader = FileDownloader(remoteUrl: remoteUrl,
                                     localUrl: localUrl,
                                     onProgress: onProgress,
                                     onCompletion: { downloader in
-      self.downloaders.remove(downloader)
       onCompletion?(downloader.localUrl)
+      self.downloaders.remove(downloader)
     })
     self.downloaders.insert(downloader)
   }

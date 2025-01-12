@@ -25,11 +25,12 @@ public final class FileDownloader: NSObject, @unchecked Sendable {
               onProgress: ((Float) -> Void)?,
               onCompletion: ((FileDownloader) -> Void)?) {
     super.init()
+    print("SELF: \(self)")
     self.remoteUrl = remoteUrl
     self.localUrl = localUrl
     self.handleProgressBlock = onProgress
     self.handleCompletionBlock = onCompletion
-    self.session = URLSession(configuration: configuration,
+    self.session = URLSession(configuration: .default,
                               delegate: self,
                               delegateQueue: .main)
     let task = session.downloadTask(with: remoteUrl)
@@ -50,6 +51,7 @@ extension FileDownloader: URLSessionDownloadDelegate {
   public func urlSession(_ session: URLSession,
                          downloadTask: URLSessionDownloadTask,
                          didFinishDownloadingTo location: URL) {
+    print("Here it is \(self)")
     let manager = FileManager()
     guard !manager.fileExists(atPath: localUrl.path) else {
       print("file exists already at \(localUrl.path)")
