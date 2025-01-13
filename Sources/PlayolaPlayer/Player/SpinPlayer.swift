@@ -13,9 +13,28 @@ import os.log
 @MainActor
 public class SpinPlayer {
   public var duration: Double = 0
-  public var spin: Spin?
+  public var spin: Spin? {
+    didSet {
+      if spin == nil {
+        self.clearTimer?.invalidate()
+      } else if let endtime = spin?.endtime {
+        // for now, fire a
+        self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
+                                      interval: 0,
+                                      repeats: false, block: { timer in
+          DispatchQueue.main.async {
+            self.stop()
+            self.clear()
+          }
+          timer.invalidate()
+        })
+        RunLoop.main.add(self.clearTimer!, forMode: .default)
+      }
+    }
+  }
 
   public var startNotificationTimer: Timer?
+  public var clearTimer: Timer?
 
   // dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
@@ -23,9 +42,22 @@ public class SpinPlayer {
 
   public weak var delegate: SpinPlayerDelegate?
 
+  public enum State {
+    case available
+    case playing
+    case loaded
+  }
+
+  public var state: SpinPlayer.State = .available {
+    didSet {
+      delegate?.player(self, didChangeState: state)
+    }
+  }
+
   /// Namespaced logger
-  private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "Player")
-  
+  private static let logger = OSLog(subsystem: "fm.playola.playolaCore",
+                                    category: "Player")
+
   /// An internal instance of AVAudioEngine
   private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine!
   
@@ -60,7 +92,8 @@ public class SpinPlayer {
   
   // MARK: Lifecycle
   
-  init(delegate: SpinPlayerDelegate? = nil, fileDownloadManager: FileDownloadManager? = nil) {
+  init(delegate: SpinPlayerDelegate? = nil,
+       fileDownloadManager: FileDownloadManager? = nil) {
     self.fileDownloadManager = fileDownloadManager ?? .shared
     self.delegate = delegate
 
@@ -99,7 +132,13 @@ public class SpinPlayer {
     playerNode.reset()
     //        self.currentFile = nil
   }
-  
+
+  private func clear() {
+    stop()
+    self.spin = nil
+    self.currentFile = nil
+    self.state = .available
+  }
   /// play a segment of the song immediately
   private func playNow(from: Double, to: Double? = nil) {
     do {
@@ -116,11 +155,15 @@ public class SpinPlayer {
       playerNode.scheduleSegment(currentFile!, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil, completionHandler: nil)
       playerNode.play()
 
+      self.state = .playing
       if let spin {
         delegate?.player(self, startedPlaying: spin)
       }
     } catch {
-      os_log("Error starting engine: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
+      os_log("Error starting engine: %@",
+             log: SpinPlayer.logger,
+             type: .default, #function, #line,
+             error.localizedDescription)
     }
   }
   
@@ -128,27 +171,21 @@ public class SpinPlayer {
   }
 
   public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
-    print("loadAndSchedule for \(spin.audioBlock?.title ?? "dunno")")
     self.spin = spin
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl, let audioFileUrl = URL(string: audioFileUrlStr) else { return }
 
-    print("loadAndSchedule 2 for \(spin.audioBlock?.title ?? "dunno")")
-
-    print("download starting for \(spin.audioBlock?.title ?? "dunno")")
     fileDownloadManager.downloadFile(remoteUrl: audioFileUrl) { progress in
       onDownloadProgress?(progress)
     } onCompletion: { localUrl in
-      print("download complete for \(spin.audioBlock?.title ?? "dunno")")
       onDownloadCompletion?(localUrl)
       self.loadFile(with: localUrl)
-      print("\(spin.audioBlock?.title ?? "dunno") isPlaying? \(spin.isPlaying)")
       if spin.isPlaying {
         let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
         self.playNow(from: currentTimeInSeconds)
       } else {
-        print("Scheduling Play for \(spin.audioBlock?.title)")
         self.schedulePlay(at: spin.airtime)
       }
+      self.state = .loaded
     }
   }
 
@@ -164,7 +201,6 @@ public class SpinPlayer {
     do {
       try engine.start()
       let avAudiotime = avAudioTimeFromDate(date: at)
-      print("Scheduling play at datetime: \(at), avAudioTime:\(avAudiotime)")
       playerNode.play(at: avAudiotime)
 
       // for now, fire a 
@@ -173,6 +209,7 @@ public class SpinPlayer {
                                           repeats: false, block: { timer in
         DispatchQueue.main.async {
           guard let spin = self.spin else { return }
+          self.state = .playing
           self.delegate?.player(self, startedPlaying: spin)
         }
       })

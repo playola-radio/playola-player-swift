@@ -18,4 +18,6 @@ public protocol SpinPlayerDelegate: AnyObject {
                 didPlayFile file: AVAudioFile,
                 atTime time: TimeInterval,
                 withBuffer buffer: AVAudioPCMBuffer)
+
+    func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State)
 }

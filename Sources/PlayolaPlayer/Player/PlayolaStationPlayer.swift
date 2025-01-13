@@ -18,9 +18,7 @@ final public class PlayolaStationPlayer: Sendable {
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManager!
 
-  var activeSpinPlayers: [String: SpinPlayer] = [:]
-  var idleSpinPlayers: [SpinPlayer] = []
-
+  var spinPlayers: [SpinPlayer] = []
   public static let shared = PlayolaStationPlayer()
 
   public enum State {
@@ -38,15 +36,16 @@ final public class PlayolaStationPlayer: Sendable {
   private static let logger = OSLog(subsystem: "PlayolaPlayer", category: "PlayolaPlayer")
 
   private func getAvailableSpinPlayer() -> SpinPlayer {
-    if idleSpinPlayers.count == 0 {
-      idleSpinPlayers.append(SpinPlayer(delegate: self))
-    }
-    return idleSpinPlayers.removeFirst()
+    let availablePlayers = spinPlayers.filter({ $0.state == .available })
+    if let available = availablePlayers.first { return available }
+
+    let newPlayer = SpinPlayer(delegate: self)
+    spinPlayers.append(newPlayer)
+    return newPlayer
   }
 
   private func scheduleSpin(spin: Spin, completion: (() -> Void)? = nil) {
     let spinPlayer = getAvailableSpinPlayer()
-    activeSpinPlayers[spin.id] = spinPlayer
     if spin.isPlaying {
       spinPlayer.load(spin, onDownloadProgress: { progress in
         self.state = .loading(progress)
@@ -61,7 +60,7 @@ final public class PlayolaStationPlayer: Sendable {
   }
 
   private func isScheduled(spin: Spin) -> Bool {
-    return activeSpinPlayers[spin.id] != nil
+    return spinPlayers.filter({$0.spin == spin}).count > 0
   }
 
   private func scheduleUpcomingSpins() async {
@@ -69,18 +68,14 @@ final public class PlayolaStationPlayer: Sendable {
     do {
       let updatedSchedule = await try! getUpdatedSchedule(stationId: stationId)
       let spinsToLoad = updatedSchedule.current.filter{$0.airtime < .now + TimeInterval(360)}
-      print("spinsToLoad.count: \(spinsToLoad.count)")
       for spin in spinsToLoad {
         if !isScheduled(spin: spin) {
-          print("loading upcoming spin: \(spin.audioBlock?.title ?? "uknown")")
           scheduleSpin(spin: spin)
         }
       }
-
     } catch let error {
       print(error)
     }
-
   }
   
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
@@ -114,7 +109,6 @@ final public class PlayolaStationPlayer: Sendable {
 
 extension PlayolaStationPlayer: SpinPlayerDelegate {
   public func player(_ player: SpinPlayer, startedPlaying spin: Spin) {
-    print("Successfully called startedPlaying with\(spin.audioBlock?.title ?? "---")")
     if let audioBlock = spin.audioBlock {
       self.state = .playing(audioBlock)
     }
@@ -133,6 +127,8 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
     print("didPlayFile")
   }
 
-
+  public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
+    print("new state: \(state)")
+  }
 }
 
