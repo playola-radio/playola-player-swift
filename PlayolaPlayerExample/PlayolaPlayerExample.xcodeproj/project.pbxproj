@@ -33,9 +33,22 @@
 		D381D5A32D21B4750086F8DB /* PlayolaPlayerExampleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PlayolaPlayerExampleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D36CAAB62D2C7FBE00A096F4 /* Exceptions for "PlayolaPlayerExample" folder in "PlayolaPlayerExample" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D381D5882D21B4730086F8DB /* PlayolaPlayerExample */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D381D58B2D21B4730086F8DB /* PlayolaPlayerExample */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D36CAAB62D2C7FBE00A096F4 /* Exceptions for "PlayolaPlayerExample" folder in "PlayolaPlayerExample" target */,
+			);
 			path = PlayolaPlayerExample;
 			sourceTree = "<group>";
 		};
@@ -408,6 +421,7 @@
 				DEVELOPMENT_TEAM = 896JR349G2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PlayolaPlayerExample/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -421,6 +435,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = fm.playola.PlayolaPlayerExample;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -437,6 +452,7 @@
 				DEVELOPMENT_TEAM = 896JR349G2;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PlayolaPlayerExample/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -450,6 +466,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = fm.playola.PlayolaPlayerExample;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
