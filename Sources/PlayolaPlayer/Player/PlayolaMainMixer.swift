@@ -38,10 +38,15 @@ open class PlayolaMainMixer: NSObject {
         self.mixerNode = AVAudioMixerNode()
         self.engine = AVAudioEngine()
         self.engine.attach(self.mixerNode)
-        self.engine.connect(self.mixerNode, to: self.engine.mainMixerNode, format: TapProperties.default.format)
+        self.engine.connect(self.mixerNode,
+                            to: self.engine.mainMixerNode,
+                            format: TapProperties.default.format)
         self.engine.prepare()
 
-        self.mixerNode.installTap(onBus: 0, bufferSize: TapProperties.default.bufferSize, format: TapProperties.default.format, block: self.onTap(_:_:))
+        self.mixerNode.installTap(onBus: 0,
+                                  bufferSize: TapProperties.default.bufferSize,
+                                  format: TapProperties.default.format,
+                                  block: self.onTap(_:_:))
     }
 
     deinit {

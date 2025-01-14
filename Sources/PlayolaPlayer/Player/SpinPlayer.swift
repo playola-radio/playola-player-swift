@@ -12,35 +12,26 @@ import os.log
 /// Handles audioPlay for a single spin at a time.
 @MainActor
 public class SpinPlayer {
-  public var duration: Double = 0
   public var spin: Spin? {
-    didSet {
-      if spin == nil {
-        self.clearTimer?.invalidate()
-      } else if let endtime = spin?.endtime {
-        // for now, fire a
-        self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
-                                      interval: 0,
-                                      repeats: false, block: { timer in
-          DispatchQueue.main.async {
-            self.stop()
-            self.clear()
-          }
-          timer.invalidate()
-        })
-        RunLoop.main.add(self.clearTimer!, forMode: .default)
-      }
-    }
+    didSet { setClearTimer(spin) }
   }
 
   public var startNotificationTimer: Timer?
   public var clearTimer: Timer?
+
+  public var localUrl: URL? { return currentFile?.url }
 
   // dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
   private var fileDownloadManager: FileDownloadManager!
 
   public weak var delegate: SpinPlayerDelegate?
+
+  public var duration: Double {
+    guard let currentFile else { return 0 }
+    let audioNodeFileLength = AVAudioFrameCount(currentFile.length)
+    return Double(Double(audioNodeFileLength) / 44100)
+  }
 
   public enum State {
     case available
@@ -49,12 +40,9 @@ public class SpinPlayer {
   }
 
   public var state: SpinPlayer.State = .available {
-    didSet {
-      delegate?.player(self, didChangeState: state)
-    }
+    didSet { delegate?.player(self, didChangeState: state) }
   }
 
-  /// Namespaced logger
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore",
                                     category: "Player")
 
@@ -99,8 +87,11 @@ public class SpinPlayer {
 
     do {
       let session = AVAudioSession()
-      try
-      session.setCategory(AVAudioSession.Category(rawValue: convertFromAVAudioSessionCategory(AVAudioSession.Category.playAndRecord)), mode: AVAudioSession.Mode.default, options: [
+      try session.setCategory(
+        AVAudioSession.Category(
+          rawValue: AVAudioSession.Category.playAndRecord.rawValue),
+        mode: AVAudioSession.Mode.default,
+        options: [
         .allowBluetoothA2DP,
         .defaultToSpeaker
       ])
@@ -110,7 +101,9 @@ public class SpinPlayer {
   
     /// Make connections
     engine.attach(playerNode)
-    engine.connect(playerNode, to: playolaMainMixer.mixerNode, format: TapProperties.default.format)
+    engine.connect(playerNode,
+                   to: playolaMainMixer.mixerNode,
+                   format: TapProperties.default.format)
     engine.prepare()
     
     /// Install tap
@@ -237,50 +230,54 @@ public class SpinPlayer {
   
   /// Loads an AVAudioFile into the current player node
   private func loadFile(_ file: AVAudioFile) {
-    os_log("%@ - %d", log: SpinPlayer.logger, type: .default, #function, #line)
-    
-    duration = getDuration(file: file)
-    
     playerNode.scheduleFile(file, at: nil)
   }
-  
-  public func setVolume(_ level: Float) {
-    playerNode.volume = level
-  }
-  
+
   /// Loads an audio file at the provided URL into the player node
   public func loadFile(with url: URL) {
     os_log("%@ - %d", log: SpinPlayer.logger, type: .default, #function, #line)
-    
+
     do {
       currentFile = try AVAudioFile(forReading: url)
     } catch {
-      os_log("Error loading (%@): %@", log: SpinPlayer.logger, type: .error, #function, #line, url.absoluteString, error.localizedDescription)
+      os_log("Error loading (%@): %@",
+             log: SpinPlayer.logger,
+             type: .error,
+             #function, #line, url.absoluteString, error.localizedDescription)
     }
   }
-  
-  fileprivate func getDuration(file: AVAudioFile) -> Double {
-    let audioNodeFileLength = AVAudioFrameCount(file.length)
-    return Double(Double(audioNodeFileLength) / 44100)
-  }
-  
+
   // MARK: Tap
   
   /// Handles the audio tap
   private func onTap(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime) {
     guard let file = currentFile,
           let nodeTime = playerNode.lastRenderTime,
-          let playerTime = playerNode.playerTime(forNodeTime: nodeTime)
-    else {
+          let playerTime = playerNode.playerTime(
+            forNodeTime: nodeTime) else {
       return
     }
     
     let currentTime = TimeInterval(playerTime.sampleTime) / playerTime.sampleRate
     delegate?.player(self, didPlayFile: file, atTime: currentTime, withBuffer: buffer)
   }
-}
 
-// Helper function inserted by Swift 4.2 migrator.
-private func convertFromAVAudioSessionCategory(_ input: AVAudioSession.Category) -> String {
-  return input.rawValue
+  private func setClearTimer(_ spin: Spin?) {
+    guard let endtime = spin?.endtime else {
+      self.clearTimer?.invalidate()
+      return
+    }
+
+    // for now, fire a
+    self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
+                                  interval: 0,
+                                  repeats: false, block: { timer in
+      DispatchQueue.main.async {
+        self.stop()
+        self.clear()
+      }
+      timer.invalidate()
+    })
+    RunLoop.main.add(self.clearTimer!, forMode: .default)
+  }
 }
