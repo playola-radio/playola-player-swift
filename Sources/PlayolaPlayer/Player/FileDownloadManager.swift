@@ -109,9 +109,8 @@ extension FileDownloadManager {
       (url.path, (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast)
     }
       .sorted(by: { $0.1 < $1.1 })
-      .map { print($0.1); return $0.0 }
+      .map { $0.0 }
       .filter { !excludeFilepaths.contains($0) }
-    
     
     let amountToDelete:Int64 = FileDownloadManager.MAX_AUDIO_FOLDER_SIZE - calculateFolderCacheSize()
     guard amountToDelete > 0 else { return }
