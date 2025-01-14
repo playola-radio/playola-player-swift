@@ -21,12 +21,7 @@ func playerStateTextFromPlayerState(_ state: PlayolaStationPlayer.State) -> Stri
 
 func playOrPause() {
   Task {
-    if await PlayolaStationPlayer.shared.isPlaying {
-      await PlayolaStationPlayer.shared.stop()
-    } else {
-      try! await PlayolaStationPlayer.shared.play(stationId: "f3864734-de35-414f-b0b3-e6909b0b77bd")
-
-    }
+    try! await PlayolaStationPlayer.shared.play(stationId: "f3864734-de35-414f-b0b3-e6909b0b77bd")
   }
 }
 
@@ -38,7 +33,7 @@ struct ContentView: View {
             Image(systemName: "globe")
                 .imageScale(.large)
                 .foregroundStyle(.tint)
-          Button(player.isPlaying ? "Stop" : "Play") {
+          Button("Play") {
             playOrPause()
           }
           .padding(.bottom, 5)
