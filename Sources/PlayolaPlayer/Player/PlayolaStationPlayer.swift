@@ -19,6 +19,8 @@ final public class PlayolaStationPlayer: Sendable {
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManager!
 
+  public weak var delegate: PlayolaStationPlayerDelegate?
+
   var spinPlayers: [SpinPlayer] = []
   public static let shared = PlayolaStationPlayer()
 
@@ -28,7 +30,20 @@ final public class PlayolaStationPlayer: Sendable {
     case idle
   }
 
-  public var state: PlayolaStationPlayer.State = .idle
+  public var state: PlayolaStationPlayer.State = .idle {
+    didSet {
+      delegate?.player(self, playerStateDidChange: state)
+    }
+  }
+
+  public var isPlaying: Bool {
+    switch state {
+    case .playing(_):
+      return true
+    default:
+      return false
+    }
+  }
 
   private init() {
     self.fileDownloadManager = FileDownloadManager()
@@ -107,6 +122,17 @@ final public class PlayolaStationPlayer: Sendable {
       throw error
     }
   }
+
+  public func stop() {
+    for player in spinPlayers {
+      if player.state != .available {
+        player.stop()
+      }
+    }
+    self.stationId = nil
+    self.currentSchedule = nil
+    self.state = .idle
+  }
 }
 
 
@@ -131,11 +157,20 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
   }
 
 
-  nonisolated public func player(_ player: SpinPlayer, didPlayFile file: AVAudioFile, atTime time: TimeInterval, withBuffer buffer: AVAudioPCMBuffer) {
+  nonisolated public func player(_ player: SpinPlayer,
+                                 didPlayFile file: AVAudioFile,
+                                 atTime time: TimeInterval,
+                                 withBuffer buffer: AVAudioPCMBuffer) {
     print("didPlayFile")
   }
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
     print("new state: \(state)")
   }
+}
+
+
+public protocol PlayolaStationPlayerDelegate: AnyObject {
+  func player(_ player: PlayolaStationPlayer,
+                     playerStateDidChange state: PlayolaStationPlayer.State)
 }

@@ -113,6 +113,11 @@ public class SpinPlayer {
   // MARK: Playback
   
   public func stop() {
+    stopAudio()
+    clear()
+  }
+
+  private func stopAudio() {
     if !engine.isRunning {
       do {
         try engine.start()
@@ -123,14 +128,15 @@ public class SpinPlayer {
     }
     playerNode.stop()
     playerNode.reset()
-    //        self.currentFile = nil
   }
 
   private func clear() {
-    stop()
+    stopAudio()
     self.spin = nil
     self.currentFile = nil
     self.state = .available
+    self.clearTimer?.invalidate()
+    self.startNotificationTimer?.invalidate()
   }
   /// play a segment of the song immediately
   private func playNow(from: Double, to: Double? = nil) {
@@ -273,7 +279,7 @@ public class SpinPlayer {
                                   interval: 0,
                                   repeats: false, block: { timer in
       DispatchQueue.main.async {
-        self.stop()
+        self.stopAudio()
         self.clear()
       }
       timer.invalidate()
