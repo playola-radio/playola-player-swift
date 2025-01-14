@@ -10,6 +10,7 @@ import SwiftUI
 @Observable
 @MainActor
 public final class FileDownloadManager {
+  public static let MAX_AUDIO_FOLDER_SIZE: Int64 = 52_428_800
   public static let subfolderName = "AudioFiles"
   public static let shared = FileDownloadManager()
 
@@ -30,7 +31,7 @@ public final class FileDownloadManager {
       true)
     let documentsDirectoryURL:URL = URL(fileURLWithPath: paths[0])
     return documentsDirectoryURL.appendingPathComponent(
-      FileDownloader.subfolderName)
+      FileDownloadManager.subfolderName)
   }
 
   private func localURLFromRemoteURL(_ remoteURL:URL) -> URL {
@@ -64,5 +65,69 @@ public final class FileDownloadManager {
       self.downloaders.remove(downloader)
     })
     self.downloaders.insert(downloader)
+  }
+}
+
+// File Cache Handling
+extension FileDownloadManager {
+  private func calculateFolderCacheSize() -> Int64 {
+    var bool: ObjCBool = false
+    var folderFileSizeInBytes: Int64 = 0
+
+    guard FileManager().fileExists(atPath: fileDirectoryURL.path,
+                                   isDirectory: &bool),
+          bool.boolValue else {
+      return 0
+    }
+    let fileManager = FileManager.default
+    let files = try! fileManager.contentsOfDirectory(
+      at: fileDirectoryURL,
+      includingPropertiesForKeys: nil,
+      options: [])
+
+    for file in files {
+      do {
+        let fullContentPath = file.path
+        let attributes = try FileManager.default.attributesOfItem(atPath: fullContentPath)
+        folderFileSizeInBytes += attributes[FileAttributeKey.size] as? Int64 ?? 0
+      } catch _ {
+        continue
+      }
+    }
+    return folderFileSizeInBytes
+  }
+
+  public func pruneCache(excludeFilepaths: [String] = []) {
+    guard let directory = fileDirectoryURL else { return }  // TODO: proper error handling
+    guard let fileUrls = try? FileManager.default.contentsOfDirectory(
+      at: directory,
+      includingPropertiesForKeys: [.contentModificationDateKey],
+      options:.skipsHiddenFiles) else {
+      return
+    }
+    let files = fileUrls.map { url in
+      (url.path, (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast)
+    }
+      .sorted(by: { $0.1 < $1.1 })
+      .map { print($0.1); return $0.0 }
+      .filter { !excludeFilepaths.contains($0) }
+    
+    
+    let amountToDelete:Int64 = FileDownloadManager.MAX_AUDIO_FOLDER_SIZE - calculateFolderCacheSize()
+    guard amountToDelete > 0 else { return }
+    
+    var totalRemoved: Int64 = 0
+    
+    for filepath in files {
+      do {
+        let url = URL(fileURLWithPath: filepath)
+        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        try FileManager.default.removeItem(atPath: filepath)
+        totalRemoved += Int64(fileSize)
+        if totalRemoved >= amountToDelete { return }
+      } catch let error {
+        print("error removing file \(filepath)")
+      }
+    }
   }
 }

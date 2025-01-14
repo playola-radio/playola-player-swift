@@ -11,6 +11,7 @@ import AVFAudio
 
 let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
 
+
 @MainActor
 @Observable
 final public class PlayolaStationPlayer: Sendable {
@@ -33,7 +34,9 @@ final public class PlayolaStationPlayer: Sendable {
     self.fileDownloadManager = FileDownloadManager()
   }
 
-  private static let logger = OSLog(subsystem: "PlayolaPlayer", category: "PlayolaPlayer")
+  private static let logger = OSLog(
+    subsystem: "PlayolaPlayer",
+    category: "PlayolaStationPlayer")
 
   private func getAvailableSpinPlayer() -> SpinPlayer {
     let availablePlayers = spinPlayers.filter({ $0.state == .available })
@@ -116,6 +119,11 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
     Task {
       do {
         await self.scheduleUpcomingSpins()
+        self.fileDownloadManager.pruneCache(
+          excludeFilepaths: self.spinPlayers
+            .filter{ $0.localUrl != nil }
+            .map { $0.localUrl!.path }
+        )
       } catch let error {
         print(error)
       }
@@ -131,4 +139,3 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
     print("new state: \(state)")
   }
 }
-

@@ -19,6 +19,8 @@ public class SpinPlayer {
   public var startNotificationTimer: Timer?
   public var clearTimer: Timer?
 
+  public var localUrl: URL? { return currentFile?.url }
+
   // dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
   private var fileDownloadManager: FileDownloadManager!
@@ -234,7 +236,7 @@ public class SpinPlayer {
   /// Loads an audio file at the provided URL into the player node
   public func loadFile(with url: URL) {
     os_log("%@ - %d", log: SpinPlayer.logger, type: .default, #function, #line)
-    
+
     do {
       currentFile = try AVAudioFile(forReading: url)
     } catch {

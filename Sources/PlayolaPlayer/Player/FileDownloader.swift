@@ -10,7 +10,6 @@ import SwiftUI
 
 @Observable
 public final class FileDownloader: NSObject, @unchecked Sendable {
-  public static let subfolderName = "AudioFiles"
   var remoteUrl: URL!
   var localUrl: URL!
   var handleProgressBlock: ((Float) -> Void)?
@@ -25,7 +24,6 @@ public final class FileDownloader: NSObject, @unchecked Sendable {
               onProgress: ((Float) -> Void)?,
               onCompletion: ((FileDownloader) -> Void)?) {
     super.init()
-    print("SELF: \(self)")
     self.remoteUrl = remoteUrl
     self.localUrl = localUrl
     self.handleProgressBlock = onProgress
@@ -51,7 +49,6 @@ extension FileDownloader: URLSessionDownloadDelegate {
   public func urlSession(_ session: URLSession,
                          downloadTask: URLSessionDownloadTask,
                          didFinishDownloadingTo location: URL) {
-    print("Here it is \(self)")
     let manager = FileManager()
     guard !manager.fileExists(atPath: localUrl.path) else {
       print("file exists already at \(localUrl.path)")
