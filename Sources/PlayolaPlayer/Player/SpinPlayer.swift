@@ -85,8 +85,11 @@ public class SpinPlayer {
 
     do {
       let session = AVAudioSession()
-      try
-      session.setCategory(AVAudioSession.Category(rawValue: convertFromAVAudioSessionCategory(AVAudioSession.Category.playAndRecord)), mode: AVAudioSession.Mode.default, options: [
+      try session.setCategory(
+        AVAudioSession.Category(
+          rawValue: AVAudioSession.Category.playAndRecord.rawValue),
+        mode: AVAudioSession.Mode.default,
+        options: [
         .allowBluetoothA2DP,
         .defaultToSpeaker
       ])
@@ -283,9 +286,4 @@ public class SpinPlayer {
     })
     RunLoop.main.add(self.clearTimer!, forMode: .default)
   }
-}
-
-// Helper function inserted by Swift 4.2 migrator.
-private func convertFromAVAudioSessionCategory(_ input: AVAudioSession.Category) -> String {
-  return input.rawValue
 }
