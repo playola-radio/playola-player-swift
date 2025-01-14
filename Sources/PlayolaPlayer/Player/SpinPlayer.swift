@@ -15,21 +15,7 @@ public class SpinPlayer {
   public var duration: Double = 0
   public var spin: Spin? {
     didSet {
-      if spin == nil {
-        self.clearTimer?.invalidate()
-      } else if let endtime = spin?.endtime {
-        // for now, fire a
-        self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
-                                      interval: 0,
-                                      repeats: false, block: { timer in
-          DispatchQueue.main.async {
-            self.stop()
-            self.clear()
-          }
-          timer.invalidate()
-        })
-        RunLoop.main.add(self.clearTimer!, forMode: .default)
-      }
+      setClearTimer(spin)
     }
   }
 
@@ -277,6 +263,25 @@ public class SpinPlayer {
     
     let currentTime = TimeInterval(playerTime.sampleTime) / playerTime.sampleRate
     delegate?.player(self, didPlayFile: file, atTime: currentTime, withBuffer: buffer)
+  }
+
+  private func setClearTimer(_ spin: Spin?) {
+    guard let endtime = spin?.endtime else {
+      self.clearTimer?.invalidate()
+      return
+    }
+
+    // for now, fire a
+    self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
+                                  interval: 0,
+                                  repeats: false, block: { timer in
+      DispatchQueue.main.async {
+        self.stop()
+        self.clear()
+      }
+      timer.invalidate()
+    })
+    RunLoop.main.add(self.clearTimer!, forMode: .default)
   }
 }
 
