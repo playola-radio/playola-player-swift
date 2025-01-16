@@ -8,13 +8,13 @@
 import Foundation
 import os.log
 import AVFAudio
+import SwiftUI
 
 let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
 
 
 @MainActor
-@Observable
-final public class PlayolaStationPlayer: Sendable {
+final public class PlayolaStationPlayer: Sendable, ObservableObject {
   var stationId: String?   // TODO: Change this to Station model
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManager!
@@ -30,7 +30,7 @@ final public class PlayolaStationPlayer: Sendable {
     case idle
   }
 
-  public var state: PlayolaStationPlayer.State = .idle {
+  @Published public var state: PlayolaStationPlayer.State = .idle {
     didSet {
       delegate?.player(self, playerStateDidChange: state)
     }
