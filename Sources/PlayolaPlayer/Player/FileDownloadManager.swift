@@ -7,12 +7,9 @@
 
 import SwiftUI
 
-@Observable
-@MainActor
 public final class FileDownloadManager {
   public static let MAX_AUDIO_FOLDER_SIZE: Int64 = 52_428_800
   public static let subfolderName = "AudioFiles"
-  public static let shared = FileDownloadManager()
 
   private var downloaders: Set<FileDownloader> = Set()
 

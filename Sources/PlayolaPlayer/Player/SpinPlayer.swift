@@ -82,7 +82,7 @@ public class SpinPlayer {
   
   init(delegate: SpinPlayerDelegate? = nil,
        fileDownloadManager: FileDownloadManager? = nil) {
-    self.fileDownloadManager = fileDownloadManager ?? .shared
+    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManager()
     self.delegate = delegate
 
     do {
