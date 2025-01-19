@@ -31,7 +31,7 @@ func playOrPause() {
 }
 
 struct ContentView: View {
-  let player = PlayolaStationPlayer.shared
+  @ObservedObject var player = PlayolaStationPlayer.shared
 
     var body: some View {
         VStack {
