@@ -12,6 +12,7 @@ import os.log
 /// Handles audioPlay for a single spin at a time.
 @MainActor
 public class SpinPlayer {
+  public var id: UUID = UUID()
   public var spin: Spin? {
     didSet { setClearTimer(spin) }
   }
@@ -37,6 +38,7 @@ public class SpinPlayer {
     case available
     case playing
     case loaded
+    case loading
   }
 
   public var state: SpinPlayer.State = .available {
@@ -89,11 +91,12 @@ public class SpinPlayer {
       let session = AVAudioSession()
       try session.setCategory(
         AVAudioSession.Category(
-          rawValue: AVAudioSession.Category.playAndRecord.rawValue),
+          rawValue: AVAudioSession.Category.playback.rawValue),
         mode: AVAudioSession.Mode.default,
         options: [
         .allowBluetoothA2DP,
-        .defaultToSpeaker
+        .defaultToSpeaker,
+        .allowAirPlay,
       ])
     } catch {
       os_log("Error setting up session: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
@@ -148,7 +151,7 @@ public class SpinPlayer {
       let newSampleTime = AVAudioFramePosition(sampleRate * from)
       let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
       
-      // stop the player, schedule the segxment, restart the player
+      // stop the player, schedule the segment, restart the player
       playerNode.volume = 1.0
       playerNode.stop()
       playerNode.scheduleSegment(currentFile!, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil, completionHandler: nil)
@@ -170,6 +173,7 @@ public class SpinPlayer {
   }
 
   public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
+    self.state = .loading
     self.spin = spin
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl, let audioFileUrl = URL(string: audioFileUrlStr) else { return }
 
