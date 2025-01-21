@@ -55,13 +55,15 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private func getAvailableSpinPlayer() -> SpinPlayer {
     let availablePlayers = spinPlayers.filter({ $0.state == .available })
-    if let available = availablePlayers.first { return available }
+    if let available = availablePlayers.first { print("available: \(available.id)"); return available }
 
     let newPlayer = SpinPlayer(delegate: self)
     spinPlayers.append(newPlayer)
+    print("available: \(newPlayer.id)")
     return newPlayer
   }
 
+  @MainActor
   private func scheduleSpin(spin: Spin, completion: (() -> Void)? = nil) {
     let spinPlayer = getAvailableSpinPlayer()
     if spin.isPlaying {
@@ -77,10 +79,12 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
+  @MainActor
   private func isScheduled(spin: Spin) -> Bool {
     return spinPlayers.filter({$0.spin == spin}).count > 0
   }
 
+  @MainActor
   private func scheduleUpcomingSpins() async {
     guard let stationId else { return }
     do {
@@ -88,6 +92,8 @@ final public class PlayolaStationPlayer: ObservableObject {
       let spinsToLoad = updatedSchedule.current.filter{$0.airtime < .now + TimeInterval(360)}
       for spin in spinsToLoad {
         if !isScheduled(spin: spin) {
+          print("Scheduling: \(spin.audioBlock!.title)")
+          print("Already scheduled: \(self.spinPlayers.map { $0.spin }.compactMap { $0?.audioBlock!.title}.joined(separator: " , "))")
           scheduleSpin(spin: spin)
         }
       }
@@ -165,7 +171,7 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
   }
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
-    print("new state: \(state)")
+    print("new state: \(state) for: \(player.spin?.audioBlock?.title ?? "Unknown") on Player: \(player.id)")
   }
 }
 
