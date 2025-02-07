@@ -12,6 +12,15 @@ import os.log
 /// Handles audioPlay for a single spin at a time.
 @MainActor
 public class SpinPlayer {
+  public enum State {
+    case available
+    case playing
+    case loaded
+    case loading
+  }
+  private static let logger = OSLog(subsystem: "fm.playola.playolaCore",
+                                    category: "Player")
+
   public var id: UUID = UUID()
   public var spin: Spin? {
     didSet { setClearTimer(spin) }
@@ -34,19 +43,9 @@ public class SpinPlayer {
     return Double(Double(audioNodeFileLength) / 44100)
   }
 
-  public enum State {
-    case available
-    case playing
-    case loaded
-    case loading
-  }
-
   public var state: SpinPlayer.State = .available {
     didSet { delegate?.player(self, didChangeState: state) }
   }
-
-  private static let logger = OSLog(subsystem: "fm.playola.playolaCore",
-                                    category: "Player")
 
   /// An internal instance of AVAudioEngine
   private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine!
@@ -65,12 +64,7 @@ public class SpinPlayer {
     }
   }
 
-
-
-  /// A Bool indicating whether the engine is playing or not
-  public var isPlaying: Bool {
-    return playerNode.isPlaying
-  }
+  public var isPlaying: Bool { return playerNode.isPlaying }
 
   public var volume: Float {
     get {
@@ -82,17 +76,13 @@ public class SpinPlayer {
         playerNode.volume = newValue
         return
       }
-      print("Original volume: \(newValue)")
-      print("Normalized Volume: \(normalizationCalculator.adjustedVolume(newValue))")
       playerNode.volume = normalizationCalculator.adjustedVolume(newValue)
     }
   }
 
-  /// Singleton instance of the player
   static let shared = SpinPlayer()
 
   // MARK: Lifecycle
-
   init(delegate: SpinPlayerDelegate? = nil,
        fileDownloadManager: FileDownloadManager? = nil) {
     self.fileDownloadManager = fileDownloadManager ?? .shared
@@ -271,8 +261,6 @@ public class SpinPlayer {
   }
 
   // MARK: Tap
-
-  /// Handles the audio tap
   private func onTap(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime) {
     guard let file = currentFile,
           let nodeTime = playerNode.lastRenderTime,
@@ -291,7 +279,7 @@ public class SpinPlayer {
       return
     }
 
-    // for now, fire a
+    // for now, fire a timer.  Later we should try and use a callback
     self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
                             interval: 0,
                             repeats: false, block: { timer in
