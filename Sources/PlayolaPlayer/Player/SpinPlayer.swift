@@ -6,6 +6,7 @@
 //
 
 import AVFoundation
+import AudioToolbox
 import Foundation
 import os.log
 
@@ -28,6 +29,7 @@ public class SpinPlayer {
 
   public var startNotificationTimer: Timer?
   public var clearTimer: Timer?
+  public var fadeTimers = Set<Timer>()
 
   public var localUrl: URL? { return currentFile?.url }
 
@@ -141,6 +143,10 @@ public class SpinPlayer {
     self.state = .available
     self.clearTimer?.invalidate()
     self.startNotificationTimer?.invalidate()
+    for timer in fadeTimers {
+      timer.invalidate()
+    }
+    self.volume = 1.0
   }
   /// play a segment of the song immediately
   private func playNow(from: Double, to: Double? = nil) {
@@ -170,9 +176,6 @@ public class SpinPlayer {
     }
   }
 
-  public func scheduleFade(at: Date, startingVolume: Float, endingVolume: Float) {
-  }
-
   public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
     self.state = .loading
     self.spin = spin
@@ -190,6 +193,7 @@ public class SpinPlayer {
         self.schedulePlay(at: spin.airtime)
       }
       self.volume = 1.0
+      self.scheduleFades(spin)
       self.state = .loaded
     }
   }
@@ -271,6 +275,53 @@ public class SpinPlayer {
 
     let currentTime = TimeInterval(playerTime.sampleTime) / playerTime.sampleRate
     delegate?.player(self, didPlayFile: file, atTime: currentTime, withBuffer: buffer)
+  }
+
+  fileprivate func fadePlayer(
+    toVolume endVolume : Float,
+    overTime time : Float,
+    completionBlock: (()->())!=nil) {
+
+      // Update the volume every 1/100 of a second
+      let fadeSteps : Int = Int(time) * 100
+
+      // Work out how much time each step will take
+      let timePerStep:Float = 1 / 100.0
+
+      let startVolume = self.volume
+
+      // Schedule a number of volume changes
+      for step in 0...fadeSteps {
+        let delayInSeconds : Float = Float(step) * timePerStep
+
+        let popTime = DispatchTime.now() + Double(Int64(delayInSeconds * Float(NSEC_PER_SEC))) / Double(NSEC_PER_SEC);
+
+        DispatchQueue.main.asyncAfter(deadline: popTime) {
+          let fraction:Float = (Float(step) / Float(fadeSteps))
+
+          self.volume = (startVolume +
+                         (endVolume - startVolume) * fraction)
+
+          // if it was the final step, execute the completion block
+          if (step == fadeSteps) {
+            completionBlock?()
+          }
+
+      }
+    }
+  }
+
+  private func scheduleFades(_ spin: Spin) {
+    for fade in spin.fades {
+      let timer = Timer(fire: spin.airtime.addingTimeInterval(TimeInterval(fade.atMS/1000)),
+                        interval: 0,
+                        repeats: false) { [fade] timer in
+        timer.invalidate()
+        self.fadePlayer(toVolume: fade.toVolume, overTime: 1.5)
+      }
+      RunLoop.main.add(timer, forMode: .default)
+      fadeTimers.insert(timer)
+    }
   }
 
   private func setClearTimer(_ spin: Spin?) {

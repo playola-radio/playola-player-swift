@@ -6,6 +6,11 @@
 //
 import Foundation
 
+public struct Fade: Codable, Sendable {
+  let atMS: Int
+  let toVolume: Float
+}
+
 public struct Spin: Codable, Sendable {
   let id: String
   let stationId: String
@@ -13,6 +18,7 @@ public struct Spin: Codable, Sendable {
   let createdAt: Date
   let updatedAt: Date
   let audioBlock: AudioBlock?
+  let fades: [Fade]
 
   // dependency injection
   var dateProvider: DateProvider! = .shared
@@ -27,7 +33,7 @@ public struct Spin: Codable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, stationId, airtime, createdAt, updatedAt, audioBlock
+    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades
   }
 }
 
