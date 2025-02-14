@@ -15,6 +15,7 @@ public struct Spin: Codable, Sendable {
   let id: String
   let stationId: String
   let airtime: Date
+  let startingVolume: Float
   let createdAt: Date
   let updatedAt: Date
   let audioBlock: AudioBlock?
@@ -33,7 +34,7 @@ public struct Spin: Codable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades
+    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, startingVolume
   }
 }
 

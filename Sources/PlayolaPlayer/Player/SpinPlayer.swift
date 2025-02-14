@@ -189,10 +189,11 @@ public class SpinPlayer {
       if spin.isPlaying {
         let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
         self.playNow(from: currentTimeInSeconds)
+        self.volume = 1.0
       } else {
         self.schedulePlay(at: spin.airtime)
+        self.volume = spin.startingVolume
       }
-      self.volume = 1.0
       self.scheduleFades(spin)
       self.state = .loaded
     }
