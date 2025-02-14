@@ -9,14 +9,14 @@ import AVFoundation
 import Foundation
 import UIKit
 
-struct ListeningSessionRequest: Codable {
-  let deviceId: String
-  let stationId: String?
-  let stationUrl: String? = nil
-}
-
 @MainActor
 public class ListeningSessionReporter {
+  public struct ListeningSessionRequest: Codable {
+    let deviceId: String
+    let stationId: String?
+    let stationUrl: String? = nil
+  }
+
   var deviceId: String? {
     return UIDevice.current.identifierForVendor?.uuidString
   }
