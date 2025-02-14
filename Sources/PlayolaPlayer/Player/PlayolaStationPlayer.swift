@@ -15,9 +15,10 @@ let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
 
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
-  @Published var stationId: String?   // TODO: Change this to Station model
+  @Published public var stationId: String?   // TODO: Change this to Station model
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManager!
+  var listeningSessionReporter: ListeningSessionReporter? = nil
 
   public weak var delegate: PlayolaStationPlayerDelegate?
 
@@ -47,6 +48,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private init() {
     self.fileDownloadManager = FileDownloadManager()
+    self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self)
   }
 
   private static let logger = OSLog(
