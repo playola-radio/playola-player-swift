@@ -292,34 +292,28 @@ public class SpinPlayer {
     overTime time : Float,
     completionBlock: (()->())? = nil) {
 
-      // Update the volume every 1/100 of a second
-      let fadeSteps : Int = Int(time) * 100
-
-      // Work out how much time each step will take
-      let timePerStep:Float = 1 / 100.0
-
       let startVolume = self.volume
+      let startTime = DispatchTime.now()
+      let totalDuration = Double(time)
 
-      // Schedule a number of volume changes
-      for step in 0...fadeSteps {
-        let delayInSeconds : Float = Float(step) * timePerStep
-
-        let popTime = DispatchTime.now() + Double(Int64(delayInSeconds * Float(NSEC_PER_SEC))) / Double(NSEC_PER_SEC);
-
-        DispatchQueue.main.asyncAfter(deadline: popTime) { [weak self] in
-          guard let self = self else { return }
-
-          let fraction:Float = (Float(step) / Float(fadeSteps))
-
-          self.volume = (startVolume +
-                         (endVolume - startVolume) * fraction)
-
-          // if it was the final step, execute the completion block
-          if (step == fadeSteps) {
-            completionBlock?()
+      // Use a single timer instead of many dispatch blocks
+      let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [weak self] timer in
+          guard let self = self else {
+              timer.invalidate()
+              return
           }
-        }
+
+          let elapsedTime = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000
+          let fraction = min(elapsedTime / totalDuration, 1.0)
+
+          self.volume = startVolume + (endVolume - startVolume) * Float(fraction)
+
+          if fraction >= 1.0 {
+              timer.invalidate()
+              completionBlock?()
+          }
       }
+      RunLoop.main.add(timer, forMode: .common)
   }
 
   private func scheduleFades(_ spin: Spin) {

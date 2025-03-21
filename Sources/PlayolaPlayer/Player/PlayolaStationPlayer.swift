@@ -87,18 +87,20 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   @MainActor
   private func scheduleSpin(spin: Spin, completion: (() -> Void)? = nil) {
-    let spinPlayer = getAvailableSpinPlayer()
-    if spin.isPlaying {
-      spinPlayer.load(spin, onDownloadProgress: { progress in
-        self.state = .loading(progress)
-      }, onDownloadCompletion: { localUrl in
-        completion?()
-        self.state = .playing(spin.audioBlock!)
-      })
-    } else {
-      spinPlayer.load(spin)
-      completion?()
-    }
+      let spinPlayer = getAvailableSpinPlayer()
+      if spin.isPlaying {
+          spinPlayer.load(spin, onDownloadProgress: { [weak self] progress in
+              guard let self = self else { return }
+              self.state = .loading(progress)
+          }, onDownloadCompletion: { [weak self] localUrl in
+              guard let self = self else { return }
+              completion?()
+              self.state = .playing(spin.audioBlock!)
+          })
+      } else {
+          spinPlayer.load(spin)
+          completion?()
+      }
   }
 
   @MainActor

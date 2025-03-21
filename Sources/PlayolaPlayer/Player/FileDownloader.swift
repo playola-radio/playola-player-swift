@@ -29,7 +29,10 @@ public final class FileDownloader: NSObject, @unchecked Sendable {
     self.remoteUrl = remoteUrl
     self.localUrl = localUrl
     self.handleProgressBlock = onProgress
-    self.handleCompletionBlock = onCompletion
+    self.handleCompletionBlock = { [weak self] downloader in
+      guard let self else { return }
+      onCompletion?(downloader)
+    }
     self.session = URLSession(configuration: .default,
                               delegate: self,
                               delegateQueue: .main)

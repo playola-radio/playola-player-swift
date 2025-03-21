@@ -64,6 +64,11 @@ public class ListeningSessionReporter {
     }.store(in: &disposeBag)
   }
 
+  deinit {
+    self.timer?.invalidate()
+    disposeBag.removeAll()
+  }
+
   public func endListeningSession() {
     guard let deviceId else {
       let error = ListeningSessionError.missingDeviceId
