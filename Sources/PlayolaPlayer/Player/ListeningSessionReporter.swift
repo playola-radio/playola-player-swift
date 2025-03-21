@@ -4,10 +4,32 @@
 //
 //  Created by Brian D Keane on 2/12/25.
 //
+
 import Combine
 import AVFoundation
 import Foundation
 import UIKit
+
+/// Errors specific to the listening session reporting
+public enum ListeningSessionError: Error, LocalizedError {
+    case missingDeviceId
+    case networkError(String)
+    case invalidResponse(String)
+    case encodingError(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .missingDeviceId:
+            return "Device identifier is not available"
+        case .networkError(let message):
+            return "Network error: \(message)"
+        case .invalidResponse(let message):
+            return "Invalid response: \(message)"
+        case .encodingError(let message):
+            return "Encoding error: \(message)"
+        }
+    }
+}
 
 @MainActor
 public class ListeningSessionReporter {
@@ -26,6 +48,7 @@ public class ListeningSessionReporter {
   var disposeBag = Set<AnyCancellable>()
   weak var stationPlayer: PlayolaStationPlayer?
   var currentListeningSessionID: String?
+  private let errorReporter = PlayolaErrorReporter.shared
 
   init(stationPlayer: PlayolaStationPlayer) {
     self.stationPlayer = stationPlayer
@@ -43,31 +66,37 @@ public class ListeningSessionReporter {
 
   public func endListeningSession() {
     guard let deviceId else {
-      print("Cannot send listeningSession -- missing identifier")
+      let error = ListeningSessionError.missingDeviceId
+      errorReporter.reportError(error, level: .warning)
       return
     }
+
     let url = URL(string: "https://admin-api.playola.fm/v1/listeningSessions/end")!
     let requestBody = [ "deviceId": deviceId]
 
     guard let jsonData = try? JSONEncoder().encode(requestBody) else {
-      print("Error: unable to encode request body to JSON for end listeningSession")
+      let error = ListeningSessionError.encodingError("Failed to encode request body for end listening session")
+      errorReporter.reportError(error, level: .error)
       return
     }
 
     var request = createPostRequest(url: url, jsonData: jsonData)
     // Create a URLSession task to send the request
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+      guard let self = self else { return }
+
       if let error = error {
-        print("Error: \(error.localizedDescription)")
+        Task { @MainActor in
+          self.errorReporter.reportError(error, context: "Network error while ending listening session", level: .error)
+        }
         return
       }
 
-      if let httpResponse = response as? HTTPURLResponse {
-        print("Response Status Code: \(httpResponse.statusCode)")
-      }
-
-      if let data = data, let responseString = String(data: data, encoding: .utf8) {
-        print("Response Data: \(responseString)")
+      if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+        Task { @MainActor in
+          let error = ListeningSessionError.invalidResponse("HTTP status code: \(httpResponse.statusCode)")
+          self.errorReporter.reportError(error, level: .warning)
+        }
       }
     }
     task.resume()
@@ -75,9 +104,11 @@ public class ListeningSessionReporter {
 
   public func reportOrExtendListeningSession(_ stationId: String) {
     guard let deviceId else {
-      print("Cannot send listeningSession -- missing identifier")
+      let error = ListeningSessionError.missingDeviceId
+      errorReporter.reportError(error, level: .warning)
       return
     }
+
     let url = URL(string: "https://admin-api.playola.fm/v1/listeningSessions")!
 
     // Create an instance of the Codable struct
@@ -87,7 +118,8 @@ public class ListeningSessionReporter {
 
     // Convert the Codable struct to JSON data
     guard let jsonData = try? JSONEncoder().encode(requestBody) else {
-      print("Error: Unable to encode request body to JSON")
+      let error = ListeningSessionError.encodingError("Failed to encode listening session request")
+      errorReporter.reportError(error, level: .error)
       return
     }
 
@@ -95,18 +127,21 @@ public class ListeningSessionReporter {
     var request = createPostRequest(url: url, jsonData: jsonData)
 
     // Create a URLSession task to send the request
-    let task = URLSession.shared.dataTask(with: request) { data, response, error in
+    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+      guard let self = self else { return }
+
       if let error = error {
-        print("Error: \(error.localizedDescription)")
+        Task { @MainActor in
+          self.errorReporter.reportError(error, context: "Network error while reporting listening session", level: .error)
+        }
         return
       }
 
-      if let httpResponse = response as? HTTPURLResponse {
-        print("Response Status Code: \(httpResponse.statusCode)")
-      }
-
-      if let data = data, let responseString = String(data: data, encoding: .utf8) {
-        print("Response Data: \(responseString)")
+      if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+        Task { @MainActor in
+          let error = ListeningSessionError.invalidResponse("HTTP status code: \(httpResponse.statusCode)")
+          self.errorReporter.reportError(error, level: .warning)
+        }
       }
     }
     task.resume()
@@ -116,7 +151,8 @@ public class ListeningSessionReporter {
     self.timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true, block: { [weak self] timer in
       guard let self else { return }
       guard let stationId = self.stationPlayer?.stationId else {
-        print("Error -- stationId should exist")
+        let error = ListeningSessionError.invalidResponse("Missing stationId in periodic notification")
+        self.errorReporter.reportError(error, level: .warning)
         return
       }
       self.reportOrExtendListeningSession(stationId)

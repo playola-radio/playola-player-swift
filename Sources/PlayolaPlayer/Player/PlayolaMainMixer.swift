@@ -32,25 +32,40 @@ open class PlayolaMainMixer: NSObject {
     open var mixerNode: AVAudioMixerNode!
     open var engine: AVAudioEngine!
     open var delegate: PlayolaMainMixerDelegate?
+    private let errorReporter = PlayolaErrorReporter.shared
+
+    private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
 
     override init() {
         super.init()
-        self.mixerNode = AVAudioMixerNode()
-        self.engine = AVAudioEngine()
-        self.engine.attach(self.mixerNode)
-        self.engine.connect(self.mixerNode,
-                            to: self.engine.mainMixerNode,
-                            format: TapProperties.default.format)
-        self.engine.prepare()
+        do {
+            self.mixerNode = AVAudioMixerNode()
+            self.engine = AVAudioEngine()
+            self.engine.attach(self.mixerNode)
+            self.engine.connect(self.mixerNode,
+                                to: self.engine.mainMixerNode,
+                                format: TapProperties.default.format)
+            self.engine.prepare()
 
-        self.mixerNode.installTap(onBus: 0,
-                                  bufferSize: TapProperties.default.bufferSize,
-                                  format: TapProperties.default.format,
-                                  block: self.onTap(_:_:))
+            self.mixerNode.installTap(onBus: 0,
+                                      bufferSize: TapProperties.default.bufferSize,
+                                      format: TapProperties.default.format,
+                                      block: self.onTap(_:_:))
+        } catch {
+            Task { @MainActor in
+                errorReporter.reportError(error, context: "Failed to initialize PlayolaMainMixer", level: .critical)
+            }
+        }
     }
 
     deinit {
-        self.mixerNode.removeTap(onBus: 0)
+        do {
+            self.mixerNode.removeTap(onBus: 0)
+        } catch {
+            // Cannot report via errorReporter in deinit as it might be async
+            // For deinit errors, we'll keep using os_log
+            os_log("Error removing tap during deinit: %@", log: PlayolaMainMixer.logger, type: .error, error.localizedDescription)
+        }
     }
 
     /// Handles the audio tap
@@ -58,6 +73,6 @@ open class PlayolaMainMixer: NSObject {
         self.delegate?.player(self, didPlayBuffer: buffer)
     }
 
-  @MainActor
-  public static let shared: PlayolaMainMixer = PlayolaMainMixer()
+    @MainActor
+    public static let shared: PlayolaMainMixer = PlayolaMainMixer()
 }

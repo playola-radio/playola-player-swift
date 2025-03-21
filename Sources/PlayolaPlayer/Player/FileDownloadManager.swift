@@ -6,6 +6,34 @@
 //
 
 import SwiftUI
+import os.log
+
+/// Errors specific to file downloading and caching
+public enum FileDownloadError: Error, LocalizedError {
+    case directoryCreationFailed(String)
+    case fileMoveFailed(String)
+    case fileNotFound(String)
+    case invalidRemoteURL(String)
+    case downloadFailed(String)
+    case cachePruneFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .directoryCreationFailed(let path):
+            return "Failed to create directory at path: \(path)"
+        case .fileMoveFailed(let message):
+            return "Failed to move downloaded file: \(message)"
+        case .fileNotFound(let path):
+            return "File not found at path: \(path)"
+        case .invalidRemoteURL(let url):
+            return "Invalid remote URL: \(url)"
+        case .downloadFailed(let message):
+            return "Download failed: \(message)"
+        case .cachePruneFailed(let message):
+            return "Cache pruning failed: \(message)"
+        }
+    }
+}
 
 @Observable
 @MainActor
@@ -15,6 +43,9 @@ public final class FileDownloadManager {
   public static let shared = FileDownloadManager()
 
   private var downloaders: Set<FileDownloader> = Set()
+  private let errorReporter = PlayolaErrorReporter.shared
+
+  private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "FileDownloadManager")
 
   public func completeFileExists(path: String) -> Bool {
     return FileManager.default.fileExists(atPath: path)
@@ -44,23 +75,25 @@ public final class FileDownloadManager {
     do {
         try fileManager.createDirectory(atPath: fileDirectoryURL.path, withIntermediateDirectories: false, attributes: nil)
     } catch let error as NSError {
-        print(error.localizedDescription);
+        let playolaError = FileDownloadError.directoryCreationFailed(fileDirectoryURL.path)
+        errorReporter.reportError(error, context: playolaError.errorDescription ?? "Unknown error", level: .warning)
     }
   }
 
   public func downloadFile(remoteUrl: URL,
-                            onProgress: ((Float) -> Void)?,
-                            onCompletion: ((URL) -> Void)?) {
+                           onProgress: ((Float) -> Void)?,
+                           onCompletion: ((URL) -> Void)?) {
     let localUrl = localURLFromRemoteURL(remoteUrl)
     guard !FileManager().fileExists(atPath: localUrl.path) else {
       onCompletion?(localUrl)
       return
     }
-    
+
     let downloader = FileDownloader(remoteUrl: remoteUrl,
                                     localUrl: localUrl,
                                     onProgress: onProgress,
-                                    onCompletion: { downloader in
+                                    onCompletion: { [weak self] downloader in
+      guard let self = self else { return }
       onCompletion?(downloader.localUrl)
       self.downloaders.remove(downloader)
     })
@@ -80,53 +113,74 @@ extension FileDownloadManager {
       return 0
     }
     let fileManager = FileManager.default
-    let files = try! fileManager.contentsOfDirectory(
-      at: fileDirectoryURL,
-      includingPropertiesForKeys: nil,
-      options: [])
+    do {
+        let files = try fileManager.contentsOfDirectory(
+            at: fileDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: [])
 
-    for file in files {
-      do {
-        let fullContentPath = file.path
-        let attributes = try FileManager.default.attributesOfItem(atPath: fullContentPath)
-        folderFileSizeInBytes += attributes[FileAttributeKey.size] as? Int64 ?? 0
-      } catch _ {
-        continue
-      }
+        for file in files {
+            do {
+                let fullContentPath = file.path
+                let attributes = try FileManager.default.attributesOfItem(atPath: fullContentPath)
+                folderFileSizeInBytes += attributes[FileAttributeKey.size] as? Int64 ?? 0
+            } catch let error {
+                errorReporter.reportError(error, context: "Failed to get file size for \(file.lastPathComponent)", level: .warning)
+                continue
+            }
+        }
+    } catch let error {
+        errorReporter.reportError(error, context: "Failed to read contents of directory", level: .warning)
     }
     return folderFileSizeInBytes
   }
 
   public func pruneCache(excludeFilepaths: [String] = []) {
-    guard let directory = fileDirectoryURL else { return }  // TODO: proper error handling
-    guard let fileUrls = try? FileManager.default.contentsOfDirectory(
-      at: directory,
-      includingPropertiesForKeys: [.contentModificationDateKey],
-      options:.skipsHiddenFiles) else {
-      return
+    guard let directory = fileDirectoryURL else {
+        let error = FileDownloadError.directoryCreationFailed("No directory URL available")
+        errorReporter.reportError(error, level: .warning)
+        return
     }
-    let files = fileUrls.map { url in
-      (url.path, (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast)
+
+    let fileUrls: [URL]
+    do {
+        fileUrls = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: .skipsHiddenFiles)
+    } catch let error {
+        errorReporter.reportError(error, context: "Failed to get directory contents during cache pruning", level: .warning)
+        return
     }
-      .sorted(by: { $0.1 < $1.1 })
-      .map { $0.0 }
-      .filter { !excludeFilepaths.contains($0) }
-    
-    let amountToDelete:Int64 = FileDownloadManager.MAX_AUDIO_FOLDER_SIZE - calculateFolderCacheSize()
+
+    let files = fileUrls.compactMap { url -> (String, Date)? in
+        do {
+            let date = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? Date.distantPast
+            return (url.path, date)
+        } catch {
+            errorReporter.reportError(error, context: "Failed to get file attributes for \(url.lastPathComponent)", level: .warning)
+            return nil
+        }
+    }
+    .sorted(by: { $0.1 < $1.1 })
+    .map { $0.0 }
+    .filter { !excludeFilepaths.contains($0) }
+
+    let amountToDelete: Int64 = FileDownloadManager.MAX_AUDIO_FOLDER_SIZE - calculateFolderCacheSize()
     guard amountToDelete > 0 else { return }
-    
+
     var totalRemoved: Int64 = 0
-    
+
     for filepath in files {
-      do {
-        let url = URL(fileURLWithPath: filepath)
-        let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        try FileManager.default.removeItem(atPath: filepath)
-        totalRemoved += Int64(fileSize)
-        if totalRemoved >= amountToDelete { return }
-      } catch let error {
-        print("error removing file \(filepath)")
-      }
+        do {
+            let url = URL(fileURLWithPath: filepath)
+            let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            try FileManager.default.removeItem(atPath: filepath)
+            totalRemoved += Int64(fileSize)
+            if totalRemoved >= amountToDelete { return }
+        } catch let error {
+            errorReporter.reportError(error, context: "Error removing file during cache pruning: \(filepath)", level: .warning)
+        }
     }
   }
 }
