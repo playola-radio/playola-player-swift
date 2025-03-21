@@ -463,6 +463,22 @@ public final class FileDownloadManager: FileDownloadManaging {
       .filter { !excludeFilepaths.contains($0.0.path) }
       .sorted { $0.1 < $1.1 } // Sort by date (oldest first)
 
+    // After sorting files for pruning, log which files might be pruned
+    if filesToPrune.count > 0 {
+      os_log("Pruning candidates: %@",
+             log: FileDownloadManager.logger,
+             type: .debug,
+             filesToPrune.map { $0.0.lastPathComponent }.joined(separator: ", "))
+    }
+    
+    // Also log the excluded files
+    if !excludeFilepaths.isEmpty {
+      os_log("Files excluded from pruning: %@",
+             log: FileDownloadManager.logger,
+             type: .debug,
+             excludeFilepaths.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", "))
+    }
+
     var totalRemoved: Int64 = 0
     let fileManager = FileManager.default
 
