@@ -103,9 +103,6 @@ public class SpinPlayer {
                    to: playolaMainMixer.mixerNode,
                    format: TapProperties.default.format)
     engine.prepare()
-
-    /// Install tap
-    //        playerNode.installTap(onBus: 0, bufferSize: TapProperties.default.bufferSize, format: TapProperties.default.format, block: onTap(_:_:))
   }
 
   deinit {
@@ -159,6 +156,11 @@ public class SpinPlayer {
   /// Play a segment of the song immediately
   public func playNow(from: Double, to: Double? = nil) {
     do {
+      os_log("Starting playback of %@ by %@ (spinID: %@) from position %f",
+             log: SpinPlayer.logger, type: .info,
+             spin?.audioBlock?.title ?? "unknown",
+             spin?.audioBlock?.artist ?? "unknown",
+             spin?.id ?? "unknown", from)
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
       try engine.start()
@@ -178,6 +180,10 @@ public class SpinPlayer {
       if let spin {
         delegate?.player(self, startedPlaying: spin)
       }
+      os_log("Successfully started playback of %@ (spinID: %@)",
+                     log: SpinPlayer.logger, type: .info,
+                     spin?.audioBlock?.title ?? "unknown",
+                     spin?.id ?? "unknown")
     } catch {
       errorReporter.reportError(error,
                                 context: "Failed to start playback at position \(from)s for spin ID: \(spin?.id ?? "unknown")",
@@ -186,68 +192,59 @@ public class SpinPlayer {
     }
   }
 
-  public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
+  public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil) async -> Result<URL, Error> {
     self.state = .loading
     self.spin = spin
 
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
           let audioFileUrl = URL(string: audioFileUrlStr) else {
-      let error = NSError(domain: "fm.playola.PlayolaPlayer", code: 400, userInfo: [
-        NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
-        "spinId": spin.id,
-        "audioBlockId": spin.audioBlock?.id ?? "nil",
-        "audioBlockTitle": spin.audioBlock?.title ?? "nil"
-      ])
-      errorReporter.reportError(error,
-                                context: "Missing or invalid download URL for spin ID: \(spin.id)",
-                                level: .error)
-      self.state = .available
-      return
+        let error = NSError(domain: "fm.playola.PlayolaPlayer", code: 400, userInfo: [
+            NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
+            "spinId": spin.id,
+            "audioBlockId": spin.audioBlock?.id ?? "nil",
+            "audioBlockTitle": spin.audioBlock?.title ?? "nil"
+        ])
+        errorReporter.reportError(error,
+                                 context: "Missing or invalid download URL for spin ID: \(spin.id)",
+                                 level: .error)
+        self.state = .available
+        return .failure(error)
     }
 
     // Cancel any existing download
     if let activeDownloadId = activeDownloadId {
-      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
-      self.activeDownloadId = nil
+        _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
+        self.activeDownloadId = nil
     }
 
-    // Use the new Result-based API
-    let downloadId = fileDownloadManager.downloadFile(
-      remoteUrl: audioFileUrl,
-      progressHandler: { progress in
-        onDownloadProgress?(progress)
-      },
-      completion: { [weak self] result in
-        guard let self = self else { return }
+    do {
+        let localUrl = try await fileDownloadManager.downloadFileAsync(
+            remoteUrl: audioFileUrl,
+            progressHandler: onDownloadProgress
+        )
 
-        // Clear the active download ID
-        self.activeDownloadId = nil
+        self.loadFile(with: localUrl)
 
-        switch result {
-        case .success(let localUrl):
-          onDownloadCompletion?(localUrl)
-
-          self.loadFile(with: localUrl)
-          if spin.isPlaying {
+        if spin.isPlaying {
             let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
             self.playNow(from: currentTimeInSeconds)
             self.volume = 1.0
-          } else {
+        } else {
             self.schedulePlay(at: spin.airtime)
             self.volume = spin.startingVolume
-          }
-          self.scheduleFades(spin)
-          self.state = .loaded
-
-        case .failure(let error):
-          self.errorReporter.reportError(error, context: "Failed to download audio file: \(audioFileUrl.lastPathComponent)", level: .error)
-          self.state = .available
         }
-      }
-    )
 
-    // Store the download ID for potential cancellation
-    self.activeDownloadId = downloadId
+        self.scheduleFades(spin)
+        self.state = .loaded
+
+        return .success(localUrl)
+    } catch {
+        self.errorReporter.reportError(error,
+                                      context: "Failed to download audio file: \(audioFileUrl.lastPathComponent)",
+                                      level: .error)
+        self.state = .available
+        return .failure(error)
+    }
   }
 
   private func avAudioTimeFromDate(date: Date) -> AVAudioTime {
@@ -305,7 +302,6 @@ public class SpinPlayer {
 
     playerNode.pause()
     engine.pause()
-    //    delegate?.player(self, didChangePlaybackState: false)
   }
 
   // MARK: File Loading
@@ -315,34 +311,76 @@ public class SpinPlayer {
     playerNode.scheduleFile(file, at: nil)
   }
 
-  /// Loads an audio file at the provided URL into the player node
   public func loadFile(with url: URL) {
     do {
-      currentFile = try AVAudioFile(forReading: url)
-      normalizationCalculator = AudioNormalizationCalculator(currentFile!)
+      // First check if the file exists and has a reasonable size
+      let fileManager = FileManager.default
+
+      guard fileManager.fileExists(atPath: url.path) else {
+        let error = FileDownloadError.fileNotFound(url.path)
+        errorReporter.reportError(error,
+                                  context: "Audio file not found at path",
+                                  level: .error)
+        self.state = .available
+        return
+      }
+
+      // Validate file size
+      let attributes = try fileManager.attributesOfItem(atPath: url.path)
+      let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
+
+      // Consider files under 10KB as suspicious (adjust as needed)
+      if fileSize < 10 * 1024 {
+        let error = FileDownloadError.downloadFailed("Audio file is too small: \(fileSize) bytes")
+        errorReporter.reportError(error,
+                                  context: "Suspiciously small file detected: \(url.lastPathComponent)",
+                                  level: .error)
+        // Delete the invalid file
+        try? fileManager.removeItem(at: url)
+        self.state = .available
+        throw error
+      }
+
+      // Attempt to create the audio file object
+      do {
+        currentFile = try AVAudioFile(forReading: url)
+        normalizationCalculator = AudioNormalizationCalculator(currentFile!)
+      } catch let audioError as NSError {
+        // More detailed context with file information
+        let contextInfo = "Failed to load audio file: \(url.lastPathComponent) (size: \(fileSize) bytes)"
+
+        // Handle specific audio format errors
+        if audioError.domain == "com.apple.coreaudio.avfaudio" {
+          switch audioError.code {
+          case 1954115647: // 'fmt?' in ASCII - format error
+            errorReporter.reportError(audioError,
+                                      context: "\(contextInfo) - Invalid audio format or corrupt file",
+                                      level: .error)
+            // Delete the corrupt file
+            try? fileManager.removeItem(at: url)
+          default:
+            errorReporter.reportError(audioError, context: contextInfo, level: .error)
+          }
+        } else {
+          errorReporter.reportError(audioError, context: contextInfo, level: .error)
+        }
+
+        // State management after error
+        self.state = .available
+        throw audioError
+      }
     } catch {
-      // More detailed context with file information
-      let filename = url.lastPathComponent
-      let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-      let context = "Failed to load audio file: \(filename) (size: \(fileSize) bytes)"
-      errorReporter.reportError(error, context: context, level: .error)
-      // State management after error
+      // This catch block handles errors from the file validation steps
+      // The specific AVAudioFile errors are caught in the inner try-catch
+      if !error.localizedDescription.contains("too small") &&
+          !error.localizedDescription.contains("not found") {
+        errorReporter.reportError(error,
+                                  context: "Error during file validation: \(url.lastPathComponent)",
+                                  level: .error)
+      }
+      // State is already set to .available in the inner catch blocks
       self.state = .available
     }
-  }
-
-  // MARK: Tap
-  private func onTap(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime) {
-    guard let file = currentFile,
-          let nodeTime = playerNode.lastRenderTime,
-          let playerTime = playerNode.playerTime(
-            forNodeTime: nodeTime) else {
-      // We don't report this as an error because it could happen during normal operation
-      return
-    }
-
-    let currentTime = TimeInterval(playerTime.sampleTime) / playerTime.sampleRate
-    delegate?.player(self, didPlayFile: file, atTime: currentTime, withBuffer: buffer)
   }
 
   fileprivate func fadePlayer(
@@ -388,7 +426,7 @@ public class SpinPlayer {
       fadeTimers.insert(timer)
     }
   }
-  
+
   private func setClearTimer(_ spin: Spin?) {
     guard let endtime = spin?.endtime else {
       self.clearTimer?.invalidate()
