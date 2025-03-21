@@ -92,7 +92,7 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   @MainActor
-  private func scheduleSpin(spin: Spin, retryCount: Int = 0) async throws {
+  private func scheduleSpin(spin: Spin, showProgress: Bool = false, retryCount: Int = 0) async throws {
     let spinPlayer = getAvailableSpinPlayer()
 
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
@@ -126,14 +126,15 @@ final public class PlayolaStationPlayer: ObservableObject {
       let result = await spinPlayer.load(
         spin,
         onDownloadProgress: { [weak self] progress in
-          guard let self = self else { return }
+          guard let self = self, showProgress else { return }
           self.state = .loading(progress)
         }
       )
 
       switch result {
       case .success(let localUrl):
-        if let audioBlock = spin.audioBlock {
+        // Only update state to playing if this is the currently playing spin
+        if showProgress, let audioBlock = spin.audioBlock {
           self.state = .playing(audioBlock)
         }
         return
@@ -150,7 +151,7 @@ final public class PlayolaStationPlayer: ObservableObject {
             // Add a small delay before retrying (exponential backoff)
             let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
             try await Task.sleep(for: .seconds(delay))
-            try await self.scheduleSpin(spin: spin, retryCount: retryCount + 1)
+            try await self.scheduleSpin(spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
         } else {
             throw error
         }
@@ -160,7 +161,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       if retryCount < maxRetries {
         let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
         try await Task.sleep(for: .seconds(delay))
-        try await self.scheduleSpin(spin: spin, retryCount: retryCount + 1)
+        try await self.scheduleSpin(spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
       } else {
         let stationError = error is StationPlayerError
             ? error
@@ -178,58 +179,58 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   @MainActor
   private func scheduleUpcomingSpins() async {
-      guard let stationId else {
-          let error = StationPlayerError.invalidStationId("No station ID available")
-          errorReporter.reportError(error, level: .warning)
-          return
+    guard let stationId else {
+      let error = StationPlayerError.invalidStationId("No station ID available")
+      errorReporter.reportError(error, level: .warning)
+      return
+    }
+
+    do {
+      let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
+
+      // Log how many spins are in the updated schedule
+      os_log("Retrieved schedule with %d total spins, %d current spins",
+             log: PlayolaStationPlayer.logger,
+             type: .info,
+             updatedSchedule.spins.count,
+             updatedSchedule.current.count)
+
+      // Extend the time window to load more upcoming spins (10 minutes instead of 6)
+      let spinsToLoad = updatedSchedule.current.filter { $0.airtime < .now + TimeInterval(600) }
+
+      os_log("Preparing to load %d upcoming spins",
+             log: PlayolaStationPlayer.logger,
+             type: .info,
+             spinsToLoad.count)
+
+      for spin in spinsToLoad {
+        if !isScheduled(spin: spin) {
+          os_log("Scheduling new spin: %@ by %@ at %@",
+                 log: PlayolaStationPlayer.logger,
+                 type: .info,
+                 spin.audioBlock?.title ?? "unknown",
+                 spin.audioBlock?.artist ?? "unknown",
+                 ISO8601DateFormatter().string(from: spin.airtime))
+          try await scheduleSpin(spin: spin)
+        }
       }
 
-      do {
-          let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
+      // Log already scheduled spins
+      let scheduledSpinsCount = spinPlayers.filter { $0.spin != nil }.count
+      os_log("Total scheduled spins after update: %d",
+             log: PlayolaStationPlayer.logger,
+             type: .info,
+             scheduledSpinsCount)
 
-          // Log how many spins are in the updated schedule
-          os_log("Retrieved schedule with %d total spins, %d current spins",
-                 log: PlayolaStationPlayer.logger,
-                 type: .info,
-                 updatedSchedule.spins.count,
-                 updatedSchedule.current.count)
+    } catch {
+      errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
 
-          // Extend the time window to load more upcoming spins (10 minutes instead of 6)
-          let spinsToLoad = updatedSchedule.current.filter { $0.airtime < .now + TimeInterval(600) }
-
-          os_log("Preparing to load %d upcoming spins",
-                 log: PlayolaStationPlayer.logger,
-                 type: .info,
-                 spinsToLoad.count)
-
-          for spin in spinsToLoad {
-              if !isScheduled(spin: spin) {
-                  os_log("Scheduling new spin: %@ by %@ at %@",
-                         log: PlayolaStationPlayer.logger,
-                         type: .info,
-                         spin.audioBlock?.title ?? "unknown",
-                         spin.audioBlock?.artist ?? "unknown",
-                         ISO8601DateFormatter().string(from: spin.airtime))
-                  try await scheduleSpin(spin: spin)
-              }
-          }
-
-          // Log already scheduled spins
-          let scheduledSpinsCount = spinPlayers.filter { $0.spin != nil }.count
-          os_log("Total scheduled spins after update: %d",
-                 log: PlayolaStationPlayer.logger,
-                 type: .info,
-                 scheduledSpinsCount)
-
-      } catch {
-          errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
-
-          // Log more details about the error
-          os_log("Schedule update failed: %@",
-                 log: PlayolaStationPlayer.logger,
-                 type: .error,
-                 error.localizedDescription)
-      }
+      // Log more details about the error
+      os_log("Schedule update failed: %@",
+             log: PlayolaStationPlayer.logger,
+             type: .error,
+             error.localizedDescription)
+    }
   }
 
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
@@ -301,11 +302,11 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.currentSchedule = try await getUpdatedSchedule(stationId: stationId)
 
     guard let spinToPlay = currentSchedule?.current.first else {
-        let error = StationPlayerError.scheduleError("No available spins to play")
-        errorReporter.reportError(error,
-                                 context: "Schedule for station \(stationId) contains no current spins | Total spins: \(currentSchedule?.spins.count ?? 0)",
-                                 level: .error)
-        throw error
+      let error = StationPlayerError.scheduleError("No available spins to play")
+      errorReporter.reportError(error,
+                                context: "Schedule for station \(stationId) contains no current spins | Total spins: \(currentSchedule?.spins.count ?? 0)",
+                                level: .error)
+      throw error
     }
 
     // Log success with context
@@ -319,8 +320,8 @@ final public class PlayolaStationPlayer: ObservableObject {
            spinToPlay.audioBlock?.artist ?? "unknown",
            formattedDate)
 
-    // Schedule the first spin
-    try await scheduleSpin(spin: spinToPlay)
+    // Schedule the first spin with progress shown
+    try await scheduleSpin(spin: spinToPlay, showProgress: true)
 
     // Schedule upcoming spins
     await scheduleUpcomingSpins()
@@ -354,6 +355,12 @@ final public class PlayolaStationPlayer: ObservableObject {
 
 extension PlayolaStationPlayer: SpinPlayerDelegate {
   public func player(_ player: SpinPlayer, startedPlaying spin: Spin) {
+    os_log("Delegate notified: Started playing %@ by %@ (spinID: %@)",
+           log: PlayolaStationPlayer.logger, type: .info,
+           spin.audioBlock?.title ?? "unknown",
+           spin.audioBlock?.artist ?? "unknown",
+           spin.id)
+
     if let audioBlock = spin.audioBlock {
       self.state = .playing(audioBlock)
     }
@@ -383,7 +390,10 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
   }
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
-    // No error handling needed here
+    os_log("Spin player state changed to: %@ for player: %@",
+             log: PlayolaStationPlayer.logger, type: .info,
+             String(describing: state),
+             player.id.uuidString)
   }
 }
 
