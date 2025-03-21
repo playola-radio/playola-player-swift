@@ -21,46 +21,46 @@ public class SpinPlayer {
   }
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore",
                                     category: "Player")
-
+  
   public var id: UUID = UUID()
   public var spin: Spin? {
     didSet { setClearTimer(spin) }
   }
-
+  
   public var startNotificationTimer: Timer?
   public var clearTimer: Timer?
   public var fadeTimers = Set<Timer>()
-
+  
   public var localUrl: URL? { return currentFile?.url }
-
+  
   // dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
   private var fileDownloadManager: FileDownloadManaging
   private let errorReporter = PlayolaErrorReporter.shared
-
+  
   // Track active download ID
   private var activeDownloadId: UUID?
-
+  
   public weak var delegate: SpinPlayerDelegate?
-
+  
   public var duration: Double {
     guard let currentFile else { return 0 }
     let audioNodeFileLength = AVAudioFrameCount(currentFile.length)
     return Double(Double(audioNodeFileLength) / 44100)
   }
-
+  
   public var state: SpinPlayer.State = .available {
     didSet { delegate?.player(self, didChangeState: state) }
   }
-
+  
   /// An internal instance of AVAudioEngine
   private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine
-
+  
   /// The node responsible for playing the audio file
   private let playerNode = AVAudioPlayerNode()
-
+  
   private var normalizationCalculator: AudioNormalizationCalculator?
-
+  
   /// The currently playing audio file
   private var currentFile: AVAudioFile? {
     didSet {
@@ -69,9 +69,9 @@ public class SpinPlayer {
       }
     }
   }
-
+  
   public var isPlaying: Bool { return playerNode.isPlaying }
-
+  
   public var volume: Float {
     get {
       guard let normalizationCalculator else { return playerNode.volume }
@@ -85,49 +85,49 @@ public class SpinPlayer {
       playerNode.volume = normalizationCalculator.adjustedVolume(newValue)
     }
   }
-
+  
   static let shared = SpinPlayer()
-
+  
   // MARK: Lifecycle
   init(delegate: SpinPlayerDelegate? = nil,
        fileDownloadManager: FileDownloadManaging? = nil) {
     self.fileDownloadManager = fileDownloadManager ?? FileDownloadManager.shared
     self.delegate = delegate
-
+    
     // Use the centralized audio session management instead of configuring here
     playolaMainMixer.configureAudioSession()
-
+    
     /// Make connections
     engine.attach(playerNode)
     engine.connect(playerNode,
                    to: playolaMainMixer.mixerNode,
                    format: TapProperties.default.format)
     engine.prepare()
-
+    
     /// Install tap
     //        playerNode.installTap(onBus: 0, bufferSize: TapProperties.default.bufferSize, format: TapProperties.default.format, block: onTap(_:_:))
   }
-
+  
   deinit {
     // Cancel any active download
     if let activeDownloadId = activeDownloadId {
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
     }
   }
-
+  
   // MARK: Playback
-
+  
   public func stop() {
     // Cancel any active download
     if let activeDownloadId = activeDownloadId {
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
       self.activeDownloadId = nil
     }
-
+    
     stopAudio()
     clear()
   }
-
+  
   private func stopAudio() {
     if !engine.isRunning {
       do {
@@ -142,7 +142,7 @@ public class SpinPlayer {
     playerNode.stop()
     playerNode.reset()
   }
-
+  
   private func clear() {
     stopAudio()
     self.spin = nil
@@ -155,25 +155,25 @@ public class SpinPlayer {
     }
     self.volume = 1.0
   }
-
+  
   /// Play a segment of the song immediately
   public func playNow(from: Double, to: Double? = nil) {
     do {
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
       try engine.start()
-
+      
       // calculate segment info
       let sampleRate = playerNode.outputFormat(forBus: 0).sampleRate
       let newSampleTime = AVAudioFramePosition(sampleRate * from)
       let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
-
+      
       // stop the player, schedule the segment, restart the player
       self.volume = 1.0
       playerNode.stop()
       playerNode.scheduleSegment(currentFile!, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil, completionHandler: nil)
       playerNode.play()
-
+      
       self.state = .playing
       if let spin {
         delegate?.player(self, startedPlaying: spin)
@@ -185,11 +185,11 @@ public class SpinPlayer {
       self.state = .available
     }
   }
-
+  
   public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
     self.state = .loading
     self.spin = spin
-
+    
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
           let audioFileUrl = URL(string: audioFileUrlStr) else {
       let error = NSError(domain: "fm.playola.PlayolaPlayer", code: 400, userInfo: [
@@ -204,13 +204,13 @@ public class SpinPlayer {
       self.state = .available
       return
     }
-
+    
     // Cancel any existing download
     if let activeDownloadId = activeDownloadId {
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
       self.activeDownloadId = nil
     }
-
+    
     // Use the new Result-based API
     let downloadId = fileDownloadManager.downloadFile(
       remoteUrl: audioFileUrl,
@@ -219,14 +219,14 @@ public class SpinPlayer {
       },
       completion: { [weak self] result in
         guard let self = self else { return }
-
+        
         // Clear the active download ID
         self.activeDownloadId = nil
-
+        
         switch result {
         case .success(let localUrl):
           onDownloadCompletion?(localUrl)
-
+          
           self.loadFile(with: localUrl)
           if spin.isPlaying {
             let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
@@ -238,18 +238,18 @@ public class SpinPlayer {
           }
           self.scheduleFades(spin)
           self.state = .loaded
-
+          
         case .failure(let error):
           self.errorReporter.reportError(error, context: "Failed to download audio file: \(audioFileUrl.lastPathComponent)", level: .error)
           self.state = .available
         }
       }
     )
-
+    
     // Store the download ID for potential cancellation
     self.activeDownloadId = downloadId
   }
-
+  
   private func avAudioTimeFromDate(date: Date) -> AVAudioTime {
     let outputFormat = playerNode.outputFormat(forBus: 0)
     guard let lastRenderTime = playerNode.lastRenderTime else {
@@ -261,12 +261,12 @@ public class SpinPlayer {
       // Fallback to a reasonable default
       return AVAudioTime(sampleTime: 0, atRate: outputFormat.sampleRate)
     }
-
+    
     let now = lastRenderTime.sampleTime
     let secsUntilDate = date.timeIntervalSinceNow
     return AVAudioTime(sampleTime: now + Int64(secsUntilDate * outputFormat.sampleRate), atRate: outputFormat.sampleRate)
   }
-
+  
   /// schedule a future play from the beginning of the file
   public func schedulePlay(at scheduledDate: Date) {
     do {
@@ -275,13 +275,13 @@ public class SpinPlayer {
       try engine.start()
       let avAudiotime = avAudioTimeFromDate(date: scheduledDate)
       playerNode.play(at: avAudiotime)
-
+      
       // for now, fire a timer
       self.startNotificationTimer = Timer(fire: scheduledDate,
                                           interval: 0,
                                           repeats: false, block: { [weak self] timer in
         guard let self = self else { return }
-
+        
         DispatchQueue.main.async {
           guard let spin = self.spin else { return }
           self.state = .playing
@@ -289,48 +289,104 @@ public class SpinPlayer {
         }
       })
       RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
-
+      
     } catch {
       errorReporter.reportError(error, context: "Failed to schedule playback", level: .error)
     }
   }
-
+  
   /// Pauses playback (pauses the engine and player node)
   func pause() {
     os_log("%@ - %d", log: SpinPlayer.logger, type: .default, #function, #line)
-
+    
     guard isPlaying, let _ = currentFile else {
       return
     }
-
+    
     playerNode.pause()
     engine.pause()
     //    delegate?.player(self, didChangePlaybackState: false)
   }
-
+  
   // MARK: File Loading
-
+  
   /// Loads an AVAudioFile into the current player node
   private func loadFile(_ file: AVAudioFile) {
     playerNode.scheduleFile(file, at: nil)
   }
-
-  /// Loads an audio file at the provided URL into the player node
+  
   public func loadFile(with url: URL) {
     do {
-      currentFile = try AVAudioFile(forReading: url)
-      normalizationCalculator = AudioNormalizationCalculator(currentFile!)
+      // First check if the file exists and has a reasonable size
+      let fileManager = FileManager.default
+      
+      guard fileManager.fileExists(atPath: url.path) else {
+        let error = FileDownloadError.fileNotFound(url.path)
+        errorReporter.reportError(error,
+                                  context: "Audio file not found at path",
+                                  level: .error)
+        self.state = .available
+        return
+      }
+      
+      // Validate file size
+      let attributes = try fileManager.attributesOfItem(atPath: url.path)
+      let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
+      
+      // Consider files under 10KB as suspicious (adjust as needed)
+      if fileSize < 10 * 1024 {
+        let error = FileDownloadError.downloadFailed("Audio file is too small: \(fileSize) bytes")
+        errorReporter.reportError(error,
+                                  context: "Suspiciously small file detected: \(url.lastPathComponent)",
+                                  level: .error)
+        // Delete the invalid file
+        try? fileManager.removeItem(at: url)
+        self.state = .available
+        throw error
+      }
+      
+      // Attempt to create the audio file object
+      do {
+        currentFile = try AVAudioFile(forReading: url)
+        normalizationCalculator = AudioNormalizationCalculator(currentFile!)
+      } catch let audioError as NSError {
+        // More detailed context with file information
+        let contextInfo = "Failed to load audio file: \(url.lastPathComponent) (size: \(fileSize) bytes)"
+        
+        // Handle specific audio format errors
+        if audioError.domain == "com.apple.coreaudio.avfaudio" {
+          switch audioError.code {
+          case 1954115647: // 'fmt?' in ASCII - format error
+            errorReporter.reportError(audioError,
+                                      context: "\(contextInfo) - Invalid audio format or corrupt file",
+                                      level: .error)
+            // Delete the corrupt file
+            try? fileManager.removeItem(at: url)
+          default:
+            errorReporter.reportError(audioError, context: contextInfo, level: .error)
+          }
+        } else {
+          errorReporter.reportError(audioError, context: contextInfo, level: .error)
+        }
+        
+        // State management after error
+        self.state = .available
+        throw audioError
+      }
     } catch {
-      // More detailed context with file information
-      let filename = url.lastPathComponent
-      let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-      let context = "Failed to load audio file: \(filename) (size: \(fileSize) bytes)"
-      errorReporter.reportError(error, context: context, level: .error)
-      // State management after error
+      // This catch block handles errors from the file validation steps
+      // The specific AVAudioFile errors are caught in the inner try-catch
+      if !error.localizedDescription.contains("too small") &&
+          !error.localizedDescription.contains("not found") {
+        errorReporter.reportError(error,
+                                  context: "Error during file validation: \(url.lastPathComponent)",
+                                  level: .error)
+      }
+      // State is already set to .available in the inner catch blocks
       self.state = .available
     }
   }
-
+  
   // MARK: Tap
   private func onTap(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime) {
     guard let file = currentFile,
@@ -340,32 +396,32 @@ public class SpinPlayer {
       // We don't report this as an error because it could happen during normal operation
       return
     }
-
+    
     let currentTime = TimeInterval(playerTime.sampleTime) / playerTime.sampleRate
     delegate?.player(self, didPlayFile: file, atTime: currentTime, withBuffer: buffer)
   }
-
+  
   fileprivate func fadePlayer(
     toVolume endVolume : Float,
     overTime time : Float,
     completionBlock: (()->())? = nil) {
-
+      
       let startVolume = self.volume
       let startTime = DispatchTime.now()
       let totalDuration = Double(time)
-
+      
       // Use a single timer instead of many dispatch blocks
       let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [weak self] timer in
         guard let self = self else {
           timer.invalidate()
           return
         }
-
+        
         let elapsedTime = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000
         let fraction = min(elapsedTime / totalDuration, 1.0)
-
+        
         self.volume = startVolume + (endVolume - startVolume) * Float(fraction)
-
+        
         if fraction >= 1.0 {
           timer.invalidate()
           completionBlock?()
@@ -373,7 +429,7 @@ public class SpinPlayer {
       }
       RunLoop.main.add(timer, forMode: .common)
     }
-
+  
   public func scheduleFades(_ spin: Spin) {
     for fade in spin.fades {
       let fadeTime = spin.airtime.addingTimeInterval(TimeInterval(fade.atMS/1000))
@@ -394,13 +450,13 @@ public class SpinPlayer {
       self.clearTimer?.invalidate()
       return
     }
-
+    
     // for now, fire a timer. Later we should try and use a callback
     self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
                             interval: 0,
                             repeats: false, block: { [weak self] timer in
       guard let self = self else { return }
-
+      
       DispatchQueue.main.async {
         self.stopAudio()
         self.clear()

@@ -4,8 +4,8 @@
 //
 //  Created by Brian D Keane on 12/30/24.
 //
-
 import Foundation
+
 @Observable
 public final class FileDownloader: NSObject, @unchecked Sendable {
     /// Unique identifier for this download
@@ -170,18 +170,126 @@ extension FileDownloader: URLSessionDownloadDelegate {
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
+        // First check if the download was cancelled intentionally
+        if isCancelled {
+            handleErrorBlock?(FileDownloadError.downloadCancelled)
+            return
+        }
+
+        // Handle direct errors from the URLSession system
         if let error = error {
-            // Don't report cancellations as errors
-            if (error as NSError).code == NSURLErrorCancelled && isCancelled {
+            // Don't report standard cancellations as errors
+            if (error as NSError).code == NSURLErrorCancelled {
                 handleErrorBlock?(FileDownloadError.downloadCancelled)
                 return
             }
 
+            // Handle network connectivity issues with specific error messages
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain {
+                let errorType: String
+                switch nsError.code {
+                case NSURLErrorNotConnectedToInternet:
+                    errorType = "No internet connection"
+                case NSURLErrorTimedOut:
+                    errorType = "Request timed out"
+                case NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost:
+                    errorType = "Cannot connect to host"
+                case NSURLErrorNetworkConnectionLost:
+                    errorType = "Network connection lost"
+                default:
+                    errorType = "Network error (\(nsError.code))"
+                }
+
+                Task { @MainActor in
+                    let context = "\(errorType) while downloading: \(remoteUrl.lastPathComponent)"
+                    self.errorReporter.reportError(error, context: context, level: .error)
+                }
+
+                handleErrorBlock?(FileDownloadError.downloadFailed(errorType))
+                return
+            }
+
+            // Handle other direct errors
             Task { @MainActor in
                 let context = "Download failed for URL: \(remoteUrl.lastPathComponent)"
                 self.errorReporter.reportError(error, context: context, level: .error)
-                self.handleErrorBlock?(FileDownloadError.downloadFailed(error.localizedDescription))
             }
+
+            handleErrorBlock?(FileDownloadError.downloadFailed(error.localizedDescription))
+            return
+        }
+
+        // If we reach here with no error, check HTTP status code
+        // HTTP errors don't trigger the didFinishDownloadingTo method, but they
+        // come here with a nil error and the status code in the response
+        if let httpResponse = task.response as? HTTPURLResponse {
+            let statusCode = httpResponse.statusCode
+
+            if !(200...299).contains(statusCode) {
+                // Create appropriate error based on HTTP status code
+                let errorMessage: String
+                let errorLevel: PlayolaErrorReportingLevel
+
+                switch statusCode {
+                case 401:
+                    errorMessage = "Unauthorized access (401)"
+                    errorLevel = .error
+                case 403:
+                    errorMessage = "Access forbidden (403)"
+                    errorLevel = .error
+                case 404:
+                    errorMessage = "Resource not found (404)"
+                    errorLevel = .error
+                case 429:
+                    errorMessage = "Too many requests (429)"
+                    errorLevel = .warning
+                case 500...599:
+                    errorMessage = "Server error (\(statusCode))"
+                    errorLevel = .error
+                default:
+                    errorMessage = "HTTP error: \(statusCode)"
+                    errorLevel = .error
+                }
+
+                // Log the error with detailed context
+                Task { @MainActor in
+                    let context = "\(errorMessage) for URL: \(remoteUrl.lastPathComponent)"
+
+                    // Create a custom error with HTTP information
+                    let httpError = NSError(
+                        domain: "fm.playola.PlayolaPlayer.HTTP",
+                        code: statusCode,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: errorMessage,
+                            "url": remoteUrl.absoluteString,
+                            "statusCode": statusCode
+                        ]
+                    )
+
+                    self.errorReporter.reportError(httpError, context: context, level: errorLevel)
+                }
+
+                // Notify via error handler
+                handleErrorBlock?(FileDownloadError.downloadFailed(errorMessage))
+                return
+            }
+        }
+
+        // Edge case - we reach here if there's no HTTP error but didFinishDownloadingTo wasn't called
+        // This is unusual and might indicate an empty response or other issue
+        if !FileManager.default.fileExists(atPath: localUrl.path) {
+            Task { @MainActor in
+                let context = "Download completed with no error but file not found: \(remoteUrl.lastPathComponent)"
+                let missingFileError = NSError(
+                    domain: "fm.playola.PlayolaPlayer",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "File not found after download"]
+                )
+                self.errorReporter.reportError(missingFileError, context: context, level: .warning)
+            }
+
+            handleErrorBlock?(FileDownloadError.fileNotFound("File not found after successful download"))
         }
     }
 }

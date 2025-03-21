@@ -99,24 +99,30 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
   
   @MainActor
-  private func scheduleSpin(spin: Spin, completion: (() -> Void)? = nil) {
+  private func scheduleSpin(spin: Spin,
+                            completion: (() -> Void)? = nil,
+                            retryCount: Int = 0) {
     let spinPlayer = getAvailableSpinPlayer()
     
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
           let audioFileUrl = URL(string: audioFileUrlStr) else {
       let spinDetails = """
-        Spin ID: \(spin.id)
-        Audio Block ID: \(spin.audioBlock?.id ?? "nil")
-        Audio Block Title: \(spin.audioBlock?.title ?? "nil")
-        Audio Block Artist: \(spin.audioBlock?.artist ?? "nil")
-        Download URL: \(spin.audioBlock?.downloadUrl ?? "nil")
-        """
+              Spin ID: \(spin.id)
+              Audio Block ID: \(spin.audioBlock?.id ?? "nil")
+              Audio Block Title: \(spin.audioBlock?.title ?? "nil")
+              Audio Block Artist: \(spin.audioBlock?.artist ?? "nil")
+              Download URL: \(spin.audioBlock?.downloadUrl ?? "nil")
+          """
       let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
-      errorReporter.reportError(error,
-                                context: "Invalid or missing download URL for spin | \(spinDetails)",
-                                level: .error)
+      errorReporter.reportError(
+        error,
+        context: "Invalid or missing download URL for spin | \(spinDetails)",
+        level: .error)
       return
     }
+    
+    // Maximum retry attempts
+    let maxRetries = 3
     
     // Cancel any existing download for this spin
     if let existingDownloadId = activeDownloadIds[spin.id] {
@@ -140,31 +146,63 @@ final public class PlayolaStationPlayer: ObservableObject {
           
           switch result {
           case .success(let localUrl):
-            // Handle successful download
-            spinPlayer.loadFile(with: localUrl)
-            let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
-            spinPlayer.spin = spin
-            
-            if currentTimeInSeconds >= 0 {
-              spinPlayer.playNow(from: currentTimeInSeconds)
-              spinPlayer.volume = 1.0
-            } else {
-              spinPlayer.schedulePlay(at: spin.airtime)
-              spinPlayer.volume = spin.startingVolume
-            }
-            
-            spinPlayer.scheduleFades(spin)
-            spinPlayer.state = .loaded
-            completion?()
-            
-            if let audioBlock = spin.audioBlock {
-              self.state = .playing(audioBlock)
+            // Attempt to load the file
+            do {
+              // Check file size explicitly before attempting to load
+              let attributes = try FileManager.default.attributesOfItem(atPath: localUrl.path)
+              let fileSize = (attributes[.size] as? UInt64) ?? 0
+              
+              // Consider files under 10KB as suspicious (adjust as needed)
+              if fileSize < 10 * 1024 {
+                throw FileDownloadError.downloadFailed(
+                  "Downloaded file is too small (\(fileSize) bytes)\n \(audioFileUrlStr)")
+              }
+              
+              // Handle successful download
+              spinPlayer.loadFile(with: localUrl)
+              let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+              spinPlayer.spin = spin
+              
+              if currentTimeInSeconds >= 0 {
+                spinPlayer.playNow(from: currentTimeInSeconds)
+                spinPlayer.volume = 1.0
+              } else {
+                spinPlayer.schedulePlay(at: spin.airtime)
+                spinPlayer.volume = spin.startingVolume
+              }
+              
+              spinPlayer.scheduleFades(spin)
+              spinPlayer.state = .loaded
+              completion?()
+              
+              if let audioBlock = spin.audioBlock {
+                self.state = .playing(audioBlock)
+              }
+            } catch {
+              // Handle file loading failure
+              let stationError = StationPlayerError.fileDownloadError(
+                "File loaded but appears corrupt: \(audioFileUrlStr) \(error.localizedDescription)")
+              self.errorReporter.reportError(stationError, level: .error)
+              
+              // If we haven't exceeded retry attempts, try again
+              if retryCount < maxRetries {
+                self.scheduleSpin(spin: spin, completion: completion, retryCount: retryCount + 1)
+              }
             }
             
           case .failure(let error):
             // Handle download failure
             let stationError = StationPlayerError.fileDownloadError(error.localizedDescription)
             self.errorReporter.reportError(stationError, level: .error)
+            
+            // If we haven't exceeded retry attempts, try again
+            if retryCount < maxRetries {
+              // Add a small delay before retrying (exponential backoff)
+              let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
+              DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                self.scheduleSpin(spin: spin, completion: completion, retryCount: retryCount + 1)
+              }
+            }
           }
         }
       )
@@ -173,7 +211,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       activeDownloadIds[spin.id] = downloadId
       
     } else {
-      // For non-playing spins, we still want to preload them
+      // For non-playing spins, implementation with retry logic...
       let downloadId = fileDownloadManager.downloadFile(
         remoteUrl: audioFileUrl,
         progressHandler: { _ in },
@@ -185,17 +223,47 @@ final public class PlayolaStationPlayer: ObservableObject {
           
           switch result {
           case .success(let localUrl):
-            spinPlayer.loadFile(with: localUrl)
-            spinPlayer.spin = spin
-            spinPlayer.schedulePlay(at: spin.airtime)
-            spinPlayer.volume = spin.startingVolume
-            spinPlayer.scheduleFades(spin)
-            spinPlayer.state = .loaded
-            completion?()
+            do {
+              // Validate file size
+              let attributes = try FileManager.default.attributesOfItem(atPath: localUrl.path)
+              let fileSize = (attributes[.size] as? UInt64) ?? 0
+              
+              if fileSize < 10 * 1024 {
+                throw FileDownloadError.downloadFailed("Downloaded file is too small (\(fileSize) bytes) \n\(audioFileUrlStr)")
+              }
+              
+              // Load the file
+              spinPlayer.loadFile(with: localUrl)
+              spinPlayer.spin = spin
+              spinPlayer.schedulePlay(at: spin.airtime)
+              spinPlayer.volume = spin.startingVolume
+              spinPlayer.scheduleFades(spin)
+              spinPlayer.state = .loaded
+              completion?()
+            } catch {
+              // Handle file loading failure with retry
+              if retryCount < maxRetries {
+                let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                  self.scheduleSpin(spin: spin, completion: completion, retryCount: retryCount + 1)
+                }
+              } else {
+                let stationError = StationPlayerError.fileDownloadError("Failed to load file from \(audioFileUrlStr) after \(maxRetries) attempts: \(error.localizedDescription)")
+                self.errorReporter.reportError(stationError, level: .error)
+              }
+            }
             
           case .failure(let error):
-            let stationError = StationPlayerError.fileDownloadError(error.localizedDescription)
-            self.errorReporter.reportError(stationError, level: .error)
+            // Handle download failure with retry
+            if retryCount < maxRetries {
+              let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
+              DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                self.scheduleSpin(spin: spin, completion: completion, retryCount: retryCount + 1)
+              }
+            } else {
+              let stationError = StationPlayerError.fileDownloadError("Failed to download after \(maxRetries) attempts: \(error.localizedDescription)")
+              self.errorReporter.reportError(stationError, level: .error)
+            }
           }
         }
       )
@@ -210,27 +278,82 @@ final public class PlayolaStationPlayer: ObservableObject {
     return spinPlayers.contains { $0.spin?.id == spin.id }
   }
   
+//  @MainActor
+//  private func scheduleUpcomingSpins() async {
+//    guard let stationId else {
+//      let error = StationPlayerError.invalidStationId("No station ID available")
+//      errorReporter.reportError(error, level: .warning)
+//      return
+//    }
+//    
+//    do {
+//      let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
+//      let spinsToLoad = updatedSchedule.current.filter { $0.airtime < .now + TimeInterval(360) }
+//      for spin in spinsToLoad {
+//        if !isScheduled(spin: spin) {
+//          scheduleSpin(spin: spin)
+//        }
+//      }
+//    } catch {
+//      errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
+//    }
+//  }
+
   @MainActor
   private func scheduleUpcomingSpins() async {
-    guard let stationId else {
-      let error = StationPlayerError.invalidStationId("No station ID available")
-      errorReporter.reportError(error, level: .warning)
-      return
-    }
-    
-    do {
-      let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
-      let spinsToLoad = updatedSchedule.current.filter { $0.airtime < .now + TimeInterval(360) }
-      for spin in spinsToLoad {
-        if !isScheduled(spin: spin) {
-          scheduleSpin(spin: spin)
-        }
+      guard let stationId else {
+          let error = StationPlayerError.invalidStationId("No station ID available")
+          errorReporter.reportError(error, level: .warning)
+          return
       }
-    } catch {
-      errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
-    }
+
+      do {
+          let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
+
+          // Log how many spins are in the updated schedule
+          os_log("Retrieved schedule with %d total spins, %d current spins",
+                 log: PlayolaStationPlayer.logger,
+                 type: .info,
+                 updatedSchedule.spins.count,
+                 updatedSchedule.current.count)
+
+          // Extend the time window to load more upcoming spins (10 minutes instead of 6)
+          let spinsToLoad = updatedSchedule.current.filter { $0.airtime < .now + TimeInterval(600) }
+
+          os_log("Preparing to load %d upcoming spins",
+                 log: PlayolaStationPlayer.logger,
+                 type: .info,
+                 spinsToLoad.count)
+
+          for spin in spinsToLoad {
+              if !isScheduled(spin: spin) {
+                  os_log("Scheduling new spin: %@ by %@ at %@",
+                         log: PlayolaStationPlayer.logger,
+                         type: .info,
+                         spin.audioBlock?.title ?? "unknown",
+                         spin.audioBlock?.artist ?? "unknown",
+                         ISO8601DateFormatter().string(from: spin.airtime))
+                  scheduleSpin(spin: spin)
+              }
+          }
+
+          // Log already scheduled spins
+          let scheduledSpinsCount = spinPlayers.filter { $0.spin != nil }.count
+          os_log("Total scheduled spins after update: %d",
+                 log: PlayolaStationPlayer.logger,
+                 type: .info,
+                 scheduledSpinsCount)
+
+      } catch {
+          errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
+
+          // Log more details about the error
+          os_log("Schedule update failed: %@",
+                 log: PlayolaStationPlayer.logger,
+                 type: .error,
+                 error.localizedDescription)
+      }
   }
-  
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
     let url = baseUrl.appending(path: "/stations/\(stationId)/schedule")
     do {
