@@ -15,6 +15,8 @@ public final class FileDownloader: NSObject, @unchecked Sendable {
   var handleProgressBlock: ((Float) -> Void)?
   var handleCompletionBlock: ((FileDownloader) -> Void)?
 
+  private let errorReporter = PlayolaErrorReporter.shared
+
   // MARK: - Properties
   private var configuration: URLSessionConfiguration = URLSessionConfiguration.background(withIdentifier: "backgroundTasks")
   private var session: URLSession!
@@ -51,7 +53,6 @@ extension FileDownloader: URLSessionDownloadDelegate {
                          didFinishDownloadingTo location: URL) {
     let manager = FileManager()
     guard !manager.fileExists(atPath: localUrl.path) else {
-      print("file exists already at \(localUrl.path)")
       handleProgressBlock?(1.0)
       handleCompletionBlock?(self)
       self.handleProgressBlock = nil
@@ -62,11 +63,25 @@ extension FileDownloader: URLSessionDownloadDelegate {
     do {
       try manager.moveItem(at: location, to: localUrl)
     } catch let error {
-      print("error moving file")
-      print(error)
+      Task { @MainActor in
+        let context = "Error moving downloaded file from temporary location to: \(self.localUrl.lastPathComponent)"
+        self.errorReporter.reportError(error, context: context, level: .error)
+      }
     }
+
     handleCompletionBlock?(self)
     self.handleProgressBlock = nil
     self.handleCompletionBlock = nil
+  }
+
+  public func urlSession(_ session: URLSession,
+                         task: URLSessionTask,
+                         didCompleteWithError error: Error?) {
+    if let error = error {
+      Task { @MainActor in
+        let context = "Download failed for URL: \(remoteUrl?.lastPathComponent ?? "unknown")"
+        self.errorReporter.reportError(error, context: context, level: .error)
+      }
+    }
   }
 }

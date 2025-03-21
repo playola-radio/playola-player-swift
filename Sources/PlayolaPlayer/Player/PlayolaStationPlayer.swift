@@ -12,6 +12,26 @@ import Combine
 
 let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
 
+/// Errors specific to the station player
+public enum StationPlayerError: Error, LocalizedError {
+    case networkError(String)
+    case scheduleError(String)
+    case playbackError(String)
+    case invalidStationId(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .networkError(let message):
+            return "Network error: \(message)"
+        case .scheduleError(let message):
+            return "Schedule error: \(message)"
+        case .playbackError(let message):
+            return "Playback error: \(message)"
+        case .invalidStationId(let id):
+            return "Invalid station ID: \(id)"
+        }
+    }
+}
 
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
@@ -19,6 +39,7 @@ final public class PlayolaStationPlayer: ObservableObject {
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManager!
   var listeningSessionReporter: ListeningSessionReporter? = nil
+  private let errorReporter = PlayolaErrorReporter.shared
 
   public weak var delegate: PlayolaStationPlayerDelegate?
 
@@ -57,11 +78,10 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private func getAvailableSpinPlayer() -> SpinPlayer {
     let availablePlayers = spinPlayers.filter({ $0.state == .available })
-    if let available = availablePlayers.first { print("available: \(available.id)"); return available }
+    if let available = availablePlayers.first { return available }
 
     let newPlayer = SpinPlayer(delegate: self)
     spinPlayers.append(newPlayer)
-    print("available: \(newPlayer.id)")
     return newPlayer
   }
 
@@ -88,30 +108,52 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   @MainActor
   private func scheduleUpcomingSpins() async {
-    guard let stationId else { return }
+    guard let stationId else {
+      let error = StationPlayerError.invalidStationId("No station ID available")
+      errorReporter.reportError(error, level: .warning)
+      return
+    }
+
     do {
-      let updatedSchedule = await try! getUpdatedSchedule(stationId: stationId)
+      let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
       let spinsToLoad = updatedSchedule.current.filter{$0.airtime < .now + TimeInterval(360)}
       for spin in spinsToLoad {
         if !isScheduled(spin: spin) {
-          print("Scheduling: \(spin.audioBlock!.title)")
-          print("Already scheduled: \(self.spinPlayers.map { $0.spin }.compactMap { $0?.audioBlock!.title}.joined(separator: " , "))")
           scheduleSpin(spin: spin)
         }
       }
-    } catch let error {
-      print(error)
+    } catch {
+      errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
     }
   }
-  
+
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
     let url = baseUrl.appending(path: "/stations/\(stationId)/schedule")
     do {
-      let (data, _) = try await URLSession.shared.data(from: url)
+      let (data, response) = try await URLSession.shared.data(from: url)
+
+      guard let httpResponse = response as? HTTPURLResponse else {
+        throw StationPlayerError.networkError("Invalid response type")
+      }
+
+      guard (200...299).contains(httpResponse.statusCode) else {
+        throw StationPlayerError.networkError("HTTP error: \(httpResponse.statusCode)")
+      }
+
       let decoder = JSONDecoderWithIsoFull()
-      let spins = try decoder.decode([Spin].self, from: data)
-      return Schedule(stationId: spins[0].stationId, spins: spins)
-    } catch (let error) {
+
+      do {
+        let spins = try decoder.decode([Spin].self, from: data)
+        guard !spins.isEmpty else {
+          throw StationPlayerError.scheduleError("No spins returned in schedule")
+        }
+        return Schedule(stationId: spins[0].stationId, spins: spins)
+      } catch {
+        errorReporter.reportError(error, context: "Failed to decode schedule response", level: .error)
+        throw StationPlayerError.scheduleError("Invalid schedule data: \(error.localizedDescription)")
+      }
+    } catch {
+      errorReporter.reportError(error, context: "Failed to fetch schedule for station: \(stationId)", level: .error)
       throw error
     }
   }
@@ -120,13 +162,17 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.stationId = stationId
     do {
       self.currentSchedule = try await getUpdatedSchedule(stationId: stationId)
-      guard let spinToPlay = currentSchedule?.current.first else { return }
+      guard let spinToPlay = currentSchedule?.current.first else {
+        throw StationPlayerError.scheduleError("No available spins to play")
+      }
+
       scheduleSpin(spin: spinToPlay) {
         Task {
           await self.scheduleUpcomingSpins()
         }
       }
-    } catch (let error) {
+    } catch {
+      errorReporter.reportError(error, context: "Failed to play station: \(stationId)", level: .error)
       throw error
     }
   }
@@ -158,8 +204,8 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
             .filter{ $0.localUrl != nil }
             .map { $0.localUrl!.path }
         )
-      } catch let error {
-        print(error)
+      } catch {
+        errorReporter.reportError(error, context: "Error during cleanup after starting playback", level: .warning)
       }
     }
   }
@@ -169,11 +215,11 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
                                  didPlayFile file: AVAudioFile,
                                  atTime time: TimeInterval,
                                  withBuffer buffer: AVAudioPCMBuffer) {
-    print("didPlayFile")
+    // No error handling needed here
   }
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
-    print("new state: \(state) for: \(player.spin?.audioBlock?.title ?? "Unknown") on Player: \(player.id)")
+    // No error handling needed here
   }
 }
 

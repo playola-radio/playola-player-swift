@@ -5,7 +5,6 @@
 //  Created by Brian D Keane on 1/6/25.
 //
 
-
 import AVFoundation
 import AudioToolbox
 import Foundation
@@ -93,18 +92,23 @@ public class SpinPlayer {
     self.delegate = delegate
 
     do {
-      let session = AVAudioSession()
+      // Get the shared AVAudioSession instance - this is the recommended approach
+      let session = AVAudioSession.sharedInstance()
+
+      // Configure for playback category - note that .defaultToSpeaker is removed
+      // as it's only applicable with .playAndRecord category
       try session.setCategory(
-        AVAudioSession.Category(
-          rawValue: AVAudioSession.Category.playback.rawValue),
-        mode: AVAudioSession.Mode.default,
+        .playback,
+        mode: .default,
         options: [
           .allowBluetoothA2DP,
-          .defaultToSpeaker,
           .allowAirPlay,
         ])
+
+      // Also set the audio session active - best practice
+      try session.setActive(true)
     } catch {
-      os_log("Error setting up session: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
+      // Report error through the central error reporter
       errorReporter.reportError(error, context: "Failed to set up audio session", level: .critical)
     }
 
@@ -131,7 +135,6 @@ public class SpinPlayer {
       do {
         try engine.start()
       } catch {
-        os_log("Error starting engine while stopping: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
         errorReporter.reportError(error, context: "Failed to start engine during stop operation", level: .error)
         return
       }
@@ -174,10 +177,6 @@ public class SpinPlayer {
         delegate?.player(self, startedPlaying: spin)
       }
     } catch {
-      os_log("Error starting engine: %@",
-             log: SpinPlayer.logger,
-             type: .default, #function, #line,
-             error.localizedDescription)
       errorReporter.reportError(error, context: "Failed to start playback", level: .error)
     }
   }
@@ -197,21 +196,18 @@ public class SpinPlayer {
       onDownloadProgress?(progress)
     } onCompletion: { localUrl in
       onDownloadCompletion?(localUrl)
-      do {
-        self.loadFile(with: localUrl)
-        if spin.isPlaying {
-          let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
-          self.playNow(from: currentTimeInSeconds)
-          self.volume = 1.0
-        } else {
-          self.schedulePlay(at: spin.airtime)
-          self.volume = spin.startingVolume
-        }
-        self.scheduleFades(spin)
-        self.state = .loaded
-      } catch {
-        self.errorReporter.reportError(error, context: "Failed to load or process audio file", level: .error)
+
+      self.loadFile(with: localUrl)
+      if spin.isPlaying {
+        let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+        self.playNow(from: currentTimeInSeconds)
+        self.volume = 1.0
+      } else {
+        self.schedulePlay(at: spin.airtime)
+        self.volume = spin.startingVolume
       }
+      self.scheduleFades(spin)
+      self.state = .loaded
     }
   }
 
@@ -254,7 +250,6 @@ public class SpinPlayer {
       RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
 
     } catch {
-      os_log("Error starting engine: %@", log: SpinPlayer.logger, type: .default, #function, #line, error.localizedDescription)
       errorReporter.reportError(error, context: "Failed to schedule playback", level: .error)
     }
   }
@@ -281,18 +276,12 @@ public class SpinPlayer {
 
   /// Loads an audio file at the provided URL into the player node
   public func loadFile(with url: URL) {
-    os_log("%@ - %d", log: SpinPlayer.logger, type: .default, #function, #line)
-
     do {
       currentFile = try AVAudioFile(forReading: url)
       normalizationCalculator = AudioNormalizationCalculator(currentFile!)
     } catch {
-      os_log("Error loading (%@): %@",
-             log: SpinPlayer.logger,
-             type: .error,
-             #function, #line, url.absoluteString, error.localizedDescription)
       errorReporter.reportError(error, context: "Failed to load audio file: \(url.lastPathComponent)", level: .error)
-      throw error // Re-throw the error so callers can handle it
+      // Handle error internally instead of re-throwing
     }
   }
 
