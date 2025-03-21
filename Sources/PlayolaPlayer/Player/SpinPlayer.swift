@@ -35,8 +35,11 @@ public class SpinPlayer {
 
   // dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
-  private var fileDownloadManager: FileDownloadManager!
+  private var fileDownloadManager: FileDownloadManaging
   private let errorReporter = PlayolaErrorReporter.shared
+
+  // Track active download ID
+  private var activeDownloadId: UUID?
 
   public weak var delegate: SpinPlayerDelegate?
 
@@ -87,8 +90,8 @@ public class SpinPlayer {
 
   // MARK: Lifecycle
   init(delegate: SpinPlayerDelegate? = nil,
-       fileDownloadManager: FileDownloadManager? = nil) {
-    self.fileDownloadManager = fileDownloadManager ?? .shared
+       fileDownloadManager: FileDownloadManaging? = nil) {
+    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManager.shared
     self.delegate = delegate
 
     // Use the centralized audio session management instead of configuring here
@@ -105,9 +108,22 @@ public class SpinPlayer {
     //        playerNode.installTap(onBus: 0, bufferSize: TapProperties.default.bufferSize, format: TapProperties.default.format, block: onTap(_:_:))
   }
 
+  deinit {
+    // Cancel any active download
+    if let activeDownloadId = activeDownloadId {
+      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
+    }
+  }
+
   // MARK: Playback
 
   public func stop() {
+    // Cancel any active download
+    if let activeDownloadId = activeDownloadId {
+      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
+      self.activeDownloadId = nil
+    }
+
     stopAudio()
     clear()
   }
@@ -140,8 +156,8 @@ public class SpinPlayer {
     self.volume = 1.0
   }
 
-  /// play a segment of the song immediately
-  private func playNow(from: Double, to: Double? = nil) {
+  /// Play a segment of the song immediately
+  public func playNow(from: Double, to: Double? = nil) {
     do {
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
@@ -170,7 +186,9 @@ public class SpinPlayer {
   public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil, onDownloadCompletion: ((URL) -> Void)? = nil) {
     self.state = .loading
     self.spin = spin
-    guard let audioFileUrlStr = spin.audioBlock?.downloadUrl, let audioFileUrl = URL(string: audioFileUrlStr) else {
+
+    guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
+          let audioFileUrl = URL(string: audioFileUrlStr) else {
       let error = NSError(domain: "fm.playola.PlayolaPlayer", code: 400, userInfo: [
         NSLocalizedDescriptionKey: "Invalid audio file URL in spin"
       ])
@@ -178,23 +196,49 @@ public class SpinPlayer {
       return
     }
 
-    fileDownloadManager.downloadFile(remoteUrl: audioFileUrl) { progress in
-      onDownloadProgress?(progress)
-    } onCompletion: { localUrl in
-      onDownloadCompletion?(localUrl)
-
-      self.loadFile(with: localUrl)
-      if spin.isPlaying {
-        let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
-        self.playNow(from: currentTimeInSeconds)
-        self.volume = 1.0
-      } else {
-        self.schedulePlay(at: spin.airtime)
-        self.volume = spin.startingVolume
-      }
-      self.scheduleFades(spin)
-      self.state = .loaded
+    // Cancel any existing download
+    if let activeDownloadId = activeDownloadId {
+      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
+      self.activeDownloadId = nil
     }
+
+    // Use the new Result-based API
+    let downloadId = fileDownloadManager.downloadFile(
+      remoteUrl: audioFileUrl,
+      progressHandler: { progress in
+        onDownloadProgress?(progress)
+      },
+      completion: { [weak self] result in
+        guard let self = self else { return }
+
+        // Clear the active download ID
+        self.activeDownloadId = nil
+
+        switch result {
+        case .success(let localUrl):
+          onDownloadCompletion?(localUrl)
+
+          self.loadFile(with: localUrl)
+          if spin.isPlaying {
+            let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+            self.playNow(from: currentTimeInSeconds)
+            self.volume = 1.0
+          } else {
+            self.schedulePlay(at: spin.airtime)
+            self.volume = spin.startingVolume
+          }
+          self.scheduleFades(spin)
+          self.state = .loaded
+
+        case .failure(let error):
+          self.errorReporter.reportError(error, context: "Failed to download audio file: \(audioFileUrl.lastPathComponent)", level: .error)
+          self.state = .available
+        }
+      }
+    )
+
+    // Store the download ID for potential cancellation
+    self.activeDownloadId = downloadId
   }
 
   private func avAudioTimeFromDate(date: Date) -> AVAudioTime {
@@ -316,7 +360,7 @@ public class SpinPlayer {
       RunLoop.main.add(timer, forMode: .common)
   }
 
-  private func scheduleFades(_ spin: Spin) {
+  public func scheduleFades(_ spin: Spin) {
     for fade in spin.fades {
       let fadeTime = spin.airtime.addingTimeInterval(TimeInterval(fade.atMS/1000))
       let timer = Timer(fire: fadeTime,
