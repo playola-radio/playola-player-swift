@@ -30,8 +30,9 @@ enum TapProperties {
 }
 
 open class PlayolaMainMixer: NSObject {
-  open var mixerNode: AVAudioMixerNode!
-  open var engine: AVAudioEngine!
+  open private(set) var mixerNode: AVAudioMixerNode
+  open private(set) var engine: AVAudioEngine
+
   open var delegate: PlayolaMainMixerDelegate?
   private let errorReporter = PlayolaErrorReporter.shared
   private var isAudioSessionConfigured = false
@@ -39,10 +40,11 @@ open class PlayolaMainMixer: NSObject {
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
   
   override init() {
+    self.mixerNode = AVAudioMixerNode()
+    self.engine = AVAudioEngine()
+
     super.init()
     do {
-      self.mixerNode = AVAudioMixerNode()
-      self.engine = AVAudioEngine()
       self.engine.attach(self.mixerNode)
       
       do {
@@ -247,3 +249,24 @@ open class PlayolaMainMixer: NSObject {
   @MainActor
   public static let shared: PlayolaMainMixer = PlayolaMainMixer()
 }
+
+
+extension PlayolaMainMixer: AudioEngineProvider {
+    public func start() throws {
+        try engine.start()
+    }
+
+    public func attach(_ node: AVAudioPlayerNode) {
+        engine.attach(node)
+    }
+
+    public func connect(_ playerNode: AVAudioPlayerNode, to mixerNode: AVAudioMixerNode, format: AVAudioFormat?) {
+        engine.connect(playerNode, to: mixerNode, format: format)
+    }
+
+    public func prepare() {
+        engine.prepare()
+    }
+}
+
+extension PlayolaMainMixer: MainMixerProvider {}

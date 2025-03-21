@@ -54,7 +54,7 @@ public class SpinPlayer {
   }
 
   /// An internal instance of AVAudioEngine
-  private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine!
+  private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine
 
   /// The node responsible for playing the audio file
   private let playerNode = AVAudioPlayerNode()
