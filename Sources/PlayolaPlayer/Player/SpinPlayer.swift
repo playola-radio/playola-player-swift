@@ -91,26 +91,8 @@ public class SpinPlayer {
     self.fileDownloadManager = fileDownloadManager ?? .shared
     self.delegate = delegate
 
-    do {
-      // Get the shared AVAudioSession instance - this is the recommended approach
-      let session = AVAudioSession.sharedInstance()
-
-      // Configure for playback category - note that .defaultToSpeaker is removed
-      // as it's only applicable with .playAndRecord category
-      try session.setCategory(
-        .playback,
-        mode: .default,
-        options: [
-          .allowBluetoothA2DP,
-          .allowAirPlay,
-        ])
-
-      // Also set the audio session active - best practice
-      try session.setActive(true)
-    } catch {
-      // Report error through the central error reporter
-      errorReporter.reportError(error, context: "Failed to set up audio session", level: .critical)
-    }
+    // Use the centralized audio session management instead of configuring here
+    playolaMainMixer.configureAudioSession()
 
     /// Make connections
     engine.attach(playerNode)
@@ -133,6 +115,8 @@ public class SpinPlayer {
   private func stopAudio() {
     if !engine.isRunning {
       do {
+        // Make sure audio session is configured before starting engine
+        playolaMainMixer.configureAudioSession()
         try engine.start()
       } catch {
         errorReporter.reportError(error, context: "Failed to start engine during stop operation", level: .error)
@@ -159,6 +143,8 @@ public class SpinPlayer {
   /// play a segment of the song immediately
   private func playNow(from: Double, to: Double? = nil) {
     do {
+      // Make sure audio session is configured before playback
+      playolaMainMixer.configureAudioSession()
       try engine.start()
 
       // calculate segment info
@@ -231,6 +217,8 @@ public class SpinPlayer {
   /// schedule a future play from the beginning of the file
   public func schedulePlay(at scheduledDate: Date) {
     do {
+      // Make sure audio session is configured before scheduling playback
+      playolaMainMixer.configureAudioSession()
       try engine.start()
       let avAudiotime = avAudioTimeFromDate(date: scheduledDate)
       playerNode.play(at: avAudiotime)
