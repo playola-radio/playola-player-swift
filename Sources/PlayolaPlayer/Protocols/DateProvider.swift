@@ -6,13 +6,15 @@
 //
 import Foundation
 
-public class DateProvider: @unchecked Sendable {
-  public static let shared: DateProvider = {
-    let instance = DateProvider()
-    return instance
-  }()
+import Foundation
 
-  public func now() -> Date {
-    return Date()
-  }
+public class DateProvider: Sendable {
+    public static let shared: DateProvider = {
+        let instance = DateProvider()
+        return instance
+    }()
+
+    public func now() -> Date {
+        return Date()
+    }
 }

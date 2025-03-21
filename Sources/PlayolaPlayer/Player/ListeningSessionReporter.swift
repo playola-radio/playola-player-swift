@@ -55,11 +55,32 @@ public class ListeningSessionReporter {
 
     stationPlayer.$stationId.sink { stationId in
       if let stationId  {
-        self.reportOrExtendListeningSession(stationId)
-        self.startPeriodicNotifications()
+        Task {
+            do {
+                try await self.reportOrExtendListeningSession(stationId)
+                self.startPeriodicNotifications()
+            } catch {
+                self.errorReporter.reportError(
+                    error,
+                    context: "Failed to initiate listening session for station \(stationId)",
+                    level: .warning
+                )
+            }
+        }
       } else {
-        self.endListeningSession()
-        self.stopPeriodicNotifications()
+        Task {
+            do {
+                try await self.endListeningSession()
+                self.stopPeriodicNotifications()
+            } catch {
+                // Just log the error but don't fail critically since this is cleanup
+                self.errorReporter.reportError(
+                    error,
+                    context: "Failed to cleanly end listening session",
+                    level: .warning
+                )
+            }
+        }
       }
     }.store(in: &disposeBag)
   }
@@ -69,49 +90,37 @@ public class ListeningSessionReporter {
     disposeBag.removeAll()
   }
 
-  public func endListeningSession() {
+  public func endListeningSession() async throws {
     guard let deviceId else {
       let error = ListeningSessionError.missingDeviceId
       errorReporter.reportError(error, level: .warning)
-      return
+      throw error
     }
 
     let url = URL(string: "https://admin-api.playola.fm/v1/listeningSessions/end")!
-    let requestBody = [ "deviceId": deviceId]
+    let requestBody = ["deviceId": deviceId]
 
-    guard let jsonData = try? JSONEncoder().encode(requestBody) else {
-      let error = ListeningSessionError.encodingError("Failed to encode request body for end listening session")
-      errorReporter.reportError(error, level: .error)
-      return
-    }
+    // Use modern async/await API
+    do {
+      var request = try createPostRequest(url: url, requestBody: requestBody)
+      let (_, response) = try await URLSession.shared.data(for: request)
 
-    var request = createPostRequest(url: url, jsonData: jsonData)
-    // Create a URLSession task to send the request
-    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-      guard let self = self else { return }
-
-      if let error = error {
-        Task { @MainActor in
-          self.errorReporter.reportError(error, context: "Network error while ending listening session", level: .error)
-        }
-        return
+      guard let httpResponse = response as? HTTPURLResponse,
+            (200...299).contains(httpResponse.statusCode) else {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        throw ListeningSessionError.invalidResponse("HTTP status code: \(statusCode)")
       }
-
-      if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
-        Task { @MainActor in
-          let error = ListeningSessionError.invalidResponse("HTTP status code: \(httpResponse.statusCode)")
-          self.errorReporter.reportError(error, level: .warning)
-        }
-      }
+    } catch {
+      errorReporter.reportError(error, context: "Error ending listening session", level: .error)
+      throw error
     }
-    task.resume()
   }
 
-  public func reportOrExtendListeningSession(_ stationId: String) {
+  public func reportOrExtendListeningSession(_ stationId: String) async throws {
     guard let deviceId else {
       let error = ListeningSessionError.missingDeviceId
       errorReporter.reportError(error, level: .warning)
-      return
+      throw error
     }
 
     let url = URL(string: "https://admin-api.playola.fm/v1/listeningSessions")!
@@ -121,35 +130,19 @@ public class ListeningSessionReporter {
       deviceId: deviceId,
       stationId: stationId)
 
-    // Convert the Codable struct to JSON data
-    guard let jsonData = try? JSONEncoder().encode(requestBody) else {
-      let error = ListeningSessionError.encodingError("Failed to encode listening session request")
-      errorReporter.reportError(error, level: .error)
-      return
-    }
+    do {
+      var request = try createPostRequest(url: url, requestBody: requestBody)
+      let (_, response) = try await URLSession.shared.data(for: request)
 
-    // Create the request
-    var request = createPostRequest(url: url, jsonData: jsonData)
-
-    // Create a URLSession task to send the request
-    let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-      guard let self = self else { return }
-
-      if let error = error {
-        Task { @MainActor in
-          self.errorReporter.reportError(error, context: "Network error while reporting listening session", level: .error)
-        }
-        return
+      guard let httpResponse = response as? HTTPURLResponse,
+            (200...299).contains(httpResponse.statusCode) else {
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        throw ListeningSessionError.invalidResponse("HTTP status code: \(statusCode)")
       }
-
-      if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
-        Task { @MainActor in
-          let error = ListeningSessionError.invalidResponse("HTTP status code: \(httpResponse.statusCode)")
-          self.errorReporter.reportError(error, level: .warning)
-        }
-      }
+    } catch {
+      errorReporter.reportError(error, context: "Error reporting listening session", level: .error)
+      throw error
     }
-    task.resume()
   }
 
   private func startPeriodicNotifications() {
@@ -160,18 +153,37 @@ public class ListeningSessionReporter {
         self.errorReporter.reportError(error, level: .warning)
         return
       }
-      self.reportOrExtendListeningSession(stationId)
+
+      Task {
+        do {
+            try await self.reportOrExtendListeningSession(stationId)
+        } catch {
+            // Log errors but continue running - we'll try again next interval
+            self.errorReporter.reportError(
+                error,
+                context: "Failed periodic listening session update",
+                level: .warning
+            )
+        }
+      }
     })
   }
 
   private func stopPeriodicNotifications() {
     self.timer?.invalidate()
+    self.timer = nil
   }
 
-  private func createPostRequest(url: URL, jsonData: Data) -> URLRequest {
+  private func createPostRequest<T: Encodable>(url: URL, requestBody: T) throws -> URLRequest {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    request.httpBody = jsonData
+
+    do {
+      request.httpBody = try JSONEncoder().encode(requestBody)
+    } catch {
+      throw ListeningSessionError.encodingError("Failed to encode request body: \(error.localizedDescription)")
+    }
+
     request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
     return request
