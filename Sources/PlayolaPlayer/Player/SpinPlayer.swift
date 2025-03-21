@@ -179,7 +179,10 @@ public class SpinPlayer {
         delegate?.player(self, startedPlaying: spin)
       }
     } catch {
-      errorReporter.reportError(error, context: "Failed to start playback", level: .error)
+      errorReporter.reportError(error,
+                                context: "Failed to start playback at position \(from)s for spin ID: \(spin?.id ?? "unknown")",
+                                level: .error)
+      self.state = .available
     }
   }
 
@@ -190,9 +193,15 @@ public class SpinPlayer {
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
           let audioFileUrl = URL(string: audioFileUrlStr) else {
       let error = NSError(domain: "fm.playola.PlayolaPlayer", code: 400, userInfo: [
-        NSLocalizedDescriptionKey: "Invalid audio file URL in spin"
+        NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
+        "spinId": spin.id,
+        "audioBlockId": spin.audioBlock?.id ?? "nil",
+        "audioBlockTitle": spin.audioBlock?.title ?? "nil"
       ])
-      errorReporter.reportError(error, context: "Missing or invalid download URL", level: .error)
+      errorReporter.reportError(error,
+                                context: "Missing or invalid download URL for spin ID: \(spin.id)",
+                                level: .error)
+      self.state = .available
       return
     }
 
@@ -312,8 +321,13 @@ public class SpinPlayer {
       currentFile = try AVAudioFile(forReading: url)
       normalizationCalculator = AudioNormalizationCalculator(currentFile!)
     } catch {
-      errorReporter.reportError(error, context: "Failed to load audio file: \(url.lastPathComponent)", level: .error)
-      // Handle error internally instead of re-throwing
+      // More detailed context with file information
+      let filename = url.lastPathComponent
+      let fileSize = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+      let context = "Failed to load audio file: \(filename) (size: \(fileSize) bytes)"
+      errorReporter.reportError(error, context: context, level: .error)
+      // State management after error
+      self.state = .available
     }
   }
 
@@ -342,23 +356,23 @@ public class SpinPlayer {
 
       // Use a single timer instead of many dispatch blocks
       let timer = Timer.scheduledTimer(withTimeInterval: 0.01, repeats: true) { [weak self] timer in
-          guard let self = self else {
-              timer.invalidate()
-              return
-          }
+        guard let self = self else {
+          timer.invalidate()
+          return
+        }
 
-          let elapsedTime = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000
-          let fraction = min(elapsedTime / totalDuration, 1.0)
+        let elapsedTime = Double(DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000
+        let fraction = min(elapsedTime / totalDuration, 1.0)
 
-          self.volume = startVolume + (endVolume - startVolume) * Float(fraction)
+        self.volume = startVolume + (endVolume - startVolume) * Float(fraction)
 
-          if fraction >= 1.0 {
-              timer.invalidate()
-              completionBlock?()
-          }
+        if fraction >= 1.0 {
+          timer.invalidate()
+          completionBlock?()
+        }
       }
       RunLoop.main.add(timer, forMode: .common)
-  }
+    }
 
   public func scheduleFades(_ spin: Spin) {
     for fade in spin.fades {
@@ -374,7 +388,7 @@ public class SpinPlayer {
       fadeTimers.insert(timer)
     }
   }
-
+  
   private func setClearTimer(_ spin: Spin?) {
     guard let endtime = spin?.endtime else {
       self.clearTimer?.invalidate()
