@@ -36,6 +36,28 @@ public enum StationPlayerError: Error, LocalizedError {
   }
 }
 
+/// A player for Playola stations that manages audio playback, scheduling, and stream management.
+///
+/// `PlayolaStationPlayer` is the main entry point for apps integrating with the Playola platform.
+/// It handles:
+/// - Loading and playing audio from Playola stations
+/// - Scheduling upcoming audio content
+/// - Managing the audio session and playback state
+/// - Reporting listening sessions to Playola analytics
+///
+/// ## Usage Example:
+/// ```
+/// // Play a specific station
+/// try await PlayolaStationPlayer.shared.play(stationId: "station-id-here")
+///
+/// // Stop playback
+/// PlayolaStationPlayer.shared.stop()
+///
+/// // Observe state changes
+/// player.$state.sink { state in
+///    // Handle state changes
+/// }
+/// ```
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
   @Published public var stationId: String?   // TODO: Change this to Station model
@@ -97,19 +119,19 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
           let audioFileUrl = URL(string: audioFileUrlStr) else {
-        let spinDetails = """
+      let spinDetails = """
                 Spin ID: \(spin.id)
                 Audio Block ID: \(spin.audioBlock?.id ?? "nil")
                 Audio Block Title: \(spin.audioBlock?.title ?? "nil")
                 Audio Block Artist: \(spin.audioBlock?.artist ?? "nil")
                 Download URL: \(spin.audioBlock?.downloadUrl ?? "nil")
             """
-        let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
-        errorReporter.reportError(
-            error,
-            context: "Invalid or missing download URL for spin | \(spinDetails)",
-            level: .error)
-        throw error
+      let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
+      errorReporter.reportError(
+        error,
+        context: "Invalid or missing download URL for spin | \(spinDetails)",
+        level: .error)
+      throw error
     }
 
     // Maximum retry attempts
@@ -141,19 +163,19 @@ final public class PlayolaStationPlayer: ObservableObject {
       case .failure(let error):
         // Handle file loading failure
         let stationError = error is FileDownloadError
-            ? error
-            : StationPlayerError.fileDownloadError(error.localizedDescription)
+        ? error
+        : StationPlayerError.fileDownloadError(error.localizedDescription)
 
         self.errorReporter.reportError(stationError, level: .error)
 
         // If we haven't exceeded retry attempts, try again
         if retryCount < maxRetries {
-            // Add a small delay before retrying (exponential backoff)
-            let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
-            try await Task.sleep(for: .seconds(delay))
-            try await self.scheduleSpin(spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
+          // Add a small delay before retrying (exponential backoff)
+          let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
+          try await Task.sleep(for: .seconds(delay))
+          try await self.scheduleSpin(spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
         } else {
-            throw error
+          throw error
         }
       }
     } catch {
@@ -164,8 +186,8 @@ final public class PlayolaStationPlayer: ObservableObject {
         try await self.scheduleSpin(spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
       } else {
         let stationError = error is StationPlayerError
-            ? error
-            : StationPlayerError.fileDownloadError(error.localizedDescription)
+        ? error
+        : StationPlayerError.fileDownloadError(error.localizedDescription)
         errorReporter.reportError(stationError, level: .error)
         throw error
       }
@@ -295,6 +317,20 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
+  /// Begins playback of the specified Playola station.
+  ///
+  /// This method:
+  /// 1. Fetches the station's schedule from the Playola API
+  /// 2. Loads and prepares the current audio block for playback
+  /// 3. Schedules upcoming audio blocks to ensure smooth transitions
+  /// 4. Reports the listening session to Playola analytics
+  ///
+  /// - Parameter stationId: The unique identifier of the station to play
+  /// - Throws: `StationPlayerError` if playback cannot be started due to:
+  ///   - Network errors when fetching the schedule
+  ///   - Invalid station ID
+  ///   - Missing audio content in the schedule
+  ///   - File download failures
   public func play(stationId: String) async throws {
     self.stationId = stationId
 
@@ -327,6 +363,13 @@ final public class PlayolaStationPlayer: ObservableObject {
     await scheduleUpcomingSpins()
   }
 
+  /// Stops the current playback and releases associated resources.
+  ///
+  /// This method:
+  /// 1. Stops all playing audio
+  /// 2. Cancels pending downloads
+  /// 3. Clears the current schedule
+  /// 4. Reports the end of the listening session
   public func stop() {
     // Cancel all active downloads
     for (_, downloadId) in activeDownloadIds {
@@ -391,9 +434,9 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
     os_log("Spin player state changed to: %@ for player: %@",
-             log: PlayolaStationPlayer.logger, type: .info,
-             String(describing: state),
-             player.id.uuidString)
+           log: PlayolaStationPlayer.logger, type: .info,
+           String(describing: state),
+           player.id.uuidString)
   }
 }
 
