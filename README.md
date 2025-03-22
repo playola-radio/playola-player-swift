@@ -339,8 +339,8 @@ Task { @MainActor in
 
 ## License
 
-[Add your license information here]
+MIT
 
 ## Contact
 
-For questions or support, please contact [your contact information].
+For questions or support, please contact `brian -at - playola.fm`.
