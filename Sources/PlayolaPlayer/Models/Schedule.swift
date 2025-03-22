@@ -20,7 +20,12 @@ public init(stationId: String, spins: [Spin], dateProvider: DateProvider = .shar
 
   public var current: [Spin] {
     let now = dateProvider.now()
-    return spins.filter({$0.endtime > now})
+    return spins.filter({$0.endtime > now}).sorted { $0.airtime < $1.airtime }
+  }
+
+  public var nowPlaying: Spin? {
+    let now = dateProvider.now()
+    return spins.filter({ $0.isPlaying }).last
   }
 }
 
