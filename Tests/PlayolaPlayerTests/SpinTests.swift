@@ -8,7 +8,7 @@ import Foundation
 import Testing
 @testable import PlayolaPlayer
 
-struct PracticalSpinTests {
+struct SpinTests {
     var spin: Spin = .mock
     let dateProviderMock = DateProviderMock()
 
