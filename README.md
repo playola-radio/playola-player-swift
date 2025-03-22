@@ -343,4 +343,4 @@ MIT
 
 ## Contact
 
-For questions or support, please contact `brian -at - playola.fm`.
+For questions or support, please contact `brian -at- playola.fm`.
