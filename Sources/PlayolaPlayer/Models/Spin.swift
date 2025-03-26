@@ -92,7 +92,7 @@ extension Spin {
   ///   - updatedAt: Optional override for updated date
   ///   - dateProvider: Optional override for date provider
   /// - Returns: A mock Spin with specified overrides
-  static func mockWith(
+  public static func mockWith(
     id: String? = nil,
     airtime: Date? = nil,
     stationId: String? = nil,

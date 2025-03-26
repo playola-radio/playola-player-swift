@@ -15,7 +15,7 @@ extension Schedule {
   ///   - spins: Optional override for the spins array
   ///   - dateProvider: Optional override for date provider
   /// - Returns: A mock Schedule with specified overrides
-  static func mockWith(
+  public static func mockWith(
     stationId: String? = nil,
     spins: [Spin]? = nil,
     dateProvider: DateProvider? = nil
@@ -40,7 +40,7 @@ extension Schedule {
   ///   - startOffsetSeconds: Offset from now for the first spin (negative means in the past)
   ///   - dateProvider: Optional date provider (defaults to a new mock)
   /// - Returns: A Schedule with specified temporal pattern of spins
-  static func mockWithTimePattern(
+  public static func mockWithTimePattern(
     stationId: String? = nil,
     spinCount: Int = 10,
     spinDurationSeconds: Int = 30,

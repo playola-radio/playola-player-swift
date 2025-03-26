@@ -91,7 +91,7 @@ extension AudioBlock {
   ///   - createdAt: Optional override for created date
   ///   - updatedAt: Optional override for updated date
   /// - Returns: A mock AudioBlock with specified overrides
-  static func mockWith(
+  public static func mockWith(
     id: String? = nil,
     title: String? = nil,
     artist: String? = nil,
