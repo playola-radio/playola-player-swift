@@ -251,3 +251,14 @@ extension AudioBlock {
     )
   }
 }
+
+extension AudioBlock: Equatable, Hashable {
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(id)
+    hasher.combine(downloadUrl)
+  }
+
+  public static func == (lhs: AudioBlock, rhs: AudioBlock) -> Bool {
+    return lhs.id == rhs.id && lhs.downloadUrl == rhs.downloadUrl
+  }
+}

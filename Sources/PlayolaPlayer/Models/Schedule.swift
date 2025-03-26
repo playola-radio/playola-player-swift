@@ -8,6 +8,7 @@
 import Foundation
 
 public struct Schedule: Sendable {
+  public let id = UUID()
   public let stationId: String
   public let spins: [Spin]
   public let dateProvider: DateProvider
@@ -36,4 +37,14 @@ extension Schedule {
     let spins = try! JSONDecoderWithIsoFull().decode([Spin].self, from: data)
     return Schedule(stationId: spins[0].stationId, spins: spins)
   }()
+}
+
+extension Schedule: Equatable, Hashable {
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(id)
+  }
+
+  public static func == (lhs: Schedule, rhs: Schedule) -> Bool {
+    return lhs.id == rhs.id
+  }
 }

@@ -70,3 +70,13 @@ public struct Station: Codable, Sendable {
     self.updatedAt = updatedAt
   }
 }
+
+extension Station : Hashable, Equatable {
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(id)
+  }
+
+  public static func == (lhs: Station, rhs: Station) -> Bool {
+    return lhs.id == rhs.id
+  }
+}

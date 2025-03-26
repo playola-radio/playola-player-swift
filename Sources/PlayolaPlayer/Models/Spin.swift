@@ -88,15 +88,6 @@ public struct Spin: Codable, Sendable {
   }
 }
 
-
-extension Spin: Equatable {
-  public static func ==(lhs: Spin, rhs: Spin) -> Bool {
-    return lhs.id == rhs.id &&
-    lhs.audioBlock?.id == rhs.audioBlock?.id &&
-    lhs.airtime == rhs.airtime
-  }
-}
-
 extension Spin {
   public static var mock: Spin {
     return Schedule.mock.spins[0]
@@ -152,5 +143,17 @@ extension Spin {
     }
 
     return newSpin
+  }
+}
+
+extension Spin: Equatable, Hashable {
+  public func hash(into hasher: inout Hasher) {
+    hasher.combine(id)
+    hasher.combine(audioBlock)
+    hasher.combine(airtime)
+  }
+
+  public static func == (lhs: Spin, rhs: Spin) -> Bool {
+    return lhs.id == rhs.id && lhs.audioBlock == rhs.audioBlock && lhs.airtime == rhs.airtime
   }
 }
