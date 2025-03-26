@@ -117,14 +117,13 @@ final public class PlayolaStationPlayer: ObservableObject {
   private func scheduleSpin(spin: Spin, showProgress: Bool = false, retryCount: Int = 0) async throws {
     let spinPlayer = getAvailableSpinPlayer()
 
-    guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
-          let audioFileUrl = URL(string: audioFileUrlStr) else {
+    guard let audioFileUrl = spin.audioBlock?.downloadUrl else {
       let spinDetails = """
                 Spin ID: \(spin.id)
                 Audio Block ID: \(spin.audioBlock?.id ?? "nil")
                 Audio Block Title: \(spin.audioBlock?.title ?? "nil")
                 Audio Block Artist: \(spin.audioBlock?.artist ?? "nil")
-                Download URL: \(spin.audioBlock?.downloadUrl ?? "nil")
+                Download URL: \(spin.audioBlock?.downloadUrl?.absoluteString ?? "nil")
             """
       let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
       errorReporter.reportError(

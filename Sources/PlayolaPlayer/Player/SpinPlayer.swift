@@ -289,8 +289,7 @@ public class SpinPlayer {
            spin.audioBlock?.artist ?? "unknown",
            spin.id)
 
-    guard let audioFileUrlStr = spin.audioBlock?.downloadUrl,
-          let audioFileUrl = URL(string: audioFileUrlStr) else {
+    guard let audioFileUrl = spin.audioBlock?.downloadUrl else {
       let error = NSError(domain: "fm.playola.PlayolaPlayer", code: 400, userInfo: [
         NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
         "spinId": spin.id,
