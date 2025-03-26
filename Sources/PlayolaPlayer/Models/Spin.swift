@@ -7,8 +7,8 @@
 import Foundation
 
 public struct Fade: Codable, Sendable {
-  let atMS: Int
-  let toVolume: Float
+  public let atMS: Int
+  public let toVolume: Float
 
   public init(atMS: Int, toVolume: Float) {
     self.atMS = atMS
@@ -27,31 +27,31 @@ public struct Fade: Codable, Sendable {
 /// by the PlayolaStationPlayer.
 public struct Spin: Codable, Sendable {
   /// Unique identifier for this spin
-  let id: String
+  public let id: String
 
   /// The station this spin belongs to
-  let stationId: String
+  public let stationId: String
 
   /// The scheduled time when this spin should begin playing
-  let airtime: Date
+  public let airtime: Date
 
   /// Initial volume level (0.0 to 1.0) when playback begins
-  let startingVolume: Float
-  
+  public let startingVolume: Float
+
   /// When this spin was created on the server
-  let createdAt: Date
+  public let createdAt: Date
 
   /// When this spin was last updated on the server
-  let updatedAt: Date
+  public let updatedAt: Date
 
   /// The audio content to play for this spin
-  let audioBlock: AudioBlock?
+  public let audioBlock: AudioBlock?
 
   /// Volume transitions that should occur during playback
-  let fades: [Fade]
+  public let fades: [Fade]
 
   /// Date provider for testing time-dependent behavior
-  var dateProvider: DateProvider! = .shared
+  public var dateProvider: DateProvider! = .shared
 
   public init(id: String,
               stationId: String,

@@ -8,9 +8,9 @@
 import Foundation
 
 public struct Schedule: Sendable {
-  let stationId: String
-  let spins: [Spin]
-  let dateProvider: DateProvider
+  public let stationId: String
+  public let spins: [Spin]
+  public let dateProvider: DateProvider
 
 public init(stationId: String, spins: [Spin], dateProvider: DateProvider = .shared) {
     self.stationId = stationId
@@ -30,7 +30,7 @@ public init(stationId: String, spins: [Spin], dateProvider: DateProvider = .shar
 }
 
 extension Schedule {
-  static let mock: Schedule = {
+  public static let mock: Schedule = {
     let url = Bundle.module.url(forResource: "MockSchedule", withExtension: "json", subdirectory: "MockData")!
     let data = try! Data(contentsOf: url, options: .dataReadingMapped)
     let spins = try! JSONDecoderWithIsoFull().decode([Spin].self, from: data)

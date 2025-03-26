@@ -6,13 +6,13 @@
 //
 import Foundation
 
-struct Station: Codable, Sendable {
-  let id: String
-  let name: String
-  let curatorName: String
-  let imageUrl: String
-  let createdAt: Date
-  let updatedAt: Date
+public struct Station: Codable, Sendable {
+  public let id: String
+  public let name: String
+  public let curatorName: String
+  public let imageUrl: String
+  public let createdAt: Date
+  public let updatedAt: Date
 
   public init(id: String, name: String, curatorName: String, imageUrl: String, createdAt: Date, updatedAt: Date) {
     self.id = id
