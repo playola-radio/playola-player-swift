@@ -74,12 +74,12 @@ public struct Spin: Codable, Sendable {
   }
 
   /// Calculated end time for this spin based on airtime plus audio duration
-  var endtime: Date {
+  public var endtime: Date {
     return airtime + TimeInterval(Double(audioBlock?.endOfMessageMS ?? 0) / 1000)
   }
 
   /// Whether this spin is currently playing, based on current time compared to airtime and endtime
-  var isPlaying: Bool {
+  public var isPlaying: Bool {
     return airtime <= dateProvider.now() &&
     dateProvider.now() <= endtime
   }
