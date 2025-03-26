@@ -9,6 +9,11 @@ import Foundation
 public struct Fade: Codable, Sendable {
   let atMS: Int
   let toVolume: Float
+
+  public init(atMS: Int, toVolume: Float) {
+    self.atMS = atMS
+    self.toVolume = toVolume
+  }
 }
 
 /// Represents a scheduled playback item with its associated audio content.
@@ -47,6 +52,26 @@ public struct Spin: Codable, Sendable {
 
   /// Date provider for testing time-dependent behavior
   var dateProvider: DateProvider! = .shared
+
+  public init(id: String,
+              stationId: String,
+              airtime: Date,
+              startingVolume: Float,
+              createdAt: Date,
+              updatedAt: Date,
+              audioBlock: AudioBlock?,
+              fades: [Fade],
+              dateProvider: DateProvider! = DateProvider.shared) {
+    self.id = id
+    self.stationId = stationId
+    self.airtime = airtime
+    self.startingVolume = startingVolume
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+    self.audioBlock = audioBlock
+    self.fades = fades
+    self.dateProvider = dateProvider
+  }
 
   /// Calculated end time for this spin based on airtime plus audio duration
   var endtime: Date {

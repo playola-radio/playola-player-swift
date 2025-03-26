@@ -59,6 +59,29 @@ public struct AudioBlock: Codable, Sendable {
   public let isrc: String?
   public let spotifyId: String?
   public let imageUrl: String?
+
+  public init(id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int, beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: String, s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date, album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?, imageUrl: String?) {
+    self.id = id
+    self.title = title
+    self.artist = artist
+    self.durationMS = durationMS
+    self.endOfMessageMS = endOfMessageMS
+    self.beginningOfOutroMS = beginningOfOutroMS
+    self.endOfIntroMS = endOfIntroMS
+    self.lengthOfOutroMS = lengthOfOutroMS
+    self.downloadUrl = downloadUrl
+    self.s3Key = s3Key
+    self.s3BucketName = s3BucketName
+    self.type = type
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+    self.album = album
+    self.popularity = popularity
+    self.youTubeId = youTubeId
+    self.isrc = isrc
+    self.spotifyId = spotifyId
+    self.imageUrl = imageUrl
+  }
 }
 
 extension AudioBlock {
