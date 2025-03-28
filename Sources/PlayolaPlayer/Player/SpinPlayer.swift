@@ -245,7 +245,7 @@ public class SpinPlayer {
       let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
 
       // stop the player, schedule the segment, restart the player
-      self.volume = 1.0
+      self.volume = spin?.startingVolume ?? 1.0
       playerNode.stop()
       playerNode.scheduleSegment(currentFile!, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil, completionHandler: nil)
       playerNode.play()

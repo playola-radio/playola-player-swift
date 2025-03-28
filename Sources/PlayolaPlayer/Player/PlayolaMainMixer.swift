@@ -97,6 +97,7 @@ open class PlayolaMainMixer: NSObject {
   /// Configures the shared audio session for playback
   public func configureAudioSession() {
     guard !isAudioSessionConfigured else { return }
+    isAudioSessionConfigured = true
 
     do {
       let session = AVAudioSession.sharedInstance()
@@ -138,7 +139,6 @@ open class PlayolaMainMixer: NSObject {
       // Set the audio session active
       do {
         try session.setActive(true)
-        isAudioSessionConfigured = true
         os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
       } catch {
         Task { @MainActor in
