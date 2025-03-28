@@ -112,7 +112,6 @@ open class PlayolaMainMixer: NSObject {
                                     context: "Non-critical: Failed to deactivate audio session before configuration",
                                     level: .warning)
         }
-        // Continue with configuration
       }
 
       // Configure for playback category
@@ -176,68 +175,6 @@ open class PlayolaMainMixer: NSObject {
       Task { @MainActor in
         errorReporter.reportError(error, context: "Failed to deactivate audio session", level: .warning)
       }
-    }
-  }
-
-  /// Handle audio session interruptions such as phone calls
-  public func handleAudioSessionInterruption(_ notification: Notification) {
-    guard let userInfo = notification.userInfo,
-          let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-          let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-      return
-    }
-
-    switch type {
-    case .began:
-      // Audio session was interrupted - might need to pause playback
-      os_log("Audio session interrupted", log: PlayolaMainMixer.logger, type: .info)
-
-    case .ended:
-      // Interruption ended - might need to resume playback
-      guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
-        return
-      }
-      let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-
-      if options.contains(.shouldResume) {
-        // The system indicates that we can resume audio
-        do {
-          try engine.start()
-          os_log("Audio engine restarted after interruption", log: PlayolaMainMixer.logger, type: .info)
-        } catch {
-          Task { @MainActor in
-            errorReporter.reportError(error, context: "Failed to restart audio engine after interruption", level: .error)
-          }
-        }
-      }
-
-    @unknown default:
-      os_log("Unknown audio session interruption type: %d", log: PlayolaMainMixer.logger, type: .error, typeValue)
-    }
-  }
-
-  /// Handle audio route changes such as connecting/disconnecting headphones
-  public func handleAudioRouteChange(_ notification: Notification) {
-    guard let userInfo = notification.userInfo,
-          let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-          let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
-      return
-    }
-
-    // Check if the audio route changed
-    switch reason {
-    case .newDeviceAvailable:
-      // New device (like headphones) was connected
-      os_log("New audio route device available", log: PlayolaMainMixer.logger, type: .info)
-
-    case .oldDeviceUnavailable:
-      // Old device (like headphones) was disconnected
-      // You might want to pause playback here
-      os_log("Audio route device disconnected", log: PlayolaMainMixer.logger, type: .info)
-
-    default:
-      // Handle other route changes if needed
-      os_log("Audio route changed for reason: %d", log: PlayolaMainMixer.logger, type: .info, reasonValue)
     }
   }
 
