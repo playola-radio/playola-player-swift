@@ -353,4 +353,133 @@ struct ScheduleTests {
         // nowPlaying should be nil when no spins are playing
         #expect(pastSchedule.nowPlaying == nil)
     }
+
+    @Test("Schedule updates nowPlaying when spins change status")
+    func testNowPlayingUpdates() throws {
+        let mockTime = Date()
+        let dateProviderMock = DateProviderMock(mockDate: mockTime)
+        let testTimerProvider = TestTimerProvider()
+
+        // Create test spins
+        let currentSpin = Spin.mockWith(
+            id: "current",
+            airtime: mockTime.addingTimeInterval(-15), // 15 seconds ago
+            audioBlock: AudioBlock.mockWith(
+                durationMS: 30000,
+                endOfMessageMS: 30000 // Important: endOfMessageMS determines endtime
+            ),
+            dateProvider: dateProviderMock
+        )
+
+        let nextSpin = Spin.mockWith(
+            id: "next",
+            airtime: mockTime.addingTimeInterval(15), // 15 seconds from now
+            audioBlock: AudioBlock.mockWith(
+                durationMS: 30000,
+                endOfMessageMS: 30000 // Important: endOfMessageMS determines endtime
+            ),
+            dateProvider: dateProviderMock
+        )
+
+        let schedule = Schedule(
+            stationId: "test-station",
+            spins: [currentSpin, nextSpin],
+            dateProvider: dateProviderMock,
+            timerProvider: testTimerProvider
+        )
+
+        // Initial state - currentSpin should be playing
+        #expect(schedule.nowPlaying?.id == "current")
+
+        // Advance time to when nextSpin starts and execute timer
+        dateProviderMock.mockDate = mockTime.addingTimeInterval(15)
+        testTimerProvider.executeNextTimer()
+
+        // Now the nextSpin should be playing
+        #expect(schedule.nowPlaying?.id == "next")
+    }
+
+    @Test("Schedule properly handles nowPlaying transitions")
+    func testNowPlayingTransitions() throws {
+        let mockTime = Date()
+        let dateProviderMock = DateProviderMock(mockDate: mockTime)
+        let testTimerProvider = TestTimerProvider()
+
+        let spin1 = Spin.mockWith(
+            id: "spin1",
+            airtime: mockTime,
+            audioBlock: AudioBlock.mockWith(
+                durationMS: 30000,
+                endOfMessageMS: 30000 // Important: endOfMessageMS determines endtime
+            ),
+            dateProvider: dateProviderMock
+        )
+
+        let spin2 = Spin.mockWith(
+            id: "spin2",
+            airtime: mockTime.addingTimeInterval(30),
+            audioBlock: AudioBlock.mockWith(
+                durationMS: 30000,
+                endOfMessageMS: 30000 // Important: endOfMessageMS determines endtime
+            ),
+            dateProvider: dateProviderMock
+        )
+
+        let schedule = Schedule(
+            stationId: "test-station",
+            spins: [spin1, spin2],
+            dateProvider: dateProviderMock,
+            timerProvider: testTimerProvider
+        )
+
+        // At start (t=0)
+        #expect(schedule.nowPlaying?.id == "spin1")
+
+        // Middle of first spin (t=15)
+        dateProviderMock.mockDate = mockTime.addingTimeInterval(15)
+        testTimerProvider.executeNextTimer()
+        #expect(schedule.nowPlaying?.id == "spin1")
+
+        // At transition (t=30)
+        dateProviderMock.mockDate = mockTime.addingTimeInterval(30)
+        testTimerProvider.executeNextTimer()
+        #expect(schedule.nowPlaying?.id == "spin2")
+
+        // After all spins (t=70)
+        dateProviderMock.mockDate = mockTime.addingTimeInterval(70)
+        testTimerProvider.executeNextTimer()
+        #expect(schedule.nowPlaying == nil)
+    }
+
+    @Test("Schedule handles empty spins for nowPlaying")
+    func testEmptySpinsNowPlaying() throws {
+        let schedule = Schedule(
+            stationId: "test-station",
+            spins: []
+        )
+
+        #expect(schedule.nowPlaying == nil)
+    }
+
+    @Test("Schedule cleans up timer on deinit")
+    func testTimerCleanup() throws {
+        let mockTime = Date()
+        let dateProviderMock = DateProviderMock(mockDate: mockTime)
+
+        var schedule: Schedule? = Schedule(
+            stationId: "test-station",
+            spins: [Spin.mockWith(
+                airtime: mockTime.addingTimeInterval(30),
+                audioBlock: AudioBlock.mockWith(durationMS: 30000),
+                dateProvider: dateProviderMock
+            )]
+        )
+
+        // Force deallocation
+        weak var weakSchedule = schedule
+        schedule = nil
+
+        // Verify schedule was deallocated (timer didn't retain it)
+        #expect(weakSchedule == nil)
+    }
 }

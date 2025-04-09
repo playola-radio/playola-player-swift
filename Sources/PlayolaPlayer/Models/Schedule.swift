@@ -6,45 +6,100 @@
 //
 
 import Foundation
+import Combine
 
-public struct Schedule: Sendable {
-  public let id = UUID()
-  public let stationId: String
-  public let spins: [Spin]
-  public let dateProvider: DateProvider
+public class Schedule: ObservableObject {
+    public let id = UUID()
+    public let stationId: String
+    public let spins: [Spin]
+    public let dateProvider: DateProvider
+    private let timerProvider: TimerProvider
 
-public init(stationId: String, spins: [Spin], dateProvider: DateProvider = .shared) {
-    self.stationId = stationId
-    self.spins = spins
-    self.dateProvider = dateProvider
-  }
+    private var nowPlayingTimer: Timer?
 
-  public var current: [Spin] {
-    let now = dateProvider.now()
-    return spins.filter({$0.endtime > now}).sorted { $0.airtime < $1.airtime }
-  }
+    @Published public private(set) var nowPlaying: Spin?
 
-  public var nowPlaying: Spin? {
-    let now = dateProvider.now()
-    return spins.filter({ $0.isPlaying }).last
-  }
+    public init(stationId: String,
+                spins: [Spin],
+                dateProvider: DateProvider = .shared,
+                timerProvider: TimerProvider = LiveTimerProvider.shared) {
+        self.stationId = stationId
+        self.spins = spins.map { spin in
+            var updatedSpin = spin
+            updatedSpin.dateProvider = dateProvider
+            return updatedSpin
+        }
+        self.dateProvider = dateProvider
+        self.timerProvider = timerProvider
+
+        updateNowPlaying()
+        scheduleNextNowPlayingUpdate()
+    }
+
+    deinit {
+        nowPlayingTimer?.invalidate()
+    }
+
+    public var current: [Spin] {
+        let now = dateProvider.now()
+        return spins.filter({ $0.endtime > now }).sorted { $0.airtime < $1.airtime }
+    }
+
+    private func updateNowPlaying() {
+        let now = dateProvider.now()
+
+        let updatedNowPlaying = spins
+            .filter { spin in
+                // A spin is playing if current time is between its airtime and endtime
+                spin.airtime <= now && spin.endtime > now
+            }
+            .sorted { $0.airtime > $1.airtime } // Sort by airtime descending
+            .first                                // Take the most recent
+
+        if nowPlaying?.id != updatedNowPlaying?.id {
+            nowPlaying = updatedNowPlaying
+        }
+    }
+
+    private func scheduleNextNowPlayingUpdate() {
+        nowPlayingTimer?.invalidate()
+
+        let now = dateProvider.now()
+        var updateTimes: [Date] = []
+
+        for spin in spins {
+            if spin.airtime > now {
+                updateTimes.append(spin.airtime)
+            }
+            if spin.endtime > now {
+                updateTimes.append(spin.endtime)
+            }
+        }
+
+        if let nextUpdate = updateTimes.sorted().first {
+            nowPlayingTimer = timerProvider.schedule(deadline: nextUpdate) { [weak self] in
+                self?.updateNowPlaying()
+                self?.scheduleNextNowPlayingUpdate()
+            }
+        }
+    }
 }
 
 extension Schedule {
-  public static let mock: Schedule = {
-    let url = Bundle.module.url(forResource: "MockSchedule", withExtension: "json", subdirectory: "MockData")!
-    let data = try! Data(contentsOf: url, options: .dataReadingMapped)
-    let spins = try! JSONDecoderWithIsoFull().decode([Spin].self, from: data)
-    return Schedule(stationId: spins[0].stationId, spins: spins)
-  }()
+    public static let mock: Schedule = {
+        let url = Bundle.module.url(forResource: "MockSchedule", withExtension: "json", subdirectory: "MockData")!
+        let data = try! Data(contentsOf: url, options: .dataReadingMapped)
+        let spins = try! JSONDecoderWithIsoFull().decode([Spin].self, from: data)
+        return Schedule(stationId: spins[0].stationId, spins: spins)
+    }()
 }
 
-extension Schedule: Equatable, Hashable {
-  public func hash(into hasher: inout Hasher) {
-    hasher.combine(id)
-  }
+extension Schedule: Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 
-  public static func == (lhs: Schedule, rhs: Schedule) -> Bool {
-    return lhs.id == rhs.id
-  }
+    public static func == (lhs: Schedule, rhs: Schedule) -> Bool {
+        return lhs.id == rhs.id
+    }
 }
