@@ -1,0 +1,31 @@
+# This file contains the fastlane.tools configuration
+# You can find the documentation at https://docs.fastlane.tools
+#
+default_platform(:ios)
+
+platform :ios do
+  before_all do
+    setup_circle_ci
+  end
+
+  desc "Run tests"
+  lane :tests do
+    scan(
+      package_path: ".",
+      scheme: "PlayolaPlayer",
+      devices: ["iPhone 14"],
+      prelaunch_simulator: true,
+      result_bundle: true,
+      xcargs: "-skipMacroValidation -skipPackagePluginValidation",
+    )
+  end
+
+  desc "Run SwiftLint"
+  lane :lint do
+    swiftlint(
+      mode: :lint,
+      config_file: ".swiftlint.yml",
+      strict: true
+    )
+  end
+end

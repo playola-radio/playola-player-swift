@@ -1,0 +1,17 @@
+only_rules:
+  - closing_brace
+  - comma
+  - empty_count
+  - empty_string
+  - force_cast
+  - force_try
+  - leading_whitespace
+  - redundant_nil_coalescing
+  - return_arrow_whitespace
+  - trailing_newline
+  - unused_closure_parameter
+  - unused_import
+  - vertical_whitespace
+
+excluded:
+  - .build

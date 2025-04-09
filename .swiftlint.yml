@@ -1,0 +1,31 @@
+disabled_rules:
+  - trailing_whitespace
+  - line_length
+
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - redundant_nil_coalescing
+
+excluded:
+  - Carthage
+  - Pods
+  - .build
+
+function_parameter_count:
+  warning: 6
+  error: 8
+
+identifier_name:
+  min_length: 2
+  allowed_symbols: "_"
+
+type_name:
+  min_length: 3
+
+vertical_whitespace:
+  max_empty_lines: 2
+
+cyclomatic_complexity:
+  warning: 15
+  error: 25

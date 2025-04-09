@@ -1,0 +1,32 @@
+version: 2.1
+
+orbs:
+  ruby: circleci/ruby@2.0.0
+
+jobs:
+  test:
+    macos:
+      xcode: 16.2.0
+    environment:
+      FASTLANE_SKIP_UPDATE_CHECK: true
+      FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT: 10
+    steps:
+      - checkout
+      - ruby/install-deps
+      - run:
+          name: Install Fastlane
+          command: bundle install
+      - run:
+          name: Run tests
+          command: bundle exec fastlane tests
+      - store_test_results:
+          path: test_output
+      - store_artifacts:
+          path: test_output
+          destination: test_output
+
+workflows:
+  version: 2
+  build-test:
+    jobs:
+      - test
