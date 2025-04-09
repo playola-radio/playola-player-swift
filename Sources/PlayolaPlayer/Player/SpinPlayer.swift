@@ -176,8 +176,6 @@ public class SpinPlayer {
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
       self.activeDownloadId = nil
     }
-
-    stopAudio()
     clear()
   }
 
@@ -198,21 +196,28 @@ public class SpinPlayer {
 
   private func clear() {
     stopAudio()
-
-    // Stop all active fades
-    activeDisplayLink?.invalidate()
-    activeDisplayLink = nil
-    activeFades.removeAll()
+    clearTimers()
+    clearFades()
 
     self.spin = nil
     self.currentFile = nil
     self.state = .available
-    self.clearTimer?.invalidate()
-    self.startNotificationTimer?.invalidate()
-    for timer in fadeTimers {
-      timer.invalidate()
-    }
     self.volume = 1.0
+  }
+
+  func clearTimers() {
+    startNotificationTimer?.invalidate()
+    startNotificationTimer = nil
+    clearTimer?.invalidate()
+    clearTimer = nil
+    fadeTimers.forEach { $0.invalidate() }
+    fadeTimers.removeAll()
+  }
+
+  func clearFades() {
+    activeDisplayLink?.invalidate()
+    activeDisplayLink = nil
+    activeFades.removeAll()
   }
 
   /// Plays the loaded spin immediately from the specified position.
@@ -615,7 +620,7 @@ public class SpinPlayer {
       self.clearTimer?.invalidate()
       return
     }
-    
+
     // for now, fire a timer. Later we should try and use a callback
     self.clearTimer = Timer(fire: endtime.addingTimeInterval(1),
                             interval: 0,
