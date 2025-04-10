@@ -8,8 +8,7 @@
 import Foundation
 import Combine
 
-@Observable
-final public class Schedule: Sendable {
+final public class Schedule: ObservableObject, Sendable {
     public let id = UUID()
     public let stationId: String
     public let spins: [Spin]
@@ -18,7 +17,7 @@ final public class Schedule: Sendable {
 
     private var nowPlayingTimer: Timer?
 
-    public var nowPlaying: Spin?
+    @Published public var nowPlaying: Spin?
 
     public init(stationId: String,
                 spins: [Spin],
