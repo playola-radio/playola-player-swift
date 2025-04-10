@@ -18,7 +18,7 @@ final public class Schedule: Sendable {
 
     private var nowPlayingTimer: Timer?
 
-    public private(set) var nowPlaying: Spin?
+    public var nowPlaying: Spin?
 
     public init(stationId: String,
                 spins: [Spin],
