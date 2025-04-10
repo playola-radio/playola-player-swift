@@ -1,6 +1,6 @@
 import Foundation
 
-public protocol TimerProvider {
+public protocol TimerProvider: Sendable {
     func schedule(deadline: Date, repeating: TimeInterval, block: @escaping () -> Void) -> Timer
 }
 
@@ -11,7 +11,7 @@ public extension TimerProvider {
     }
 }
 
-public class LiveTimerProvider: TimerProvider {
+final public class LiveTimerProvider: TimerProvider {
     public static let shared = LiveTimerProvider()
 
     public func schedule(deadline: Date, repeating: TimeInterval, block: @escaping () -> Void) -> Timer {
@@ -23,7 +23,8 @@ public class LiveTimerProvider: TimerProvider {
     }
 }
 
-public class TestTimerProvider: TimerProvider {
+// Unchecked because it's mutable, but only used in tests.
+final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
     public var scheduledTimers: [(deadline: Date, timer: Timer, block: () -> Void)] = []
 
     public func schedule(deadline: Date, repeating: TimeInterval, block: @escaping () -> Void) -> Timer {
@@ -47,3 +48,21 @@ public class TestTimerProvider: TimerProvider {
         }
     }
 }
+
+
+
+// Exploration of possible better mocking for later.
+//struct TimerProviderStruct: Sendable {
+//  var schedule: @Sendable (_ deadline: Date, _ repeating: TimeInterval, _ block: @Sendable @escaping () -> Void) -> Timer
+//}
+//extension TimerProviderStruct {
+//  static var liveValue: Self {
+//    return Self { deadline, repeating, block in
+//      let timer = Timer(fire: deadline, interval: repeating, repeats: false) { _ in
+//        block()
+//      }
+//      RunLoop.main.add(timer, forMode: .common)
+//      return timer
+//    }
+//  }
+//}
