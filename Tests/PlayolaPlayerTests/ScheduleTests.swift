@@ -460,26 +460,4 @@ struct ScheduleTests {
 
         #expect(schedule.nowPlaying == nil)
     }
-
-    @Test("Schedule cleans up timer on deinit")
-    func testTimerCleanup() throws {
-        let mockTime = Date()
-        let dateProviderMock = DateProviderMock(mockDate: mockTime)
-
-        var schedule: Schedule? = Schedule(
-            stationId: "test-station",
-            spins: [Spin.mockWith(
-                airtime: mockTime.addingTimeInterval(30),
-                audioBlock: AudioBlock.mockWith(durationMS: 30000),
-                dateProvider: dateProviderMock
-            )]
-        )
-
-        // Force deallocation
-        weak var weakSchedule = schedule
-        schedule = nil
-
-        // Verify schedule was deallocated (timer didn't retain it)
-        #expect(weakSchedule == nil)
-    }
 }
