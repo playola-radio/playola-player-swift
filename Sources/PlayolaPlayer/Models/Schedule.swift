@@ -8,16 +8,23 @@
 import Foundation
 import Combine
 
-final public class Schedule: ObservableObject, Sendable {
+public struct Schedule: Sendable {
     public let id = UUID()
     public let stationId: String
     public let spins: [Spin]
     public let dateProvider: DateProvider
     private let timerProvider: TimerProvider
 
-    private var nowPlayingTimer: Timer?
-
-    @Published public var nowPlaying: Spin?
+  public var nowPlaying: Spin? {
+    let now = dateProvider.now()
+    return spins
+      .filter { spin in
+          // A spin is playing if current time is between its airtime and endtime
+          spin.airtime <= now && spin.endtime > now
+      }
+      .sorted { $0.airtime > $1.airtime } // Sort by airtime descending
+      .first
+  }
 
     public init(stationId: String,
                 spins: [Spin],
@@ -31,57 +38,11 @@ final public class Schedule: ObservableObject, Sendable {
         }
         self.dateProvider = dateProvider
         self.timerProvider = timerProvider
-
-        updateNowPlaying()
-        scheduleNextNowPlayingUpdate()
-    }
-
-    deinit {
-        nowPlayingTimer?.invalidate()
     }
 
     public var current: [Spin] {
         let now = dateProvider.now()
         return spins.filter({ $0.endtime > now }).sorted { $0.airtime < $1.airtime }
-    }
-
-    private func updateNowPlaying() {
-        let now = dateProvider.now()
-
-        let updatedNowPlaying = spins
-            .filter { spin in
-                // A spin is playing if current time is between its airtime and endtime
-                spin.airtime <= now && spin.endtime > now
-            }
-            .sorted { $0.airtime > $1.airtime } // Sort by airtime descending
-            .first                                // Take the most recent
-
-        if nowPlaying?.id != updatedNowPlaying?.id {
-            nowPlaying = updatedNowPlaying
-        }
-    }
-
-    private func scheduleNextNowPlayingUpdate() {
-        nowPlayingTimer?.invalidate()
-
-        let now = dateProvider.now()
-        var updateTimes: [Date] = []
-
-        for spin in spins {
-            if spin.airtime > now {
-                updateTimes.append(spin.airtime)
-            }
-            if spin.endtime > now {
-                updateTimes.append(spin.endtime)
-            }
-        }
-
-        if let nextUpdate = updateTimes.sorted().first {
-            nowPlayingTimer = timerProvider.schedule(deadline: nextUpdate) { [weak self] in
-                self?.updateNowPlaying()
-                self?.scheduleNextNowPlayingUpdate()
-            }
-        }
     }
 }
 
