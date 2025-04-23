@@ -314,33 +314,42 @@ public class SpinPlayer {
       self.activeDownloadId = nil
     }
 
-    do {
-      let localUrl = try await fileDownloadManager.downloadFileAsync(
+    return await withCheckedContinuation { continuation in
+      self.activeDownloadId = fileDownloadManager.downloadFile(
         remoteUrl: audioFileUrl,
-        progressHandler: onDownloadProgress
+        progressHandler: onDownloadProgress ?? { _ in },
+        completion: { [weak self] result in
+          guard let self = self else {
+            continuation.resume(returning: .failure(FileDownloadError.downloadCancelled))
+            return
+          }
+
+          switch result {
+          case .success(let localUrl):
+            self.loadFile(with: localUrl)
+
+            if spin.isPlaying {
+              let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+              self.playNow(from: currentTimeInSeconds)
+              self.volume = 1.0
+            } else {
+              self.schedulePlay(at: spin.airtime)
+              self.volume = spin.startingVolume
+            }
+
+            self.scheduleFades(spin)
+            self.state = .loaded
+            continuation.resume(returning: .success(localUrl))
+
+          case .failure(let error):
+            self.errorReporter.reportError(error,
+                                           context: "Failed to download audio file: \(audioFileUrl.lastPathComponent)",
+                                           level: .error)
+            self.state = .available
+            continuation.resume(returning: .failure(error))
+          }
+        }
       )
-
-      self.loadFile(with: localUrl)
-
-      if spin.isPlaying {
-        let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
-        self.playNow(from: currentTimeInSeconds)
-        self.volume = 1.0
-      } else {
-        self.schedulePlay(at: spin.airtime)
-        self.volume = spin.startingVolume
-      }
-
-      self.scheduleFades(spin)
-      self.state = .loaded
-
-      return .success(localUrl)
-    } catch {
-      self.errorReporter.reportError(error,
-                                     context: "Failed to download audio file: \(audioFileUrl.lastPathComponent)",
-                                     level: .error)
-      self.state = .available
-      return .failure(error)
     }
   }
 
