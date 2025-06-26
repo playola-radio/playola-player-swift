@@ -15,6 +15,8 @@ PlayolaPlayer is a Swift Package Manager library that handles audio streaming, s
 - 🔄 Smooth transitions and crossfades between audio blocks
 - 🔔 Comprehensive error reporting system
 - 🧩 Swift Concurrency support (async/await)
+- 📡 Combine publishers for reactive programming
+- 🎯 Delegate pattern support for state changes
 
 ## Requirements
 
@@ -50,292 +52,437 @@ targets: [
 
 ### Basic Playback
 
-To start playing a Playola station:
+The simplest way to use PlayolaPlayer is through the singleton instance:
 
 ```swift
 import PlayolaPlayer
+
+// Start playing a station
+Task {
+    do {
+        try await PlayolaStationPlayer.shared.play(stationId: "your-station-id")
+    } catch {
+        print("Failed to play station: \(error)")
+    }
+}
+
+// Stop playback
+PlayolaStationPlayer.shared.stop()
+
+// Check if playing
+if PlayolaStationPlayer.shared.isPlaying {
+    print("Currently playing")
+}
+```
+
+### Using Combine Publishers
+
+PlayolaPlayer provides Combine publishers for reactive programming:
+
+```swift
+import PlayolaPlayer
+import Combine
+
+class PlayerViewModel: ObservableObject {
+    @Published var nowPlaying: String = "Nothing playing"
+    @Published var isLoading: Bool = false
+    
+    private var cancellables = Set<AnyCancellable>()
+    
+    init() {
+        // Subscribe to state changes
+        PlayolaStationPlayer.shared.$state
+            .sink { [weak self] state in
+                switch state {
+                case .idle:
+                    self?.nowPlaying = "Nothing playing"
+                    self?.isLoading = false
+                case .loading(let progress):
+                    self?.nowPlaying = "Loading... \(Int(progress * 100))%"
+                    self?.isLoading = true
+                case .playing(let audioBlock):
+                    self?.nowPlaying = "\(audioBlock.title) by \(audioBlock.artist)"
+                    self?.isLoading = false
+                }
+            }
+            .store(in: &cancellables)
+        
+        // Subscribe to station ID changes
+        PlayolaStationPlayer.shared.$stationId
+            .compactMap { $0 }
+            .sink { stationId in
+                print("Now playing station: \(stationId)")
+            }
+            .store(in: &cancellables)
+    }
+}
+```
+
+### SwiftUI Integration
+
+Here's a complete SwiftUI example:
+
+```swift
 import SwiftUI
+import PlayolaPlayer
 
-struct ContentView: View {
-    @ObservedObject var player = PlayolaStationPlayer.shared
-
+struct PlayerView: View {
+    @StateObject private var player = PlayolaStationPlayer.shared
+    @State private var stationId = ""
+    
     var body: some View {
-        VStack {
-            Button(player.isPlaying ? "Stop" : "Play") {
-                if player.isPlaying {
-                    player.stop()
-                } else {
-                    Task {
-                        try await player.play(stationId: "your-station-id")
+        VStack(spacing: 20) {
+            // Station input
+            TextField("Station ID", text: $stationId)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+                .padding(.horizontal)
+            
+            // Play/Stop button
+            Button(action: togglePlayback) {
+                Label(
+                    player.isPlaying ? "Stop" : "Play",
+                    systemImage: player.isPlaying ? "stop.fill" : "play.fill"
+                )
+                .frame(width: 120)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(stationId.isEmpty && !player.isPlaying)
+            
+            // Current state display
+            VStack {
+                Text("Status:")
+                    .font(.headline)
+                
+                switch player.state {
+                case .idle:
+                    Text("Not playing")
+                        .foregroundColor(.secondary)
+                case .loading(let progress):
+                    ProgressView(value: progress)
+                        .progressViewStyle(LinearProgressViewStyle())
+                    Text("Loading... \(Int(progress * 100))%")
+                case .playing(let audioBlock):
+                    VStack(spacing: 5) {
+                        Text(audioBlock.title)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                        Text(audioBlock.artist)
+                            .foregroundColor(.secondary)
+                        if let album = audioBlock.album {
+                            Text(album)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
             }
             .padding()
+            .frame(maxWidth: .infinity)
+            .background(Color.gray.opacity(0.1))
+            .cornerRadius(10)
+            .padding(.horizontal)
             
-            // Display the current playback state
-            Text("Now playing: \(getCurrentTrackInfo())")
+            Spacer()
         }
+        .padding(.top)
     }
     
-    func getCurrentTrackInfo() -> String {
-        switch player.state {
-        case .playing(let audioBlock):
-            return "\(audioBlock.title) by \(audioBlock.artist)"
-        case .loading(let progress):
-            return "Loading... \(Int(progress * 100))%"
-        case .idle:
-            return "Nothing playing"
+    func togglePlayback() {
+        if player.isPlaying {
+            player.stop()
+        } else {
+            Task {
+                do {
+                    try await player.play(stationId: stationId)
+                } catch {
+                    print("Playback error: \(error)")
+                }
+            }
         }
     }
 }
 ```
 
-### Handling Player States
+### Using Delegates
 
-The player provides an observable state that you can use to update your UI:
+For UIKit applications or when you prefer delegate patterns:
 
 ```swift
-switch player.state {
-case .idle:
-    // Player is not playing anything
-case .loading(let progress):
-    // Player is loading content, progress is a Float from 0.0 to 1.0
-case .playing(let audioBlock):
-    // Player is actively playing this audio block
-    // audioBlock contains metadata like title, artist, etc.
+import UIKit
+import PlayolaPlayer
+
+class PlayerViewController: UIViewController {
+    private let player = PlayolaStationPlayer.shared
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        player.delegate = self
+    }
 }
-```
 
-### Implementing a Custom Delegate
-
-You can implement the `PlayolaStationPlayerDelegate` to receive callbacks for state changes:
-
-```swift
-class MyPlayerManager: PlayolaStationPlayerDelegate {
-    init() {
-        PlayolaStationPlayer.shared.delegate = self
+extension PlayerViewController: PlayolaStationPlayerDelegate {
+    func player(_ player: PlayolaStationPlayer, 
+                playerStateDidChange state: PlayolaStationPlayer.State) {
+        DispatchQueue.main.async { [weak self] in
+            switch state {
+            case .idle:
+                self?.updateUI(title: "Not Playing", subtitle: nil)
+            case .loading(let progress):
+                self?.updateUI(title: "Loading...", 
+                             subtitle: "\(Int(progress * 100))%")
+            case .playing(let audioBlock):
+                self?.updateUI(title: audioBlock.title, 
+                             subtitle: audioBlock.artist)
+                
+                // Access additional metadata
+                if let duration = audioBlock.durationMS {
+                    print("Duration: \(duration / 1000) seconds")
+                }
+                
+                if let imageUrl = audioBlock.imageUrl {
+                    self?.loadAlbumArt(from: imageUrl)
+                }
+            }
+        }
     }
     
-    func player(_ player: PlayolaStationPlayer, playerStateDidChange state: PlayolaStationPlayer.State) {
-        // Handle state changes
-        switch state {
-        case .playing(let audioBlock):
-            print("Now playing: \(audioBlock.title) by \(audioBlock.artist)")
-        case .loading(let progress):
-            print("Loading: \(progress * 100)%")
-        case .idle:
-            print("Playback stopped")
-        }
+    private func updateUI(title: String, subtitle: String?) {
+        // Update your UI elements
+    }
+    
+    private func loadAlbumArt(from url: URL) {
+        // Load and display album artwork
     }
 }
 ```
 
 ### Error Handling
 
-PlayolaPlayer provides a centralized error reporting system:
+PlayolaPlayer provides comprehensive error handling capabilities:
 
 ```swift
-// Configure error reporting
-PlayolaErrorReporter.shared.reportingLevel = .error
-PlayolaErrorReporter.shared.delegate = self
+import PlayolaPlayer
 
-// Implement the delegate
-extension MyClass: PlayolaErrorReporterDelegate {
+class ErrorHandler: PlayolaErrorReporterDelegate {
+    init() {
+        // Configure error reporting
+        PlayolaErrorReporter.shared.delegate = self
+        PlayolaErrorReporter.shared.reportingLevel = .error
+        PlayolaErrorReporter.shared.logToConsole = true
+    }
+    
     func playolaDidEncounterError(_ error: Error,
                                  sourceFile: String,
                                  sourceLine: Int,
                                  function: String,
                                  stackTrace: String) {
-        // Log or display the error
-        print("Playola error: \(error.localizedDescription)")
-        print("In \(sourceFile):\(sourceLine)")
-    }
-}
-```
-
-## Advanced Usage
-
-### Audio Session Configuration
-
-PlayolaPlayer configures the audio session for you, but if you need to customize it:
-
-```swift
-// Get access to the main mixer
-let mainMixer = PlayolaMainMixer.shared
-
-// Configure the audio session before playing
-mainMixer.configureAudioSession()
-
-// Clean up when done
-mainMixer.deactivateAudioSession()
-
-// Handle interruptions (add these to your app delegate or scene)
-NotificationCenter.default.addObserver(
-    mainMixer,
-    selector: #selector(PlayolaMainMixer.handleAudioSessionInterruption(_:)),
-    name: AVAudioSession.interruptionNotification,
-    object: nil
-)
-
-NotificationCenter.default.addObserver(
-    mainMixer,
-    selector: #selector(PlayolaMainMixer.handleAudioRouteChange(_:)),
-    name: AVAudioSession.routeChangeNotification,
-    object: nil
-)
-```
-
-### Manual File Management
-
-If you need to manage audio files manually:
-
-```swift
-// Access the file download manager
-let downloadManager = FileDownloadManager.shared
-
-// Download a file with progress updates
-let downloadId = downloadManager.downloadFile(
-    remoteUrl: URL(string: "https://example.com/audio.mp3")!,
-    progressHandler: { progress in
-        print("Download progress: \(progress * 100)%")
-    },
-    completion: { result in
-        switch result {
-        case .success(let localUrl):
-            print("File downloaded to: \(localUrl)")
-        case .failure(let error):
-            print("Download failed: \(error)")
+        // Handle errors based on type
+        switch error {
+        case let stationError as StationPlayerError:
+            handleStationPlayerError(stationError)
+        case let downloadError as FileDownloadError:
+            handleDownloadError(downloadError)
+        default:
+            // Generic error handling
+            print("Playola Error: \(error.localizedDescription)")
+            print("Location: \(sourceFile):\(sourceLine) in \(function)")
         }
     }
-)
-
-// Cancel a download if needed
-downloadManager.cancelDownload(id: downloadId)
-
-// Clear the cache when needed
-try? downloadManager.clearCache()
-
-// Prune the cache to a specific size
-try? downloadManager.pruneCache(maxSize: 100_000_000) // 100MB
+    
+    private func handleStationPlayerError(_ error: StationPlayerError) {
+        switch error {
+        case .networkError(let message):
+            showAlert(title: "Network Error", message: message)
+        case .scheduleError(let message):
+            showAlert(title: "Schedule Error", message: message)
+        case .playbackError(let message):
+            showAlert(title: "Playback Error", message: message)
+        case .invalidStationId(let id):
+            showAlert(title: "Invalid Station", message: "Station ID '\(id)' not found")
+        case .fileDownloadError(let message):
+            showAlert(title: "Download Error", message: message)
+        }
+    }
+    
+    private func handleDownloadError(_ error: FileDownloadError) {
+        switch error {
+        case .downloadCancelled:
+            // User cancelled - no action needed
+            break
+        case .invalidRemoteURL(let url):
+            print("Invalid URL: \(url)")
+        case .downloadFailed(let message):
+            showAlert(title: "Download Failed", message: message)
+        default:
+            showAlert(title: "Download Error", 
+                     message: error.localizedDescription)
+        }
+    }
+    
+    private func showAlert(title: String, message: String) {
+        // Show alert to user
+    }
+}
 ```
 
-## Contributing to PlayolaPlayer
+### Advanced Features
 
-We welcome contributions to PlayolaPlayer! Here's how you can help:
+#### Audio Session Handling
 
-### Development Setup
+PlayolaPlayer automatically handles audio session configuration, but you can customize the behavior:
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/your-organization/PlayolaPlayer.git
-   cd PlayolaPlayer
-   ```
+```swift
+// Handle interruptions (phone calls, alarms, etc.)
+NotificationCenter.default.addObserver(
+    forName: AVAudioSession.interruptionNotification,
+    object: nil,
+    queue: .main
+) { notification in
+    PlayolaStationPlayer.shared.handleAudioSessionInterruption(notification)
+}
 
-2. Open the package in Xcode:
-   ```bash
-   xed .
-   ```
+// Handle route changes (headphones plugged/unplugged)
+NotificationCenter.default.addObserver(
+    forName: AVAudioSession.routeChangeNotification,
+    object: nil,
+    queue: .main
+) { notification in
+    PlayolaStationPlayer.shared.handleAudioRouteChange(notification)
+}
+```
 
-3. The package includes tests that you can run in Xcode using the test navigator.
+#### Working with Audio Blocks
 
-### Project Structure
+Access detailed metadata from the currently playing audio block:
 
-- **Sources/PlayolaPlayer**: Contains the main library code
-  - **Player**: Core playback components
-  - **Models**: Data models for spins, schedules, etc.
-  - **Protocols**: Interface definitions
-  - **Extensions**: Swift extensions
-  - **ErrorHandling**: Error reporting system
-  - **MockData**: Test data
+```swift
+if case .playing(let audioBlock) = PlayolaStationPlayer.shared.state {
+    print("Title: \(audioBlock.title)")
+    print("Artist: \(audioBlock.artist)")
+    print("Album: \(audioBlock.album ?? "Unknown")")
+    
+    // Timing information
+    if let duration = audioBlock.durationMS {
+        print("Duration: \(duration / 1000) seconds")
+    }
+    
+    if let endOfMessage = audioBlock.endOfMessageMS {
+        print("End of message: \(endOfMessage / 1000) seconds")
+    }
+    
+    if let outroStart = audioBlock.beginningOfOutroMS {
+        print("Outro starts at: \(outroStart / 1000) seconds")
+    }
+    
+    // Additional metadata
+    print("Type: \(audioBlock.type)")
+    print("Created: \(audioBlock.createdAt)")
+    
+    if let spotifyId = audioBlock.spotifyId {
+        print("Spotify ID: \(spotifyId)")
+    }
+}
+```
 
-- **Tests/PlayolaPlayerTests**: Test suite for the library
-  - **Test Utilities**: Helper classes for testing
-  - **AudioNormalizationCalculatorTests**: Audio processing tests
+#### Schedule Information
 
-### Coding Guidelines
+Access the current schedule and upcoming spins:
 
-- Follow Swift's API Design Guidelines
-- Document all public APIs using standard documentation comments
-- Maintain thread safety with proper actor isolation
-- Include unit tests for new functionality
+```swift
+// Get the current spin player (internal component)
+// Note: This is typically handled internally, but available for advanced use cases
+import PlayolaPlayer
+
+// The schedule is managed internally, but you can observe state changes
+// to know when new content is playing
+```
+
+#### Custom Error Reporting Levels
+
+Configure error reporting based on your needs:
+
+```swift
+// Set reporting level
+PlayolaErrorReporter.shared.reportingLevel = .debug // Reports everything
+
+// Available levels:
+// .none     - No reporting
+// .critical - Only critical errors
+// .error    - Errors and critical
+// .warning  - Warnings and above
+// .debug    - All messages
+
+// Report custom errors
+error.playolaReport(context: "Custom operation failed", level: .warning)
+```
+
+## Model Types Reference
+
+### AudioBlock
+Represents an audio content item with rich metadata:
+- **Identification**: `id`, `s3Key`, `s3BucketName`
+- **Metadata**: `title`, `artist`, `album`, `spotifyId`
+- **Timing**: `durationMS`, `endOfMessageMS`, `beginningOfOutroMS`, `endOfIntroMS`
+- **URLs**: `downloadUrl`, `imageUrl`
+- **Additional**: `type`, `popularity`, `createdAt`, `updatedAt`
+
+### Spin
+Represents a scheduled playback item:
+- **Core**: `id`, `stationId`, `airtime`
+- **Content**: `audioBlock` (optional)
+- **Playback**: `startingVolume`, `fades` array
+- **Computed**: `endtime`, `isPlaying`
+
+### Fade
+Volume transition point:
+- `atMS`: Time in milliseconds
+- `toVolume`: Target volume (0.0-1.0)
+
+### Station
+Station information:
+- `id`, `name`, `curatorName`
+- `imageUrl` (optional)
+- `createdAt`, `updatedAt`
+
+### Schedule
+Station schedule container:
+- `stationId`
+- `spins` array
+- Computed: `nowPlaying`, `current`
+
+## Contributing
+
+We welcome contributions to PlayolaPlayer! Please see our [Contributing Guidelines](#contributing-to-playolaplayer) section for details on:
+
+- Development setup
+- Coding standards
+- Testing requirements
+- Pull request process
+
+### Quick Start for Contributors
+
+```bash
+# Clone the repository
+git clone https://github.com/your-organization/PlayolaPlayer.git
+cd PlayolaPlayer
+
+# Open in Xcode
+xed .
+
+# Run tests
+swift test
+
+# Build the package
+swift build
+```
+
+### Key Guidelines
+
+- Follow Swift API Design Guidelines
 - Use Swift Concurrency (async/await) for asynchronous operations
-- Properly handle errors and edge cases
-
-### Documentation
-
-All public APIs should be documented with standard documentation comments:
-
-```swift
-/// Brief description of what this does
-///
-/// More detailed explanation if needed
-///
-/// - Parameters:
-///   - paramName: Description of the parameter
-/// - Returns: Description of the return value
-/// - Throws: Conditions under which this might throw errors
-public func myFunction(paramName: ParamType) throws -> ReturnType {
-    // Implementation
-}
-```
-
-### Testing
-
-The library uses the Swift Testing framework. Add tests for any new functionality:
-
-```swift
-@Test("Descriptive test name")
-func testSomething() throws {
-    // Arrange
-    let sut = SystemUnderTest()
-    
-    // Act
-    let result = sut.methodToTest()
-    
-    // Assert
-    #expect(result == expectedValue)
-}
-```
-
-### Error Handling
-
-Use the PlayolaErrorReporter for consistent error reporting:
-
-```swift
-Task { @MainActor in
-    PlayolaErrorReporter.shared.reportError(
-        error,
-        context: "Failed to process audio file: \(filename)",
-        level: .error
-    )
-}
-```
-
-### Submitting Changes
-
-1. Create a feature branch:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. Make your changes and commit them:
-   ```bash
-   git commit -m "Description of your changes"
-   ```
-
-3. Push your branch:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-4. Create a pull request on GitHub
-
-### Pull Request Process
-
-1. Update the README.md or documentation if needed
-2. Make sure all tests pass
-3. Ensure your code follows the project's style
-4. Get at least one code review from a maintainer
+- Document all public APIs
+- Include tests for new functionality
+- Maintain thread safety with proper actor isolation
 
 ## License
 
