@@ -24,7 +24,7 @@ func playOrPause() {
     if await PlayolaStationPlayer.shared.isPlaying {
       await PlayolaStationPlayer.shared.stop()
     } else {
-      try! await PlayolaStationPlayer.shared.play(stationId: "f3864734-de35-414f-b0b3-e6909b0b77bd")
+      try! await PlayolaStationPlayer.shared.play(stationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
 
     }
   }

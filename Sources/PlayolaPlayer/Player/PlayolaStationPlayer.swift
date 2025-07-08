@@ -266,6 +266,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
     let url = baseUrl.appending(path: "/stations/\(stationId)/schedule")
+      .appending(queryItems: [URLQueryItem(name: "includeRelatedTexts", value: "true")])
     do {
       let (data, response) = try await URLSession.shared.data(from: url)
 

@@ -50,6 +50,9 @@ public struct Spin: Codable, Sendable {
   /// Volume transitions that should occur during playback
   public let fades: [Fade]
 
+  /// Related texts associated with this spin (e.g., DJ notes, song explanations)
+  public let relatedTexts: [RelatedText]?
+
   /// Date provider for testing time-dependent behavior
   public var dateProvider: DateProvider! = .shared
 
@@ -61,6 +64,7 @@ public struct Spin: Codable, Sendable {
               updatedAt: Date,
               audioBlock: AudioBlock?,
               fades: [Fade],
+              relatedTexts: [RelatedText]? = nil,
               dateProvider: DateProvider! = DateProvider.shared) {
     self.id = id
     self.stationId = stationId
@@ -70,6 +74,7 @@ public struct Spin: Codable, Sendable {
     self.updatedAt = updatedAt
     self.audioBlock = audioBlock
     self.fades = fades
+    self.relatedTexts = relatedTexts
     self.dateProvider = dateProvider
   }
 
@@ -83,8 +88,42 @@ public struct Spin: Codable, Sendable {
     return airtime <= dateProvider.now() &&
     dateProvider.now() <= endtime
   }
+  
   private enum CodingKeys: String, CodingKey {
-    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, startingVolume
+    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, startingVolume, relatedTexts
+  }
+
+  // Custom decoder to handle dateProvider
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    
+    id = try container.decode(String.self, forKey: .id)
+    stationId = try container.decode(String.self, forKey: .stationId)
+    airtime = try container.decode(Date.self, forKey: .airtime)
+    startingVolume = try container.decode(Float.self, forKey: .startingVolume)
+    createdAt = try container.decode(Date.self, forKey: .createdAt)
+    updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    audioBlock = try container.decodeIfPresent(AudioBlock.self, forKey: .audioBlock)
+    fades = try container.decode([Fade].self, forKey: .fades)
+    relatedTexts = try container.decodeIfPresent([RelatedText].self, forKey: .relatedTexts)
+    
+    // Initialize dateProvider with default value
+    dateProvider = DateProvider.shared
+  }
+
+  // Custom encoder to handle dateProvider
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    
+    try container.encode(id, forKey: .id)
+    try container.encode(stationId, forKey: .stationId)
+    try container.encode(airtime, forKey: .airtime)
+    try container.encode(startingVolume, forKey: .startingVolume)
+    try container.encode(createdAt, forKey: .createdAt)
+    try container.encode(updatedAt, forKey: .updatedAt)
+    try container.encodeIfPresent(audioBlock, forKey: .audioBlock)
+    try container.encode(fades, forKey: .fades)
+    try container.encodeIfPresent(relatedTexts, forKey: .relatedTexts)
   }
 }
 
@@ -106,6 +145,7 @@ extension Spin {
   ///   - fades: Optional override for fades
   ///   - createdAt: Optional override for created date
   ///   - updatedAt: Optional override for updated date
+  ///   - relatedTexts: Optional override for related texts
   ///   - dateProvider: Optional override for date provider
   /// - Returns: A mock Spin with specified overrides
   public static func mockWith(
@@ -117,6 +157,7 @@ extension Spin {
     fades: [Fade]? = nil,
     createdAt: Date? = nil,
     updatedAt: Date? = nil,
+    relatedTexts: [RelatedText]? = nil,
     dateProvider: DateProvider? = nil
   ) -> Spin {
     // Start with the default mock
@@ -131,7 +172,8 @@ extension Spin {
       createdAt: createdAt ?? mockSpin.createdAt,
       updatedAt: updatedAt ?? mockSpin.updatedAt,
       audioBlock: audioBlock ?? mockSpin.audioBlock,
-      fades: fades ?? mockSpin.fades
+      fades: fades ?? mockSpin.fades,
+      relatedTexts: relatedTexts ?? mockSpin.relatedTexts
     )
 
     // Set date provider if specified
