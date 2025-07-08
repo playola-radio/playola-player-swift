@@ -77,7 +77,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   public enum State {
     case loading(Float)
-    case playing(AudioBlock)
+    case playing(Spin)
     case idle
   }
 
@@ -127,13 +127,13 @@ final public class PlayolaStationPlayer: ObservableObject {
   private func scheduleSpin(spin: Spin, showProgress: Bool = false, retryCount: Int = 0) async throws {
     let spinPlayer = getAvailableSpinPlayer()
 
-    guard let audioFileUrl = spin.audioBlock?.downloadUrl else {
+    guard let audioFileUrl = spin.audioBlock.downloadUrl else {
       let spinDetails = """
                 Spin ID: \(spin.id)
-                Audio Block ID: \(spin.audioBlock?.id ?? "nil")
-                Audio Block Title: \(spin.audioBlock?.title ?? "nil")
-                Audio Block Artist: \(spin.audioBlock?.artist ?? "nil")
-                Download URL: \(spin.audioBlock?.downloadUrl?.absoluteString ?? "nil")
+                Audio Block ID: \(spin.audioBlock.id)
+                Audio Block Title: \(spin.audioBlock.title)
+                Audio Block Artist: \(spin.audioBlock.artist)
+                Download URL: \(spin.audioBlock.downloadUrl?.absoluteString ?? "nil")
             """
       let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
       errorReporter.reportError(
@@ -164,9 +164,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
       switch result {
       case .success(let localUrl):
-        // Only update state to playing if this is the currently playing spin
-        if showProgress, let audioBlock = spin.audioBlock {
-          self.state = .playing(audioBlock)
+        if showProgress {
+          self.state = .playing(spin)
         }
         return
       case .failure(let error):
@@ -239,8 +238,8 @@ final public class PlayolaStationPlayer: ObservableObject {
           os_log("Scheduling new spin: %@ by %@ at %@",
                  log: PlayolaStationPlayer.logger,
                  type: .info,
-                 spin.audioBlock?.title ?? "unknown",
-                 spin.audioBlock?.artist ?? "unknown",
+                 spin.audioBlock.title,
+                 spin.audioBlock.artist,
                  ISO8601DateFormatter().string(from: spin.airtime))
           try await scheduleSpin(spin: spin)
         }
@@ -266,6 +265,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
     let url = baseUrl.appending(path: "/stations/\(stationId)/schedule")
+      .appending(queryItems: [URLQueryItem(name: "includeRelatedTexts", value: "true")])
     do {
       let (data, response) = try await URLSession.shared.data(from: url)
 
@@ -361,8 +361,8 @@ final public class PlayolaStationPlayer: ObservableObject {
            log: PlayolaStationPlayer.logger,
            type: .info,
            stationId,
-           spinToPlay.audioBlock?.title ?? "unknown",
-           spinToPlay.audioBlock?.artist ?? "unknown",
+           spinToPlay.audioBlock.title,
+           spinToPlay.audioBlock.artist,
            formattedDate)
 
     // Schedule the first spin with progress shown
@@ -471,13 +471,11 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
   public func player(_ player: SpinPlayer, startedPlaying spin: Spin) {
     os_log("Delegate notified: Started playing %@ by %@ (spinID: %@)",
            log: PlayolaStationPlayer.logger, type: .info,
-           spin.audioBlock?.title ?? "unknown",
-           spin.audioBlock?.artist ?? "unknown",
+           spin.audioBlock.title,
+           spin.audioBlock.artist,
            spin.id)
 
-    if let audioBlock = spin.audioBlock {
-      self.state = .playing(audioBlock)
-    }
+    self.state = .playing(spin)
 
     Task {
       do {

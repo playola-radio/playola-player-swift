@@ -4,6 +4,7 @@
 //
 //  Created by Brian D Keane on 1/8/25.
 //
+
 import Foundation
 import Testing
 @testable import PlayolaPlayer
@@ -131,7 +132,7 @@ struct SpinTests {
     @Test("endtime is calculated correctly from airtime and audioBlock duration")
     func testEndtimeCalculation() throws {
         // Verify the endtime is calculated as airtime + audioBlock.endOfMessageMS milliseconds
-        let expectedEndtime = spin.airtime + TimeInterval(Double(spin.audioBlock?.endOfMessageMS ?? 0) / 1000.0)
+      let expectedEndtime = spin.airtime + TimeInterval(Double(spin.audioBlock.endOfMessageMS) / 1000.0)
         #expect(spin.endtime == expectedEndtime)
     }
 
@@ -249,5 +250,162 @@ struct SpinTests {
         )
 
         #expect(!finishedSpin.isPlaying)
+    }
+
+    @Test("Spin decodes relatedTexts from JSON correctly")
+    func testSpinDecodesRelatedTexts() throws {
+        let jsonString = """
+        {
+            "id": "948fb1e9-6f86-473b-ab04-725b4de63dc4",
+            "stationId": "9d79fd38-1940-4312-8fe8-3b9b50d49c6c",
+            "audioBlockId": "b55a086b-7b31-47c0-bf3f-b355c8a23a4f",
+            "airtime": "2025-07-08T18:17:27.867Z",
+            "endOfMessageTime": "2025-07-08T14:45:18.269Z",
+            "startingVolume": 1,
+            "fades": [
+                {
+                    "atMS": 229365,
+                    "toVolume": 0.3
+                },
+                {
+                    "atMS": 238324,
+                    "toVolume": 0
+                },
+                {
+                    "atMS": 1000,
+                    "toVolume": 1
+                }
+            ],
+            "createdAt": "2025-07-08T14:45:18.255Z",
+            "updatedAt": "2025-07-08T14:45:18.255Z",
+            "audioBlock": {
+                "endOfMessageMS": 237324,
+                "s3BucketName": "playola-songs-intake",
+                "downloadUrl": "https://playola-songs-intake.s3.amazonaws.com/Hozier%20--%20Take%20Me%20to%20Church.m4a",
+                "beginningOfOutroMS": 229365,
+                "endOfIntroMS": 1000,
+                "lengthOfOutroMS": 7959,
+                "earliestNextSpinStartMS": 229365,
+                "overlapRole": "background",
+                "id": "b55a086b-7b31-47c0-bf3f-b355c8a23a4f",
+                "type": "song",
+                "title": "Take Me to Church",
+                "artist": "Hozier",
+                "album": "Hozier (Expanded Edition)",
+                "durationMS": 241693,
+                "popularity": 83,
+                "youTubeId": null,
+                "releaseDate": "2014-09-19",
+                "s3Key": "Hozier -- Take Me to Church.m4a",
+                "isrc": "USSM11307291",
+                "appleId": "900672609",
+                "spotifyId": "1CS7Sd1u5tWkstBhpssyjP",
+                "imageUrl": "https://i.scdn.co/image/ab67616d0000b2734ca68d59a4a29c856a4a39c2",
+                "attributes": {},
+                "precedesAudioBlocks": {},
+                "limitToStations": null,
+                "transcription": null,
+                "createdAt": "2025-04-01T15:28:32.252Z",
+                "updatedAt": "2025-07-04T20:47:35.877Z"
+            },
+            "relatedTexts": [
+                {
+                    "title": "Why I chose this song",
+                    "body": "When I was in middle school I found this song and I was absolutely mesmerized by it so here it is.  This is take me to church by Hozier"
+                },
+                {
+                    "title": "Why I chose this song",
+                    "body": "Hozier is an absolute undeniable talent and I think that you need to hear it. So here is a Hozier song"
+                }
+            ]
+        }
+        """
+        
+        let jsonData = jsonString.data(using: .utf8)!
+        
+        // Set up a date formatter for the specific date format in the JSON
+        let decoder = JSONDecoder()
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+        dateFormatter.timeZone = TimeZone(abbreviation: "UTC")
+        decoder.dateDecodingStrategy = .formatted(dateFormatter)
+        
+        // Decode the Spin
+        let spin = try decoder.decode(Spin.self, from: jsonData)
+        
+        // Test that basic properties are decoded
+        #expect(spin.id == "948fb1e9-6f86-473b-ab04-725b4de63dc4")
+        #expect(spin.stationId == "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
+        #expect(spin.startingVolume == 1.0)
+        
+        // Test that audioBlock is decoded
+        #expect(spin.audioBlock != nil)
+        #expect(spin.audioBlock.id == "b55a086b-7b31-47c0-bf3f-b355c8a23a4f")
+        #expect(spin.audioBlock.title == "Take Me to Church")
+        #expect(spin.audioBlock.artist == "Hozier")
+        
+        // Test that fades are decoded
+        #expect(spin.fades.count == 3)
+        #expect(spin.fades[0].atMS == 229365)
+        #expect(spin.fades[0].toVolume == 0.3)
+        
+        // Test that relatedTexts are decoded (this is the main test)
+        #expect(spin.relatedTexts != nil)
+        #expect(spin.relatedTexts?.count == 2)
+        
+        let firstRelatedText = spin.relatedTexts?[0]
+        #expect(firstRelatedText?.title == "Why I chose this song")
+        #expect(firstRelatedText?.body == "When I was in middle school I found this song and I was absolutely mesmerized by it so here it is.  This is take me to church by Hozier")
+        
+        let secondRelatedText = spin.relatedTexts?[1]
+        #expect(secondRelatedText?.title == "Why I chose this song")
+        #expect(secondRelatedText?.body == "Hozier is an absolute undeniable talent and I think that you need to hear it. So here is a Hozier song")
+    }
+    
+    @Test("Spin decodes correctly when relatedTexts is missing")
+    func testSpinDecodesWithoutRelatedTexts() throws {
+        let jsonString = """
+        {
+            "id": "948fb1e9-6f86-473b-ab04-725b4de63dc4",
+            "stationId": "9d79fd38-1940-4312-8fe8-3b9b50d49c6c",
+            "audioBlockId": "b55a086b-7b31-47c0-bf3f-b355c8a23a4f",
+            "airtime": "2025-07-08T18:17:27.867Z",
+            "endOfMessageTime": "2025-07-08T14:45:18.269Z",
+            "startingVolume": 1,
+            "fades": [],
+            "createdAt": "2025-07-08T14:45:18.255Z",
+            "updatedAt": "2025-07-08T14:45:18.255Z",
+            "audioBlock": {
+                "endOfMessageMS": 237324,
+                "s3BucketName": "playola-songs-intake",
+                "downloadUrl": "https://playola-songs-intake.s3.amazonaws.com/test.m4a",
+                "beginningOfOutroMS": 229365,
+                "endOfIntroMS": 1000,
+                "lengthOfOutroMS": 7959,
+                "id": "b55a086b-7b31-47c0-bf3f-b355c8a23a4f",
+                "type": "song",
+                "title": "Test Song",
+                "artist": "Test Artist",
+                "durationMS": 241693,
+                "s3Key": "test.m4a",
+                "createdAt": "2025-04-01T15:28:32.252Z",
+                "updatedAt": "2025-07-04T20:47:35.877Z"
+            }
+        }
+        """
+        
+        let jsonData = jsonString.data(using: .utf8)!
+        
+        let decoder = JSONDecoder()
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+        dateFormatter.timeZone = TimeZone(abbreviation: "UTC")
+        decoder.dateDecodingStrategy = .formatted(dateFormatter)
+        
+        // This should decode successfully with relatedTexts as nil
+        let spin = try decoder.decode(Spin.self, from: jsonData)
+        
+        #expect(spin.id == "948fb1e9-6f86-473b-ab04-725b4de63dc4")
+        #expect(spin.relatedTexts == nil)
     }
 }
