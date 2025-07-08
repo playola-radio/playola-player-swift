@@ -237,8 +237,8 @@ public class SpinPlayer {
     do {
       os_log("Starting playback of %@ by %@ (spinID: %@) from position %f",
              log: SpinPlayer.logger, type: .info,
-             spin?.audioBlock?.title ?? "unknown",
-             spin?.audioBlock?.artist ?? "unknown",
+             spin?.audioBlock.title ?? "unknown",
+             spin?.audioBlock.artist ?? "unknown",
              spin?.id ?? "unknown", from)
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
@@ -261,7 +261,7 @@ public class SpinPlayer {
       }
       os_log("Successfully started playback of %@ (spinID: %@)",
              log: SpinPlayer.logger, type: .info,
-             spin?.audioBlock?.title ?? "unknown",
+             spin?.audioBlock.title ?? "unknown",
              spin?.id ?? "unknown")
     } catch {
       errorReporter.reportError(error,
@@ -290,16 +290,16 @@ public class SpinPlayer {
 
     os_log("Loading spin: %@ by %@ (spinID: %@)",
            log: SpinPlayer.logger, type: .info,
-           spin.audioBlock?.title ?? "unknown",
-           spin.audioBlock?.artist ?? "unknown",
+           spin.audioBlock.title,
+           spin.audioBlock.artist,
            spin.id)
 
-    guard let audioFileUrl = spin.audioBlock?.downloadUrl else {
+    guard let audioFileUrl = spin.audioBlock.downloadUrl else {
       let error = NSError(domain: "fm.playola.PlayolaPlayer", code: 400, userInfo: [
         NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
         "spinId": spin.id,
-        "audioBlockId": spin.audioBlock?.id ?? "nil",
-        "audioBlockTitle": spin.audioBlock?.title ?? "nil"
+        "audioBlockId": spin.audioBlock.id,
+        "audioBlockTitle": spin.audioBlock.title
       ])
       errorReporter.reportError(error,
                                 context: "Missing or invalid download URL for spin ID: \(spin.id)",
@@ -377,8 +377,8 @@ public class SpinPlayer {
       os_log("Scheduling play at %@ for %@ by %@ (spinID: %@)",
              log: SpinPlayer.logger, type: .info,
              ISO8601DateFormatter().string(from: scheduledDate),
-             spin?.audioBlock?.title ?? "unknown",
-             spin?.audioBlock?.artist ?? "unknown",
+             spin?.audioBlock.title ?? "unknown",
+             spin?.audioBlock.artist ?? "unknown",
              spin?.id ?? "unknown")
 
       // Make sure audio session is configured before scheduling playback
@@ -421,8 +421,8 @@ public class SpinPlayer {
 
           os_log("Timer fired for scheduled play of %@ by %@ (spinID: %@)",
                  log: SpinPlayer.logger, type: .info,
-                 spin.audioBlock?.title ?? "unknown",
-                 spin.audioBlock?.artist ?? "unknown",
+                 spin.audioBlock.title,
+                 spin.audioBlock.artist,
                  spin.id)
 
           self.state = .playing
@@ -448,8 +448,8 @@ public class SpinPlayer {
     os_log("Attempting to load audio file: %@ for %@ by %@ (spinID: %@)",
            log: SpinPlayer.logger, type: .info,
            url.lastPathComponent,
-           spin?.audioBlock?.title ?? "unknown",
-           spin?.audioBlock?.artist ?? "unknown",
+           spin?.audioBlock.title ?? "unknown",
+           spin?.audioBlock.artist ?? "unknown",
            spin?.id ?? "unknown")
     do {
       // First check if the file exists and has a reasonable size
@@ -487,7 +487,7 @@ public class SpinPlayer {
         os_log("Successfully loaded audio file: %@ for %@ (spinID: %@)",
                log: SpinPlayer.logger, type: .info,
                url.lastPathComponent,
-               spin?.audioBlock?.title ?? "unknown",
+               spin?.audioBlock.title ?? "unknown",
                spin?.id ?? "unknown")
       } catch let audioError as NSError {
         // More detailed context with file information

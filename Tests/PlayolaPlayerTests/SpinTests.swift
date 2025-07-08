@@ -132,7 +132,7 @@ struct SpinTests {
     @Test("endtime is calculated correctly from airtime and audioBlock duration")
     func testEndtimeCalculation() throws {
         // Verify the endtime is calculated as airtime + audioBlock.endOfMessageMS milliseconds
-        let expectedEndtime = spin.airtime + TimeInterval(Double(spin.audioBlock?.endOfMessageMS ?? 0) / 1000.0)
+      let expectedEndtime = spin.airtime + TimeInterval(Double(spin.audioBlock.endOfMessageMS) / 1000.0)
         #expect(spin.endtime == expectedEndtime)
     }
 
@@ -340,9 +340,9 @@ struct SpinTests {
         
         // Test that audioBlock is decoded
         #expect(spin.audioBlock != nil)
-        #expect(spin.audioBlock?.id == "b55a086b-7b31-47c0-bf3f-b355c8a23a4f")
-        #expect(spin.audioBlock?.title == "Take Me to Church")
-        #expect(spin.audioBlock?.artist == "Hozier")
+        #expect(spin.audioBlock.id == "b55a086b-7b31-47c0-bf3f-b355c8a23a4f")
+        #expect(spin.audioBlock.title == "Take Me to Church")
+        #expect(spin.audioBlock.artist == "Hozier")
         
         // Test that fades are decoded
         #expect(spin.fades.count == 3)

@@ -53,12 +53,15 @@ public struct AudioBlock: Codable, Sendable {
   public let isrc: String?
   public let spotifyId: String?
   public let imageUrl: URL?
+  
+  /// Transcription of the audio content (when available)
+  public let transcription: String?
 
   // Custom coding keys to handle the imageUrl conversion
   private enum CodingKeys: String, CodingKey {
     case id, title, artist, durationMS, endOfMessageMS, beginningOfOutroMS, endOfIntroMS
     case lengthOfOutroMS, s3Key, s3BucketName, type, createdAt, updatedAt
-    case album, popularity, youTubeId, isrc, spotifyId
+    case album, popularity, youTubeId, isrc, spotifyId, transcription
     case imageUrlString = "imageUrl"
     case downloadUrlString = "downloadUrl"
   }
@@ -84,6 +87,7 @@ public struct AudioBlock: Codable, Sendable {
     youTubeId = try container.decodeIfPresent(Int.self, forKey: .youTubeId)
     isrc = try container.decodeIfPresent(String.self, forKey: .isrc)
     spotifyId = try container.decodeIfPresent(String.self, forKey: .spotifyId)
+    transcription = try container.decodeIfPresent(String.self, forKey: .transcription)
 
     // Convert imageUrl string to URL
     if let imageUrlString = try container.decodeIfPresent(String.self, forKey: .imageUrlString) {
@@ -120,13 +124,14 @@ public struct AudioBlock: Codable, Sendable {
     try container.encodeIfPresent(youTubeId, forKey: .youTubeId)
     try container.encodeIfPresent(isrc, forKey: .isrc)
     try container.encodeIfPresent(spotifyId, forKey: .spotifyId)
+    try container.encodeIfPresent(transcription, forKey: .transcription)
 
     // Convert URL back to string for encoding
     try container.encodeIfPresent(imageUrl?.absoluteString, forKey: .imageUrlString)
     try container.encodeIfPresent(downloadUrl?.absoluteString, forKey: .downloadUrlString)
   }
 
-  public init(id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int, beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?, s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date, album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?, imageUrl: String?) {
+  public init(id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int, beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?, s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date, album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?, imageUrl: String?, transcription: String? = nil) {
     self.id = id
     self.title = title
     self.artist = artist
@@ -147,10 +152,11 @@ public struct AudioBlock: Codable, Sendable {
     self.isrc = isrc
     self.spotifyId = spotifyId
     self.imageUrl = imageUrl != nil ? URL(string: imageUrl!) : nil
+    self.transcription = transcription
   }
 
   // Additional convenience initializer for URL
-  public init(id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int, beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?, s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date, album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?, imageUrl: URL?) {
+  public init(id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int, beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?, s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date, album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?, imageUrl: URL?, transcription: String? = nil) {
     self.id = id
     self.title = title
     self.artist = artist
@@ -171,12 +177,13 @@ public struct AudioBlock: Codable, Sendable {
     self.isrc = isrc
     self.spotifyId = spotifyId
     self.imageUrl = imageUrl
+    self.transcription = transcription
   }
 }
 
 extension AudioBlock {
   public static var mocks: [AudioBlock] {
-    return Schedule.mock.spins.map { $0.audioBlock! }
+    return Schedule.mock.spins.map { $0.audioBlock }
   }
 
   public static var mock: AudioBlock { .mocks[0] }
@@ -201,6 +208,7 @@ extension AudioBlock {
   ///   - s3BucketName: Optional override for S3 bucket name
   ///   - popularity: Optional override for popularity
   ///   - imageUrl: Optional override for image URL
+  ///   - transcription: Optional override for transcription
   ///   - createdAt: Optional override for created date
   ///   - updatedAt: Optional override for updated date
   /// - Returns: A mock AudioBlock with specified overrides
@@ -220,6 +228,7 @@ extension AudioBlock {
     s3BucketName: String? = nil,
     popularity: Int? = nil,
     imageUrl: URL? = nil,
+    transcription: String? = nil,
     createdAt: Date? = nil,
     updatedAt: Date? = nil
   ) -> AudioBlock {
@@ -247,7 +256,8 @@ extension AudioBlock {
       youTubeId: mockBlock.youTubeId,
       isrc: mockBlock.isrc,
       spotifyId: mockBlock.spotifyId,
-      imageUrl: imageUrl ?? mockBlock.imageUrl
+      imageUrl: imageUrl ?? mockBlock.imageUrl,
+      transcription: transcription ?? mockBlock.transcription
     )
   }
 }
