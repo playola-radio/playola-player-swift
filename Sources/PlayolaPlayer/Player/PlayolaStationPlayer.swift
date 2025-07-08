@@ -77,7 +77,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   public enum State {
     case loading(Float)
-    case playing(AudioBlock)
+    case playing(Spin)
     case idle
   }
 
@@ -164,9 +164,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
       switch result {
       case .success(let localUrl):
-        // Only update state to playing if this is the currently playing spin
         if showProgress {
-          self.state = .playing(spin.audioBlock)
+          self.state = .playing(spin)
         }
         return
       case .failure(let error):
@@ -476,7 +475,7 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
            spin.audioBlock.artist,
            spin.id)
 
-    self.state = .playing(spin.audioBlock)
+    self.state = .playing(spin)
 
     Task {
       do {

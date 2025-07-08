@@ -12,8 +12,8 @@ func playerStateTextFromPlayerState(_ state: PlayolaStationPlayer.State) -> Stri
   switch state {
   case .idle:
     return "Idle"
-  case .playing(let audioBlock):
-    return "Playing \(audioBlock.title) by \(audioBlock.artist)"
+  case .playing(let spin):
+    return "Playing \(spin.audioBlock.title) by \(spin.audioBlock.artist)"
   case .loading(let progress):
     return "Loading: \(roundf(progress * 100))% complete"
   }
