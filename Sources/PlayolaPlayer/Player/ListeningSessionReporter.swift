@@ -34,19 +34,12 @@ public enum ListeningSessionError: Error, LocalizedError {
     }
 }
 
-// Protocol for URLSession dependency injection
-protocol URLSessionProtocol {
-    func data(for request: URLRequest) async throws -> (Data, URLResponse)
-}
-
-extension URLSession: URLSessionProtocol {}
-
 @MainActor
 public class ListeningSessionReporter {
   public struct ListeningSessionRequest: Codable {
     let deviceId: String
     let stationId: String?
-    let stationUrl: String? = nil
+    var stationUrl: String? = nil
   }
 
   var deviceId: String? {
