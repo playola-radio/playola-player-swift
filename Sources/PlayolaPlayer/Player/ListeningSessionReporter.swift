@@ -16,6 +16,7 @@ public enum ListeningSessionError: Error, LocalizedError {
     case networkError(String)
     case invalidResponse(String)
     case encodingError(String)
+    case authenticationFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -27,9 +28,18 @@ public enum ListeningSessionError: Error, LocalizedError {
             return "Invalid response: \(message)"
         case .encodingError(let message):
             return "Encoding error: \(message)"
+        case .authenticationFailed(let message):
+            return "Authentication failed: \(message)"
         }
     }
 }
+
+// Protocol for URLSession dependency injection
+protocol URLSessionProtocol {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: URLSessionProtocol {}
 
 @MainActor
 public class ListeningSessionReporter {
@@ -49,9 +59,18 @@ public class ListeningSessionReporter {
   weak var stationPlayer: PlayolaStationPlayer?
   var currentListeningSessionID: String?
   private let errorReporter = PlayolaErrorReporter.shared
+  private let authProvider: PlayolaAuthenticationProvider?
+  private let urlSession: URLSessionProtocol
+  
+  // Retry limit and tracking
+  private let maxRefreshAttempts = 3
+  private var refreshAttempts = 0
+  private var lastRefreshAttemptTime: Date?
 
-  init(stationPlayer: PlayolaStationPlayer) {
+  init(stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared) {
     self.stationPlayer = stationPlayer
+    self.authProvider = authProvider
+    self.urlSession = urlSession
 
     stationPlayer.$stationId.sink { stationId in
       if let stationId  {
@@ -84,6 +103,14 @@ public class ListeningSessionReporter {
       }
     }.store(in: &disposeBag)
   }
+  
+  #if DEBUG
+  internal init(authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared) {
+    self.stationPlayer = nil
+    self.authProvider = authProvider
+    self.urlSession = urlSession
+  }
+  #endif
 
   deinit {
     self.timer?.invalidate()
@@ -102,8 +129,8 @@ public class ListeningSessionReporter {
 
     // Use modern async/await API
     do {
-      var request = try createPostRequest(url: url, requestBody: requestBody)
-      let (_, response) = try await URLSession.shared.data(for: request)
+      var request = try await createPostRequest(url: url, requestBody: requestBody)
+      let (_, response) = try await urlSession.data(for: request)
 
       guard let httpResponse = response as? HTTPURLResponse,
             (200...299).contains(httpResponse.statusCode) else {
@@ -131,13 +158,21 @@ public class ListeningSessionReporter {
       stationId: stationId)
 
     do {
-      var request = try createPostRequest(url: url, requestBody: requestBody)
-      let (_, response) = try await URLSession.shared.data(for: request)
+      var request = try await createPostRequest(url: url, requestBody: requestBody)
+      let (_, response) = try await urlSession.data(for: request)
 
-      guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode) else {
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        throw ListeningSessionError.invalidResponse("HTTP status code: \(statusCode)")
+      guard let httpResponse = response as? HTTPURLResponse else {
+        throw ListeningSessionError.invalidResponse("Invalid HTTP response")
+      }
+      
+      if httpResponse.statusCode == 401 {
+        // Handle 401 with retry limits
+        try await handleAuthenticationFailure(url: url, requestBody: requestBody)
+      } else if (200...299).contains(httpResponse.statusCode) {
+        // Success - reset retry counter
+        resetRefreshAttempts()
+      } else {
+        throw ListeningSessionError.invalidResponse("HTTP status code: \(httpResponse.statusCode)")
       }
     } catch {
       errorReporter.reportError(error, context: "Error reporting listening session", level: .error)
@@ -174,7 +209,92 @@ public class ListeningSessionReporter {
     self.timer = nil
   }
 
-  private func createPostRequest<T: Encodable>(url: URL, requestBody: T) throws -> URLRequest {
+  private func handleAuthenticationFailure(url: URL, requestBody: ListeningSessionRequest) async throws {
+    // Reset counter if enough time has passed (e.g., 5 minutes)
+    if let lastAttempt = lastRefreshAttemptTime,
+       Date().timeIntervalSince(lastAttempt) > 300 {
+      resetRefreshAttempts()
+    }
+    
+    // Check if we've exceeded retry limits
+    if refreshAttempts >= maxRefreshAttempts {
+      errorReporter.reportError(
+        ListeningSessionError.authenticationFailed("Max refresh attempts exceeded"),
+        context: "Exceeded maximum refresh attempts (\(maxRefreshAttempts))",
+        level: .warning
+      )
+      
+      // Fall back to Basic auth
+      try await attemptWithBasicAuth(url: url, requestBody: requestBody)
+      return
+    }
+    
+    // Attempt token refresh
+    refreshAttempts += 1
+    lastRefreshAttemptTime = Date()
+    
+    if let refreshedToken = await authProvider?.refreshToken() {
+      // Retry with refreshed token
+      let refreshedRequest = try await createPostRequest(url: url, requestBody: requestBody)
+      let (_, retryResponse) = try await urlSession.data(for: refreshedRequest)
+      
+      guard let retryHttpResponse = retryResponse as? HTTPURLResponse else {
+        throw ListeningSessionError.invalidResponse("Invalid HTTP response after refresh")
+      }
+      
+      if (200...299).contains(retryHttpResponse.statusCode) {
+        // Success - reset retry counter
+        resetRefreshAttempts()
+      } else if retryHttpResponse.statusCode == 401 {
+        // Still 401 after refresh - recursively handle (will increment counter)
+        try await handleAuthenticationFailure(url: url, requestBody: requestBody)
+      } else {
+        throw ListeningSessionError.invalidResponse("HTTP status code after refresh: \(retryHttpResponse.statusCode)")
+      }
+    } else {
+      // Refresh failed - try with Basic auth as fallback
+      try await attemptWithBasicAuth(url: url, requestBody: requestBody)
+    }
+  }
+  
+  private func attemptWithBasicAuth(url: URL, requestBody: ListeningSessionRequest) async throws {
+    // Create request with Basic auth (bypassing the auth provider)
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    
+    do {
+      request.httpBody = try JSONEncoder().encode(requestBody)
+    } catch {
+      throw ListeningSessionError.encodingError("Failed to encode request body: \(error.localizedDescription)")
+    }
+    
+    request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
+    request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+    
+    let (_, response) = try await urlSession.data(for: request)
+    
+    guard let httpResponse = response as? HTTPURLResponse else {
+      throw ListeningSessionError.invalidResponse("Invalid HTTP response with Basic auth")
+    }
+    
+    if (200...299).contains(httpResponse.statusCode) {
+      // Success with Basic auth
+      errorReporter.reportError(
+        ListeningSessionError.authenticationFailed("Fell back to Basic auth"),
+        context: "Authentication failed, using Basic auth fallback",
+        level: .warning
+      )
+    } else {
+      throw ListeningSessionError.authenticationFailed("Both Bearer token and Basic auth failed")
+    }
+  }
+  
+  private func resetRefreshAttempts() {
+    refreshAttempts = 0
+    lastRefreshAttemptTime = nil
+  }
+
+  internal func createPostRequest<T: Encodable>(url: URL, requestBody: T) async throws -> URLRequest {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
 
@@ -184,7 +304,13 @@ public class ListeningSessionReporter {
       throw ListeningSessionError.encodingError("Failed to encode request body: \(error.localizedDescription)")
     }
 
-    request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
+    // Use Bearer token if user is authenticated, otherwise fall back to Basic auth
+    if let userToken = await authProvider?.getCurrentToken() {
+      request.addValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
+    } else {
+      request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
+    }
+    
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
     return request
   }
