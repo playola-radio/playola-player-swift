@@ -76,11 +76,11 @@ final public class PlayolaStationPlayer: ObservableObject {
   var spinPlayers: [SpinPlayer] = []
   public static let shared = PlayolaStationPlayer()
   
-  /// Configure the shared instance with authentication provider
+  /// Configure this instance with authentication provider
   /// - Parameter authProvider: Provider for JWT tokens
-  public static func configure(authProvider: PlayolaAuthenticationProvider) {
-    shared.authProvider = authProvider
-    shared.listeningSessionReporter = ListeningSessionReporter(stationPlayer: shared, authProvider: authProvider)
+  public func configure(authProvider: PlayolaAuthenticationProvider) {
+    self.authProvider = authProvider
+    self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: authProvider)
   }
 
   public enum State {

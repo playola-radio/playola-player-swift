@@ -10,7 +10,7 @@ import Foundation
 
 @MainActor
 struct ListeningSessionTests {
-    
+
     @Suite("HTTP Request Authorization Headers")
     struct RequestHeaders {
         @Test("Uses Bearer token when auth provider has token")
