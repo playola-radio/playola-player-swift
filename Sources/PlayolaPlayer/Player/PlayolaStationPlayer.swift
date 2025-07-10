@@ -66,6 +66,7 @@ final public class PlayolaStationPlayer: ObservableObject {
   let fileDownloadManager: FileDownloadManaging
   var listeningSessionReporter: ListeningSessionReporter? = nil
   private let errorReporter = PlayolaErrorReporter.shared
+  private var authProvider: PlayolaAuthenticationProvider?
 
   // Track active download IDs for potential cancellation
   private var activeDownloadIds: [String: UUID] = [:]
@@ -74,6 +75,13 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   var spinPlayers: [SpinPlayer] = []
   public static let shared = PlayolaStationPlayer()
+  
+  /// Configure this instance with authentication provider
+  /// - Parameter authProvider: Provider for JWT tokens
+  public func configure(authProvider: PlayolaAuthenticationProvider) {
+    self.authProvider = authProvider
+    self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: authProvider)
+  }
 
   public enum State {
     case loading(Float)
@@ -98,7 +106,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private init(fileDownloadManager: FileDownloadManaging = FileDownloadManager.shared) {
     self.fileDownloadManager = fileDownloadManager
-    self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self)
+    self.authProvider = nil
+    self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
     NotificationCenter.default.addObserver(
       self,
