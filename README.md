@@ -50,12 +50,38 @@ targets: [
 
 ## Usage
 
+### Configuration
+
+Before using PlayolaPlayer, you need to configure it with an authentication provider. You can also optionally specify a custom base URL for development or staging environments:
+
+```swift
+import PlayolaPlayer
+
+// Production configuration (default)
+PlayolaStationPlayer.shared.configure(authProvider: myAuthProvider)
+
+// Local development configuration
+PlayolaStationPlayer.shared.configure(
+    authProvider: myAuthProvider,
+    baseURL: URL(string: "http://localhost:3000")!
+)
+
+// Staging environment configuration
+PlayolaStationPlayer.shared.configure(
+    authProvider: myAuthProvider,
+    baseURL: URL(string: "https://staging-api.playola.fm")!
+)
+```
+
 ### Basic Playback
 
 The simplest way to use PlayolaPlayer is through the singleton instance:
 
 ```swift
 import PlayolaPlayer
+
+// Configure first (required)
+PlayolaStationPlayer.shared.configure(authProvider: myAuthProvider)
 
 // Start playing a station
 Task {
@@ -363,6 +389,16 @@ class ErrorHandler: PlayolaErrorReporterDelegate {
 ```
 
 ### Advanced Features
+
+#### Custom Base URL Configuration
+
+You can check the current API configuration after configuring the player:
+
+```swift
+// Access the configured base URL (read-only)
+let currentBaseURL = PlayolaStationPlayer.shared.listeningSessionReporter?.baseURL
+print("API Base URL: \(currentBaseURL?.absoluteString ?? "Not configured")")
+```
 
 #### Audio Session Handling
 

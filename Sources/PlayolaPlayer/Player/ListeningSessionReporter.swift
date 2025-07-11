@@ -17,7 +17,7 @@ public enum ListeningSessionError: Error, LocalizedError {
   case invalidResponse(String)
   case encodingError(String)
   case authenticationFailed(String)
-  
+
   public var errorDescription: String? {
     switch self {
     case .missingDeviceId:
@@ -36,12 +36,13 @@ public enum ListeningSessionError: Error, LocalizedError {
 
 @MainActor
 public class ListeningSessionReporter {
+  public private(set) var baseURL: URL
   public struct ListeningSessionRequest: Codable {
     let deviceId: String
     let stationId: String?
     var stationUrl: String? = nil
   }
-  
+
   var deviceId: String? {
     return UIDevice.current.identifierForVendor?.uuidString
   }
@@ -54,17 +55,18 @@ public class ListeningSessionReporter {
   private let errorReporter = PlayolaErrorReporter.shared
   private let authProvider: PlayolaAuthenticationProvider?
   private let urlSession: URLSessionProtocol
-  
+
   // Retry limit and tracking
   private let maxRefreshAttempts = 3
   private var refreshAttempts = 0
   private var lastRefreshAttemptTime: Date?
-  
-  init(stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared) {
+
+  init(stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared, baseURL: URL = URL(string: "https://admin-api.playola.fm")!) {
     self.stationPlayer = stationPlayer
     self.authProvider = authProvider
     self.urlSession = urlSession
-    
+    self.baseURL = baseURL
+
     stationPlayer.$stationId.sink { stationId in
       if let stationId  {
         Task {
@@ -96,27 +98,27 @@ public class ListeningSessionReporter {
       }
     }.store(in: &disposeBag)
   }
-  
+
   deinit {
     self.timer?.invalidate()
     disposeBag.removeAll()
   }
-  
+
   public func endListeningSession() async throws {
     guard let deviceId else {
       let error = ListeningSessionError.missingDeviceId
       errorReporter.reportError(error, level: .warning)
       throw error
     }
-    
-    let url = URL(string: "https://admin-api.playola.fm/v1/listeningSessions/end")!
+
+    let url = baseURL.appendingPathComponent("v1/listeningSessions/end")
     let requestBody = ["deviceId": deviceId]
-    
+
     // Use modern async/await API
     do {
       var request = try await createPostRequest(url: url, requestBody: requestBody)
       let (_, response) = try await urlSession.data(for: request)
-      
+
       guard let httpResponse = response as? HTTPURLResponse,
             (200...299).contains(httpResponse.statusCode) else {
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -127,29 +129,29 @@ public class ListeningSessionReporter {
       throw error
     }
   }
-  
+
   public func reportOrExtendListeningSession(_ stationId: String) async throws {
     guard let deviceId else {
       let error = ListeningSessionError.missingDeviceId
       errorReporter.reportError(error, level: .warning)
       throw error
     }
-    
-    let url = URL(string: "https://admin-api.playola.fm/v1/listeningSessions")!
-    
+
+    let url = baseURL.appendingPathComponent("v1/listeningSessions")
+
     // Create an instance of the Codable struct
     let requestBody = ListeningSessionRequest(
       deviceId: deviceId,
       stationId: stationId)
-    
+
     do {
       var request = try await createPostRequest(url: url, requestBody: requestBody)
       let (_, response) = try await urlSession.data(for: request)
-      
+
       guard let httpResponse = response as? HTTPURLResponse else {
         throw ListeningSessionError.invalidResponse("Invalid HTTP response")
       }
-      
+
       if httpResponse.statusCode == 401 {
         // Handle 401 with retry limits
         try await handleAuthenticationFailure(url: url, requestBody: requestBody)
@@ -164,7 +166,7 @@ public class ListeningSessionReporter {
       throw error
     }
   }
-  
+
   private func startPeriodicNotifications() {
     self.timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true, block: { [weak self] timer in
       guard let self else { return }
@@ -173,7 +175,7 @@ public class ListeningSessionReporter {
         self.errorReporter.reportError(error, level: .warning)
         return
       }
-      
+
       Task {
         do {
           try await self.reportOrExtendListeningSession(stationId)
@@ -188,19 +190,19 @@ public class ListeningSessionReporter {
       }
     })
   }
-  
+
   private func stopPeriodicNotifications() {
     self.timer?.invalidate()
     self.timer = nil
   }
-  
+
   private func handleAuthenticationFailure(url: URL, requestBody: ListeningSessionRequest) async throws {
     // Reset counter if enough time has passed (e.g., 5 minutes)
     if let lastAttempt = lastRefreshAttemptTime,
        Date().timeIntervalSince(lastAttempt) > 300 {
       resetRefreshAttempts()
     }
-    
+
     // Check if we've exceeded retry limits
     if refreshAttempts >= maxRefreshAttempts {
       errorReporter.reportError(
@@ -208,25 +210,25 @@ public class ListeningSessionReporter {
         context: "Exceeded maximum refresh attempts (\(maxRefreshAttempts))",
         level: .warning
       )
-      
+
       // Fall back to Basic auth
       try await attemptWithBasicAuth(url: url, requestBody: requestBody)
       return
     }
-    
+
     // Attempt token refresh
     refreshAttempts += 1
     lastRefreshAttemptTime = Date()
-    
+
     if let refreshedToken = await authProvider?.refreshToken() {
       // Retry with refreshed token
       let refreshedRequest = try await createPostRequest(url: url, requestBody: requestBody)
       let (_, retryResponse) = try await urlSession.data(for: refreshedRequest)
-      
+
       guard let retryHttpResponse = retryResponse as? HTTPURLResponse else {
         throw ListeningSessionError.invalidResponse("Invalid HTTP response after refresh")
       }
-      
+
       if (200...299).contains(retryHttpResponse.statusCode) {
         // Success - reset retry counter
         resetRefreshAttempts()
@@ -241,27 +243,27 @@ public class ListeningSessionReporter {
       try await attemptWithBasicAuth(url: url, requestBody: requestBody)
     }
   }
-  
+
   private func attemptWithBasicAuth(url: URL, requestBody: ListeningSessionRequest) async throws {
     // Create request with Basic auth (bypassing the auth provider)
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    
+
     do {
       request.httpBody = try JSONEncoder().encode(requestBody)
     } catch {
       throw ListeningSessionError.encodingError("Failed to encode request body: \(error.localizedDescription)")
     }
-    
+
     request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-    
+
     let (_, response) = try await urlSession.data(for: request)
-    
+
     guard let httpResponse = response as? HTTPURLResponse else {
       throw ListeningSessionError.invalidResponse("Invalid HTTP response with Basic auth")
     }
-    
+
     if (200...299).contains(httpResponse.statusCode) {
       // Success with Basic auth
       errorReporter.reportError(
@@ -273,39 +275,40 @@ public class ListeningSessionReporter {
       throw ListeningSessionError.authenticationFailed("Both Bearer token and Basic auth failed")
     }
   }
-  
+
   private func resetRefreshAttempts() {
     refreshAttempts = 0
     lastRefreshAttemptTime = nil
   }
-  
+
   internal func createPostRequest<T: Encodable>(url: URL, requestBody: T) async throws -> URLRequest {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    
+
     do {
       request.httpBody = try JSONEncoder().encode(requestBody)
     } catch {
       throw ListeningSessionError.encodingError("Failed to encode request body: \(error.localizedDescription)")
     }
-    
+
     // Use Bearer token if user is authenticated, otherwise fall back to Basic auth
     if let userToken = await authProvider?.getCurrentToken() {
       request.addValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
     } else {
       request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
     }
-    
+
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
     return request
   }
-  
+
   // TODO: Find a better way of doing this.  Protocols + ObservableObject has issues.
 #if DEBUG
-  internal init(authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared) {
+  internal init(authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared, baseURL: URL = URL(string: "https://admin-api.playola.fm")!) {
     self.stationPlayer = nil
     self.authProvider = authProvider
     self.urlSession = urlSession
+    self.baseURL = baseURL
   }
 #endif
 }
