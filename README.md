@@ -75,6 +75,43 @@ if PlayolaStationPlayer.shared.isPlaying {
 }
 ```
 
+### Authentication Configuration
+
+To use authenticated features (like listening session reporting), configure PlayolaPlayer with your authentication provider:
+
+```swift
+import PlayolaPlayer
+
+// Implement the PlayolaAuthenticationProvider protocol
+class MyAuthProvider: PlayolaAuthenticationProvider {
+    func getCurrentToken() async -> String? {
+        // Return the current user's JWT token
+        return UserDefaults.standard.string(forKey: "userToken")
+    }
+    
+    func refreshToken() async -> String? {
+        // Refresh and return the updated token
+        // This is called automatically when receiving 401 responses
+        return await performTokenRefresh()
+    }
+    
+    private func performTokenRefresh() async -> String? {
+        // Your token refresh logic here
+        // Return nil if refresh fails
+        return refreshedToken
+    }
+}
+
+// Configure the player with authentication
+let authProvider = MyAuthProvider()
+PlayolaStationPlayer.shared.configure(authProvider: authProvider)
+
+// Now play a station - authentication is handled automatically
+Task {
+    try await PlayolaStationPlayer.shared.play(stationId: "your-station-id")
+}
+```
+
 ### Using Combine Publishers
 
 PlayolaPlayer provides Combine publishers for reactive programming:
