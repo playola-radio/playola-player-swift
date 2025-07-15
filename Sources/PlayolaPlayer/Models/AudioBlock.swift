@@ -53,7 +53,7 @@ public struct AudioBlock: Codable, Sendable {
   public let isrc: String?
   public let spotifyId: String?
   public let imageUrl: URL?
-  
+
   /// Transcription of the audio content (when available)
   public let transcription: String?
 
@@ -96,7 +96,9 @@ public struct AudioBlock: Codable, Sendable {
       imageUrl = nil
     }
 
-    if let downloadUrlString = try container.decodeIfPresent(String.self, forKey: .downloadUrlString) {
+    if let downloadUrlString = try container.decodeIfPresent(
+      String.self, forKey: .downloadUrlString)
+    {
       downloadUrl = URL(string: downloadUrlString)
     } else {
       downloadUrl = nil
@@ -131,7 +133,13 @@ public struct AudioBlock: Codable, Sendable {
     try container.encodeIfPresent(downloadUrl?.absoluteString, forKey: .downloadUrlString)
   }
 
-  public init(id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int, beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?, s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date, album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?, imageUrl: String?, transcription: String? = nil) {
+  public init(
+    id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int,
+    beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?,
+    s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date,
+    album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?,
+    imageUrl: String?, transcription: String? = nil
+  ) {
     self.id = id
     self.title = title
     self.artist = artist
@@ -156,7 +164,13 @@ public struct AudioBlock: Codable, Sendable {
   }
 
   // Additional convenience initializer for URL
-  public init(id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int, beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?, s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date, album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?, imageUrl: URL?, transcription: String? = nil) {
+  public init(
+    id: String, title: String, artist: String, durationMS: Int, endOfMessageMS: Int,
+    beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?,
+    s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date,
+    album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?,
+    imageUrl: URL?, transcription: String? = nil
+  ) {
     self.id = id
     self.title = title
     self.artist = artist

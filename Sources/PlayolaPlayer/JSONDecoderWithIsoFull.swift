@@ -8,8 +8,8 @@
 import Foundation
 
 public class JSONDecoderWithIsoFull: JSONDecoder, Sendable {
-    public override init() {
-        super.init()
-        self.dateDecodingStrategy = .formatted(.iso8601Full)
-    }
+  public override init() {
+    super.init()
+    self.dateDecodingStrategy = .formatted(.iso8601Full)
+  }
 }
