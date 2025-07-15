@@ -539,6 +539,9 @@ We welcome contributions to PlayolaPlayer! Please see our [Contributing Guidelin
 git clone https://github.com/your-organization/PlayolaPlayer.git
 cd PlayolaPlayer
 
+# Set up Git hooks (one-time setup)
+./.githooks/install-hooks.sh
+
 # Open in Xcode
 xed .
 
@@ -548,6 +551,10 @@ swift test
 # Build the package
 swift build
 ```
+
+### Git Hooks
+
+This project uses Git hooks to automatically format Swift code before commits. The hooks are installed by running `./.githooks/install-hooks.sh` (as shown above). This ensures consistent code formatting across all contributions.
 
 ### Key Guidelines
 
