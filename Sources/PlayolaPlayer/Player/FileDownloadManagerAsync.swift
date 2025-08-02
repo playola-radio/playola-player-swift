@@ -221,18 +221,14 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     forceRedownload: Bool = false,
     progressHandler: @escaping (Double) -> Void
   ) async throws -> URL {
-    logger.info("Starting download for \(url.lastPathComponent) with ID: \(downloadId)")
-
     // Check cache first
     if !forceRedownload, let cachedURL = getCachedFile(for: url) {
-      logger.info("Using cached file for \(url.lastPathComponent)")
       progressHandler(1.0)  // Indicate immediate completion
       return cachedURL
     }
 
     // Create destination URL
     let destinationURL = cacheURL(for: url)
-    logger.info("Will download \(url.lastPathComponent) to \(destinationURL.path)")
 
     // Ensure cache directory exists before downloading
     do {
@@ -241,9 +237,7 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
         withIntermediateDirectories: true,
         attributes: nil
       )
-      logger.info("Cache directory ensured at \(self.cacheDirectoryURL.path)")
     } catch {
-      logger.error("Failed to create cache directory: \(error)")
       throw FileDownloadError.directoryCreationFailed(self.cacheDirectoryURL.path)
     }
 
@@ -252,35 +246,28 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     downloaders[downloadId] = downloader
 
     defer {
-      logger.info("Cleaning up downloader for \(downloadId)")
       downloaders.removeValue(forKey: downloadId)
     }
 
     // Use the progress stream
-    logger.info("Creating progress stream for \(url.lastPathComponent)")
     let eventStream = await downloader.downloadWithProgress(from: url, to: destinationURL)
 
-    logger.info("Starting to consume events for \(url.lastPathComponent)")
     for await event in eventStream {
       switch event {
       case .progress(let progress):
-        logger.info("Progress for \(url.lastPathComponent): \(progress)")
         progressHandler(progress)
 
       case .completed(let result):
-        logger.info("Download completed for \(url.lastPathComponent) at \(result.localURL.path)")
         // Update cache - file is already at the correct location
         return result.localURL
 
       case .failed(let error):
-        logger.error("Download failed for \(url.lastPathComponent): \(error)")
         await errorReporter.reportError(error)
         throw error
       }
     }
 
     // This should never be reached, but Swift requires it
-    logger.error("Unexpected: AsyncStream ended without completion for \(url.lastPathComponent)")
     throw URLError(.unknown)
   }
 
@@ -290,7 +277,6 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     if let downloader = downloaders[downloadId] {
       await downloader.cancel()
       downloaders.removeValue(forKey: downloadId)
-      logger.info("Cancelled download: \(downloadId)")
     }
   }
 
@@ -389,7 +375,6 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
 
           try fileManager.removeItem(at: fileInfo.url)
           totalSize -= fileInfo.size
-          logger.info("Pruned cache file: \(fileInfo.url.lastPathComponent)")
         }
       }
     } catch {
@@ -512,8 +497,6 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
         }
       }
     }
-
-    logger.info("Cancelled all downloads")
   }
 
   /// Checks if a file already exists in the cache

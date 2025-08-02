@@ -152,29 +152,22 @@ public actor FileDownloaderAsync {
   private func moveFile(from source: URL, to destination: URL) async throws {
     // Perform file operations on a background queue to avoid blocking
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-      let logger = self.logger
       Task.detached(priority: .utility) {
         do {
           let fileManager = FileManager.default
 
-          logger.info("Moving file from \(source.path) to \(destination.path)")
-
           // Check if source file exists
           if !fileManager.fileExists(atPath: source.path) {
-            logger.error("Source file does not exist: \(source.path)")
             throw URLError(.fileDoesNotExist)
           }
 
           if fileManager.fileExists(atPath: destination.path) {
-            logger.info("Removing existing file at destination: \(destination.path)")
             try fileManager.removeItem(at: destination)
           }
 
           let destinationDirectory = destination.deletingLastPathComponent()
-          logger.info("Ensuring destination directory exists: \(destinationDirectory.path)")
 
           if !fileManager.fileExists(atPath: destinationDirectory.path) {
-            logger.info("Creating destination directory: \(destinationDirectory.path)")
             try fileManager.createDirectory(
               at: destinationDirectory,
               withIntermediateDirectories: true,
@@ -182,12 +175,9 @@ public actor FileDownloaderAsync {
             )
           }
 
-          logger.info("Attempting to move file from \(source.path) to \(destination.path)")
           try fileManager.moveItem(at: source, to: destination)
-          logger.info("Successfully moved file to \(destination.path)")
           continuation.resume()
         } catch {
-          logger.error("Failed to move file: \(error)")
           continuation.resume(throwing: error)
         }
       }
@@ -234,10 +224,6 @@ public actor FileDownloaderAsync {
       guard !hasCompleted else { return }
       hasCompleted = true
 
-      logger.info(
-        "Download completed, moving file immediately from \(location.path) to \(self.destinationURL.path)"
-      )
-
       // Move the file IMMEDIATELY in the delegate callback to avoid race condition
       do {
         let fileManager = FileManager.default
@@ -259,7 +245,6 @@ public actor FileDownloaderAsync {
 
         // Move the file immediately
         try fileManager.moveItem(at: location, to: self.destinationURL)
-        logger.info("Successfully moved file to \(self.destinationURL.path)")
 
         if let response = downloadTask.response {
           // Now return the final destination URL
@@ -268,7 +253,6 @@ public actor FileDownloaderAsync {
           completionHandler?(.failure(URLError(.badServerResponse)))
         }
       } catch {
-        logger.error("Failed to move file immediately: \(error)")
         completionHandler?(.failure(error))
       }
     }
