@@ -5,8 +5,8 @@
 //  Created by Brian D Keane on 12/29/24.
 //
 
-import SwiftUI
 import PlayolaPlayer
+import SwiftUI
 
 func playerStateTextFromPlayerState(_ state: PlayolaStationPlayer.State) -> String {
   switch state {
@@ -33,23 +33,23 @@ func playOrPause() {
 struct ContentView: View {
   @ObservedObject var player = PlayolaStationPlayer.shared
 
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-          Button(player.isPlaying ? "Stop" : "Play") {
-            playOrPause()
-          }
-          .padding(.bottom, 5)
+  var body: some View {
+    VStack {
+      Image(systemName: "globe")
+        .imageScale(.large)
+        .foregroundStyle(.tint)
+      Button(player.isPlaying ? "Stop" : "Play") {
+        playOrPause()
+      }
+      .padding(.bottom, 5)
 
-          Text("Player State: \(playerStateTextFromPlayerState(player.state))")
-            .padding(.bottom, 5)
-        }
-        .padding()
+      Text("Player State: \(playerStateTextFromPlayerState(player.state))")
+        .padding(.bottom, 5)
     }
+    .padding()
+  }
 }
 
 #Preview {
-    ContentView()
+  ContentView()
 }

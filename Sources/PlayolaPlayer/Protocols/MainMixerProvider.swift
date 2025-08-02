@@ -8,15 +8,15 @@ import AVFoundation
 
 /// Protocol defining the interface for main audio mixer operations
 public protocol MainMixerProvider: AnyObject {
-    /// The mixer node used for audio mixing
-    var mixerNode: AVAudioMixerNode { get }
+  /// The mixer node used for audio mixing
+  var mixerNode: AVAudioMixerNode { get }
 
-    /// The main audio engine
-    var engine: AVAudioEngine { get }
+  /// The main audio engine
+  var engine: AVAudioEngine { get }
 
-    /// Configures the audio session for playback
-    func configureAudioSession()
+  /// Configures the audio session for playback
+  func configureAudioSession()
 
-    /// Deactivates the audio session when it's no longer needed
-    func deactivateAudioSession()
+  /// Deactivates the audio session when it's no longer needed
+  func deactivateAudioSession()
 }

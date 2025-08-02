@@ -6,6 +6,7 @@
 //
 
 import Foundation
+
 @testable import PlayolaPlayer
 
 public class DateProviderMock: DateProvider {

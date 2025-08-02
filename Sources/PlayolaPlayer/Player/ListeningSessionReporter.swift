@@ -5,8 +5,8 @@
 //  Created by Brian D Keane on 2/12/25.
 //
 
-import Combine
 import AVFoundation
+import Combine
 import Foundation
 import UIKit
 
@@ -47,7 +47,7 @@ public class ListeningSessionReporter {
     return UIDevice.current.identifierForVendor?.uuidString
   }
   var timer: Timer?
-  let basicToken = "aW9zQXBwOnNwb3RpZnlTdWNrc0FCaWcx" // TODO: De-hard-code this
+  let basicToken = "aW9zQXBwOnNwb3RpZnlTdWNrc0FCaWcx"  // TODO: De-hard-code this
   var currentSessionStationId: String?
   var disposeBag = Set<AnyCancellable>()
   weak var stationPlayer: PlayolaStationPlayer?
@@ -61,14 +61,18 @@ public class ListeningSessionReporter {
   private var refreshAttempts = 0
   private var lastRefreshAttemptTime: Date?
 
-  init(stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared, baseURL: URL = URL(string: "https://admin-api.playola.fm")!) {
+  init(
+    stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil,
+    urlSession: URLSessionProtocol = URLSession.shared,
+    baseURL: URL = URL(string: "https://admin-api.playola.fm")!
+  ) {
     self.stationPlayer = stationPlayer
     self.authProvider = authProvider
     self.urlSession = urlSession
     self.baseURL = baseURL
 
     stationPlayer.$stationId.sink { stationId in
-      if let stationId  {
+      if let stationId {
         Task {
           do {
             try await self.reportOrExtendListeningSession(stationId)
@@ -120,7 +124,8 @@ public class ListeningSessionReporter {
       let (_, response) = try await urlSession.data(for: request)
 
       guard let httpResponse = response as? HTTPURLResponse,
-            (200...299).contains(httpResponse.statusCode) else {
+        (200...299).contains(httpResponse.statusCode)
+      else {
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         throw ListeningSessionError.invalidResponse("HTTP status code: \(statusCode)")
       }
@@ -168,27 +173,30 @@ public class ListeningSessionReporter {
   }
 
   private func startPeriodicNotifications() {
-    self.timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true, block: { [weak self] timer in
-      guard let self else { return }
-      guard let stationId = self.stationPlayer?.stationId else {
-        let error = ListeningSessionError.invalidResponse("Missing stationId in periodic notification")
-        self.errorReporter.reportError(error, level: .warning)
-        return
-      }
-
-      Task {
-        do {
-          try await self.reportOrExtendListeningSession(stationId)
-        } catch {
-          // Log errors but continue running - we'll try again next interval
-          self.errorReporter.reportError(
-            error,
-            context: "Failed periodic listening session update",
-            level: .warning
-          )
+    self.timer = Timer.scheduledTimer(
+      withTimeInterval: 10.0, repeats: true,
+      block: { [weak self] timer in
+        guard let self else { return }
+        guard let stationId = self.stationPlayer?.stationId else {
+          let error = ListeningSessionError.invalidResponse(
+            "Missing stationId in periodic notification")
+          self.errorReporter.reportError(error, level: .warning)
+          return
         }
-      }
-    })
+
+        Task {
+          do {
+            try await self.reportOrExtendListeningSession(stationId)
+          } catch {
+            // Log errors but continue running - we'll try again next interval
+            self.errorReporter.reportError(
+              error,
+              context: "Failed periodic listening session update",
+              level: .warning
+            )
+          }
+        }
+      })
   }
 
   private func stopPeriodicNotifications() {
@@ -196,10 +204,13 @@ public class ListeningSessionReporter {
     self.timer = nil
   }
 
-  private func handleAuthenticationFailure(url: URL, requestBody: ListeningSessionRequest) async throws {
+  private func handleAuthenticationFailure(url: URL, requestBody: ListeningSessionRequest)
+    async throws
+  {
     // Reset counter if enough time has passed (e.g., 5 minutes)
     if let lastAttempt = lastRefreshAttemptTime,
-       Date().timeIntervalSince(lastAttempt) > 300 {
+      Date().timeIntervalSince(lastAttempt) > 300
+    {
       resetRefreshAttempts()
     }
 
@@ -236,7 +247,8 @@ public class ListeningSessionReporter {
         // Still 401 after refresh - recursively handle (will increment counter)
         try await handleAuthenticationFailure(url: url, requestBody: requestBody)
       } else {
-        throw ListeningSessionError.invalidResponse("HTTP status code after refresh: \(retryHttpResponse.statusCode)")
+        throw ListeningSessionError.invalidResponse(
+          "HTTP status code after refresh: \(retryHttpResponse.statusCode)")
       }
     } else {
       // Refresh failed - try with Basic auth as fallback
@@ -252,7 +264,8 @@ public class ListeningSessionReporter {
     do {
       request.httpBody = try JSONEncoder().encode(requestBody)
     } catch {
-      throw ListeningSessionError.encodingError("Failed to encode request body: \(error.localizedDescription)")
+      throw ListeningSessionError.encodingError(
+        "Failed to encode request body: \(error.localizedDescription)")
     }
 
     request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
@@ -281,14 +294,16 @@ public class ListeningSessionReporter {
     lastRefreshAttemptTime = nil
   }
 
-  internal func createPostRequest<T: Encodable>(url: URL, requestBody: T) async throws -> URLRequest {
+  internal func createPostRequest<T: Encodable>(url: URL, requestBody: T) async throws -> URLRequest
+  {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
 
     do {
       request.httpBody = try JSONEncoder().encode(requestBody)
     } catch {
-      throw ListeningSessionError.encodingError("Failed to encode request body: \(error.localizedDescription)")
+      throw ListeningSessionError.encodingError(
+        "Failed to encode request body: \(error.localizedDescription)")
     }
 
     // Use Bearer token if user is authenticated, otherwise fall back to Basic auth
@@ -303,12 +318,16 @@ public class ListeningSessionReporter {
   }
 
   // TODO: Find a better way of doing this.  Protocols + ObservableObject has issues.
-#if DEBUG
-  internal init(authProvider: PlayolaAuthenticationProvider? = nil, urlSession: URLSessionProtocol = URLSession.shared, baseURL: URL = URL(string: "https://admin-api.playola.fm")!) {
-    self.stationPlayer = nil
-    self.authProvider = authProvider
-    self.urlSession = urlSession
-    self.baseURL = baseURL
-  }
-#endif
+  #if DEBUG
+    internal init(
+      authProvider: PlayolaAuthenticationProvider? = nil,
+      urlSession: URLSessionProtocol = URLSession.shared,
+      baseURL: URL = URL(string: "https://admin-api.playola.fm")!
+    ) {
+      self.stationPlayer = nil
+      self.authProvider = authProvider
+      self.urlSession = urlSession
+      self.baseURL = baseURL
+    }
+  #endif
 }
