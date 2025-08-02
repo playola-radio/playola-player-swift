@@ -9,3 +9,5 @@ Package.resolved
 
 fastlane/test_output
 fastlane/report.xml
+
+.build

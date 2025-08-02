@@ -104,10 +104,14 @@ public final class FileDownloader: NSObject {
       onError?(error)
     })
 
+    let queue = OperationQueue()
+    queue.name = "FileDownloader.delegateQueue"
+    queue.maxConcurrentOperationCount = 1
+
     self.session = URLSession(
       configuration: .default,
       delegate: self,
-      delegateQueue: .main
+      delegateQueue: queue
     )
 
     self.startDownload()
