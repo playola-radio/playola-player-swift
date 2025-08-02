@@ -51,7 +51,10 @@ public struct Station: Codable, Sendable {
   }
 
   // Original initializer updated to convert String to URL
-  public init(id: String, name: String, curatorName: String, imageUrl: String?, createdAt: Date, updatedAt: Date) {
+  public init(
+    id: String, name: String, curatorName: String, imageUrl: String?, createdAt: Date,
+    updatedAt: Date
+  ) {
     self.id = id
     self.name = name
     self.curatorName = curatorName
@@ -61,7 +64,9 @@ public struct Station: Codable, Sendable {
   }
 
   // New convenience initializer that accepts URL directly
-  public init(id: String, name: String, curatorName: String, imageUrl: URL?, createdAt: Date, updatedAt: Date) {
+  public init(
+    id: String, name: String, curatorName: String, imageUrl: URL?, createdAt: Date, updatedAt: Date
+  ) {
     self.id = id
     self.name = name
     self.curatorName = curatorName
@@ -71,7 +76,7 @@ public struct Station: Codable, Sendable {
   }
 }
 
-extension Station : Hashable, Equatable {
+extension Station: Hashable, Equatable {
   public func hash(into hasher: inout Hasher) {
     hasher.combine(id)
   }

@@ -7,8 +7,8 @@
 
 import AVFoundation
 import Foundation
-import os.log
 import UIKit
+import os.log
 
 public protocol PlayolaMainMixerDelegate {
   func player(_ mainMixer: PlayolaMainMixer, didPlayBuffer: AVAudioPCMBuffer)
@@ -25,7 +25,8 @@ enum TapProperties {
 
   /// The format of the audio in the tap (desired is float 32, non-interleaved)
   var format: AVAudioFormat {
-    return AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false)!
+    return AVAudioFormat(
+      commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false)!
   }
 }
 
@@ -48,14 +49,16 @@ open class PlayolaMainMixer: NSObject {
       self.engine.attach(self.mixerNode)
 
       do {
-        self.engine.connect(self.mixerNode,
-                            to: self.engine.mainMixerNode,
-                            format: TapProperties.default.format)
+        self.engine.connect(
+          self.mixerNode,
+          to: self.engine.mainMixerNode,
+          format: TapProperties.default.format)
       } catch {
         Task { @MainActor in
-          errorReporter.reportError(error,
-                                    context: "Failed to connect mixer nodes: \(error.localizedDescription)",
-                                    level: .critical)
+          errorReporter.reportError(
+            error,
+            context: "Failed to connect mixer nodes: \(error.localizedDescription)",
+            level: .critical)
         }
         throw error
       }
@@ -63,23 +66,26 @@ open class PlayolaMainMixer: NSObject {
       self.engine.prepare()
 
       do {
-        self.mixerNode.installTap(onBus: 0,
-                                  bufferSize: TapProperties.default.bufferSize,
-                                  format: TapProperties.default.format,
-                                  block: self.onTap(_:_:))
+        self.mixerNode.installTap(
+          onBus: 0,
+          bufferSize: TapProperties.default.bufferSize,
+          format: TapProperties.default.format,
+          block: self.onTap(_:_:))
       } catch {
         Task { @MainActor in
-          errorReporter.reportError(error,
-                                    context: "Failed to install tap on mixer node: \(error.localizedDescription)",
-                                    level: .critical)
+          errorReporter.reportError(
+            error,
+            context: "Failed to install tap on mixer node: \(error.localizedDescription)",
+            level: .critical)
         }
         throw error
       }
     } catch {
       Task { @MainActor in
-        errorReporter.reportError(error,
-                                  context: "Critical failure initializing PlayolaMainMixer: \(error.localizedDescription)",
-                                  level: .critical)
+        errorReporter.reportError(
+          error,
+          context: "Critical failure initializing PlayolaMainMixer: \(error.localizedDescription)",
+          level: .critical)
       }
     }
   }
@@ -90,7 +96,9 @@ open class PlayolaMainMixer: NSObject {
     } catch {
       // Cannot report via errorReporter in deinit as it might be async
       // For deinit errors, we'll keep using os_log
-      os_log("Error removing tap during deinit: %@", log: PlayolaMainMixer.logger, type: .error, error.localizedDescription)
+      os_log(
+        "Error removing tap during deinit: %@", log: PlayolaMainMixer.logger, type: .error,
+        error.localizedDescription)
     }
   }
 
@@ -108,9 +116,10 @@ open class PlayolaMainMixer: NSObject {
       } catch {
         // This is not a critical error, just log it
         Task { @MainActor in
-          errorReporter.reportError(error,
-                                    context: "Non-critical: Failed to deactivate audio session before configuration",
-                                    level: .warning)
+          errorReporter.reportError(
+            error,
+            context: "Non-critical: Failed to deactivate audio session before configuration",
+            level: .warning)
         }
       }
 
@@ -128,9 +137,11 @@ open class PlayolaMainMixer: NSObject {
         Task { @MainActor in
           let deviceName = UIDevice.current.name
           let systemVersion = UIDevice.current.systemVersion
-          errorReporter.reportError(error,
-                                    context: "Failed to set audio session category | Device: \(deviceName) | iOS: \(systemVersion)",
-                                    level: .critical)
+          errorReporter.reportError(
+            error,
+            context:
+              "Failed to set audio session category | Device: \(deviceName) | iOS: \(systemVersion)",
+            level: .critical)
         }
         throw error
       }
@@ -143,19 +154,23 @@ open class PlayolaMainMixer: NSObject {
         Task { @MainActor in
           let deviceName = UIDevice.current.name
           let systemVersion = UIDevice.current.systemVersion
-          let currentRoute = session.currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
+          let currentRoute = session.currentRoute.outputs.map { $0.portName }.joined(
+            separator: ", ")
 
-          errorReporter.reportError(error,
-                                    context: "Failed to activate audio session | Device: \(deviceName) | iOS: \(systemVersion) | Route: \(currentRoute)",
-                                    level: .critical)
+          errorReporter.reportError(
+            error,
+            context:
+              "Failed to activate audio session | Device: \(deviceName) | iOS: \(systemVersion) | Route: \(currentRoute)",
+            level: .critical)
         }
         throw error
       }
     } catch {
       Task { @MainActor in
-        errorReporter.reportError(error,
-                                  context: "Critical error configuring audio session: \(error.localizedDescription)",
-                                  level: .critical)
+        errorReporter.reportError(
+          error,
+          context: "Critical error configuring audio session: \(error.localizedDescription)",
+          level: .critical)
       }
       // Don't set isAudioSessionConfigured to true since we failed
     }
@@ -173,7 +188,8 @@ open class PlayolaMainMixer: NSObject {
       os_log("Audio session deactivated", log: PlayolaMainMixer.logger, type: .info)
     } catch {
       Task { @MainActor in
-        errorReporter.reportError(error, context: "Failed to deactivate audio session", level: .warning)
+        errorReporter.reportError(
+          error, context: "Failed to deactivate audio session", level: .warning)
       }
     }
   }
@@ -186,7 +202,6 @@ open class PlayolaMainMixer: NSObject {
   @MainActor
   public static let shared: PlayolaMainMixer = PlayolaMainMixer()
 }
-
 
 extension PlayolaMainMixer: AudioEngineProvider {
   @MainActor
@@ -204,10 +219,11 @@ extension PlayolaMainMixer: AudioEngineProvider {
         retryCount += 1
 
         if retryCount < maxRetries {
-          os_log("Audio engine start failed, retry %d of %d: %@",
-                 log: PlayolaMainMixer.logger, type: .error,
-                 retryCount, maxRetries, error.localizedDescription)
-          Thread.sleep(forTimeInterval: 0.1) // Short delay before retry
+          os_log(
+            "Audio engine start failed, retry %d of %d: %@",
+            log: PlayolaMainMixer.logger, type: .error,
+            retryCount, maxRetries, error.localizedDescription)
+          Thread.sleep(forTimeInterval: 0.1)  // Short delay before retry
         }
       }
     }
@@ -215,7 +231,9 @@ extension PlayolaMainMixer: AudioEngineProvider {
     // If we get here, all retries failed
     if let error = lastError {
 
-      errorReporter.reportError(error, context: "Failed to start audio engine after \(maxRetries) attempts", level: .critical)
+      errorReporter.reportError(
+        error, context: "Failed to start audio engine after \(maxRetries) attempts",
+        level: .critical)
       throw error
     }
   }
@@ -224,7 +242,9 @@ extension PlayolaMainMixer: AudioEngineProvider {
     engine.attach(node)
   }
 
-  public func connect(_ playerNode: AVAudioPlayerNode, to mixerNode: AVAudioMixerNode, format: AVAudioFormat?) {
+  public func connect(
+    _ playerNode: AVAudioPlayerNode, to mixerNode: AVAudioMixerNode, format: AVAudioFormat?
+  ) {
     engine.connect(playerNode, to: mixerNode, format: format)
   }
 
