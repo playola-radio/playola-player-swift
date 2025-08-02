@@ -24,6 +24,30 @@ struct AudioNormalizationCalculator {
     return (amplitude ?? 1.0) * adjustedVolume
   }
 
+  /// Creates an AudioNormalizationCalculator with amplitude calculated on a background thread
+  static func create(_ file: AVAudioFile) async -> AudioNormalizationCalculator {
+    return await withCheckedContinuation { continuation in
+      Task.detached(priority: .userInitiated) {
+        var calculator = AudioNormalizationCalculator(file: file, calculateNow: false)
+        do {
+          let samples = try calculator.getSamples()
+          calculator.amplitude = calculator.getAmplitude(samples)
+        } catch {
+          // Report error on main thread
+          await MainActor.run {
+            PlayolaErrorReporter.shared.reportError(
+              error,
+              context:
+                "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description) | Length: \(file.length)",
+              level: .warning)
+          }
+        }
+        continuation.resume(returning: calculator)
+      }
+    }
+  }
+
+  /// Synchronous initializer for backwards compatibility (e.g., tests)
   init(_ file: AVAudioFile) {
     self.file = file
     do {
@@ -37,6 +61,19 @@ struct AudioNormalizationCalculator {
           context:
             "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description) | Length: \(file.length)",
           level: .warning)
+      }
+    }
+  }
+
+  /// Private initializer used by async factory
+  private init(file: AVAudioFile, calculateNow: Bool) {
+    self.file = file
+    if calculateNow {
+      do {
+        let samples = try getSamples()
+        self.amplitude = getAmplitude(samples)
+      } catch {
+        // Error will be handled by caller
       }
     }
   }

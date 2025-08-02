@@ -343,20 +343,22 @@ public class SpinPlayer {
 
           switch result {
           case .success(let localUrl):
-            self.loadFile(with: localUrl)
+            Task { @MainActor in
+              await self.loadFile(with: localUrl)
 
-            if spin.isPlaying {
-              let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
-              self.playNow(from: currentTimeInSeconds)
-              self.volume = 1.0
-            } else {
-              self.schedulePlay(at: spin.airtime)
-              self.volume = spin.startingVolume
+              if spin.isPlaying {
+                let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+                self.playNow(from: currentTimeInSeconds)
+                self.volume = 1.0
+              } else {
+                self.schedulePlay(at: spin.airtime)
+                self.volume = spin.startingVolume
+              }
+
+              self.scheduleFades(spin)
+              self.state = .loaded
+              continuation.resume(returning: .success(localUrl))
             }
-
-            self.scheduleFades(spin)
-            self.state = .loaded
-            continuation.resume(returning: .success(localUrl))
 
           case .failure(let error):
             self.errorReporter.reportError(
@@ -474,7 +476,7 @@ public class SpinPlayer {
     playerNode.scheduleFile(file, at: nil)
   }
 
-  public func loadFile(with url: URL) {
+  public func loadFile(with url: URL) async {
     os_log(
       "Attempting to load audio file: %@ for %@ by %@ (spinID: %@)",
       log: SpinPlayer.logger, type: .info,
@@ -516,7 +518,7 @@ public class SpinPlayer {
       // Attempt to create the audio file object
       do {
         currentFile = try AVAudioFile(forReading: url)
-        normalizationCalculator = AudioNormalizationCalculator(currentFile!)
+        normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
         os_log(
           "Successfully loaded audio file: %@ for %@ (spinID: %@)",
           log: SpinPlayer.logger, type: .info,
