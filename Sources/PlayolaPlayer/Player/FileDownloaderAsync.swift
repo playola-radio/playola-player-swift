@@ -55,8 +55,12 @@ public actor FileDownloaderAsync {
     DownloadEvent
   > {
     AsyncStream { continuation in
-      Task {
+      let task = Task {
         await self.performDownload(from: url, to: destinationURL, continuation: continuation)
+      }
+
+      continuation.onTermination = { _ in
+        task.cancel()
       }
     }
   }
@@ -66,7 +70,8 @@ public actor FileDownloaderAsync {
     to destinationURL: URL,
     continuation: AsyncStream<DownloadEvent>.Continuation
   ) async {
-    guard !isCancelled else {
+    guard !isCancelled && !Task.isCancelled else {
+      logger.info("🛑 performDownload cancelled before starting for \(url.lastPathComponent)")
       continuation.yield(.failed(URLError(.cancelled)))
       continuation.finish()
       return
@@ -101,7 +106,7 @@ public actor FileDownloaderAsync {
         task.resume()
       }
 
-      guard !isCancelled else {
+      guard !isCancelled && !Task.isCancelled else {
         try? FileManager.default.removeItem(at: finalURL)
         throw URLError(.cancelled)
       }
@@ -142,8 +147,15 @@ public actor FileDownloaderAsync {
   }
 
   public func cancel() {
+    logger.info("🛑 FileDownloaderAsync.cancel() called")
     isCancelled = true
     downloadTask?.cancel()
+
+    // If there's an active AsyncStream, we need to signal it to finish
+    // The downloadTask cancellation should trigger the URLSession delegate's didCompleteWithError
+    // which will then call the completion handler with a cancellation error
+
+    logger.info("🛑 FileDownloaderAsync cancellation flags set and downloadTask cancelled")
   }
 
   /// URLSession delegate for handling download progress and completion
@@ -205,9 +217,19 @@ public actor FileDownloaderAsync {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?)
     {
-      guard !hasCompleted, let error = error else { return }
-      hasCompleted = true
-      completionHandler?(.failure(error))
+      guard !hasCompleted else {
+        logger.info("🛑 URLSession delegate: task already completed, ignoring")
+        return
+      }
+
+      if let error = error {
+        logger.info("🛑 URLSession delegate: task completed with error: \(error)")
+        hasCompleted = true
+        completionHandler?(.failure(error))
+      } else {
+        logger.info(
+          "🛑 URLSession delegate: task completed successfully (handled by didFinishDownloadingTo)")
+      }
     }
   }
 }

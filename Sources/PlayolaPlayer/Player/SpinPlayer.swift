@@ -175,12 +175,24 @@ public class SpinPlayer {
   // MARK: Playback
 
   public func stop() {
+    os_log(
+      "🛑 SpinPlayer.stop() called for spin: %@ (ID: %@)", log: SpinPlayer.logger, type: .info,
+      spin?.audioBlock.title ?? "no spin", spin?.id ?? "no ID")
+
     // Cancel any active download
     if let activeDownloadId = activeDownloadId {
+      os_log(
+        "🛑 Cancelling active download: %@", log: SpinPlayer.logger, type: .info,
+        activeDownloadId.uuidString)
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
       self.activeDownloadId = nil
+      os_log("🛑 Download cancellation requested", log: SpinPlayer.logger, type: .info)
+    } else {
+      os_log("🛑 No active download to cancel", log: SpinPlayer.logger, type: .info)
     }
+
     clear()
+    os_log("🛑 SpinPlayer.stop() completed", log: SpinPlayer.logger, type: .info)
   }
 
   private func stopAudio() {
