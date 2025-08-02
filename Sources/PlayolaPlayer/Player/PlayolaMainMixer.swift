@@ -252,5 +252,3 @@ extension PlayolaMainMixer: AudioEngineProvider {
     engine.prepare()
   }
 }
-
-extension PlayolaMainMixer: MainMixerProvider {}
