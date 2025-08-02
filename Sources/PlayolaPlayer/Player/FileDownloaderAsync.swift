@@ -56,6 +56,7 @@ public actor FileDownloaderAsync {
       throw URLError(.cancelled)
     }
 
+    // Move the file immediately while we still have access to tempURL
     try await moveFile(from: tempURL, to: destinationURL)
 
     return DownloadResult(localURL: destinationURL, response: response)
@@ -94,9 +95,13 @@ public actor FileDownloaderAsync {
 
     do {
       // Create a dedicated session with delegate
-      let delegate = DownloadDelegate { progress in
-        continuation.yield(.progress(progress))
-      }
+      let delegate = DownloadDelegate(
+        progressHandler: { progress in
+          continuation.yield(.progress(progress))
+        },
+        destinationURL: destinationURL,
+        logger: logger
+      )
 
       let configuration = URLSessionConfiguration.default
       configuration.timeoutIntervalForRequest = 30
@@ -115,7 +120,7 @@ public actor FileDownloaderAsync {
       self.downloadTask = task
 
       // Use async continuation to wait for download completion
-      let (tempURL, response) = try await withCheckedThrowingContinuation {
+      let (finalURL, response) = try await withCheckedThrowingContinuation {
         (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
         delegate.completionHandler = { result in
           switch result {
@@ -129,13 +134,12 @@ public actor FileDownloaderAsync {
       }
 
       guard !isCancelled else {
-        try? FileManager.default.removeItem(at: tempURL)
+        // File is already moved to final location, clean it up
+        try? FileManager.default.removeItem(at: finalURL)
         throw URLError(.cancelled)
       }
 
-      try await moveFile(from: tempURL, to: destinationURL)
-
-      let result = DownloadResult(localURL: destinationURL, response: response)
+      let result = DownloadResult(localURL: finalURL, response: response)
       continuation.yield(.completed(result))
 
     } catch {
@@ -148,16 +152,29 @@ public actor FileDownloaderAsync {
   private func moveFile(from source: URL, to destination: URL) async throws {
     // Perform file operations on a background queue to avoid blocking
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+      let logger = self.logger
       Task.detached(priority: .utility) {
         do {
           let fileManager = FileManager.default
 
+          logger.info("Moving file from \(source.path) to \(destination.path)")
+
+          // Check if source file exists
+          if !fileManager.fileExists(atPath: source.path) {
+            logger.error("Source file does not exist: \(source.path)")
+            throw URLError(.fileDoesNotExist)
+          }
+
           if fileManager.fileExists(atPath: destination.path) {
+            logger.info("Removing existing file at destination: \(destination.path)")
             try fileManager.removeItem(at: destination)
           }
 
           let destinationDirectory = destination.deletingLastPathComponent()
+          logger.info("Ensuring destination directory exists: \(destinationDirectory.path)")
+
           if !fileManager.fileExists(atPath: destinationDirectory.path) {
+            logger.info("Creating destination directory: \(destinationDirectory.path)")
             try fileManager.createDirectory(
               at: destinationDirectory,
               withIntermediateDirectories: true,
@@ -165,9 +182,12 @@ public actor FileDownloaderAsync {
             )
           }
 
+          logger.info("Attempting to move file from \(source.path) to \(destination.path)")
           try fileManager.moveItem(at: source, to: destination)
+          logger.info("Successfully moved file to \(destination.path)")
           continuation.resume()
         } catch {
+          logger.error("Failed to move file: \(error)")
           continuation.resume(throwing: error)
         }
       }
@@ -184,9 +204,14 @@ public actor FileDownloaderAsync {
   private class DownloadDelegate: NSObject, URLSessionDownloadDelegate {
     let progressHandler: (Double) -> Void
     var completionHandler: ((Result<(URL, URLResponse), Error>) -> Void)?
+    private var hasCompleted = false
+    let destinationURL: URL
+    let logger: Logger
 
-    init(progressHandler: @escaping (Double) -> Void) {
+    init(progressHandler: @escaping (Double) -> Void, destinationURL: URL, logger: Logger) {
       self.progressHandler = progressHandler
+      self.destinationURL = destinationURL
+      self.logger = logger
     }
 
     func urlSession(
@@ -206,11 +231,45 @@ public actor FileDownloaderAsync {
       downloadTask: URLSessionDownloadTask,
       didFinishDownloadingTo location: URL
     ) {
-      // The file is already at the temporary location
-      if let response = downloadTask.response {
-        completionHandler?(.success((location, response)))
-      } else {
-        completionHandler?(.failure(URLError(.badServerResponse)))
+      guard !hasCompleted else { return }
+      hasCompleted = true
+
+      logger.info(
+        "Download completed, moving file immediately from \(location.path) to \(self.destinationURL.path)"
+      )
+
+      // Move the file IMMEDIATELY in the delegate callback to avoid race condition
+      do {
+        let fileManager = FileManager.default
+
+        // Remove existing file if it exists
+        if fileManager.fileExists(atPath: self.destinationURL.path) {
+          try fileManager.removeItem(at: self.destinationURL)
+        }
+
+        // Ensure destination directory exists
+        let destinationDirectory = self.destinationURL.deletingLastPathComponent()
+        if !fileManager.fileExists(atPath: destinationDirectory.path) {
+          try fileManager.createDirectory(
+            at: destinationDirectory,
+            withIntermediateDirectories: true,
+            attributes: nil
+          )
+        }
+
+        // Move the file immediately
+        try fileManager.moveItem(at: location, to: self.destinationURL)
+        logger.info("Successfully moved file to \(self.destinationURL.path)")
+
+        if let response = downloadTask.response {
+          // Now return the final destination URL
+          completionHandler?(.success((self.destinationURL, response)))
+        } else {
+          completionHandler?(.failure(URLError(.badServerResponse)))
+        }
+      } catch {
+        logger.error("Failed to move file immediately: \(error)")
+        completionHandler?(.failure(error))
       }
     }
 
@@ -219,9 +278,14 @@ public actor FileDownloaderAsync {
       task: URLSessionTask,
       didCompleteWithError error: Error?
     ) {
+      guard !hasCompleted else { return }
+
       if let error = error {
+        hasCompleted = true
         completionHandler?(.failure(error))
       }
+      // Don't call completion handler for successful completion here
+      // because didFinishDownloadingTo already handled it
     }
   }
 }

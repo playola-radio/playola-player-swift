@@ -150,7 +150,7 @@ public class SpinPlayer {
     delegate: SpinPlayerDelegate? = nil,
     fileDownloadManager: FileDownloadManaging? = nil
   ) {
-    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManager.shared
+    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.delegate = delegate
 
     // Use the centralized audio session management instead of configuring here

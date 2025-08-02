@@ -112,7 +112,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   @MainActor
   internal init(fileDownloadManager: FileDownloadManaging? = nil) {
-    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManager()
+    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 

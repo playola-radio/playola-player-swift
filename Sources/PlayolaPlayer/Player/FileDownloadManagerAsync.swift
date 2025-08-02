@@ -8,6 +8,114 @@
 import Foundation
 import os.log
 
+/// Errors specific to file downloading and caching
+public enum FileDownloadError: Error, LocalizedError {
+  case directoryCreationFailed(String)
+  case fileMoveFailed(String)
+  case fileNotFound(String)
+  case invalidRemoteURL(String)
+  case downloadFailed(String)
+  case cachePruneFailed(String)
+  case downloadCancelled
+  case unknownError
+
+  public var errorDescription: String? {
+    switch self {
+    case .directoryCreationFailed(let path):
+      return "Failed to create directory at path: \(path)"
+    case .fileMoveFailed(let message):
+      return "Failed to move downloaded file: \(message)"
+    case .fileNotFound(let path):
+      return "File not found at path: \(path)"
+    case .invalidRemoteURL(let url):
+      return "Invalid remote URL: \(url)"
+    case .downloadFailed(let message):
+      return "Download failed: \(message)"
+    case .cachePruneFailed(let message):
+      return "Cache pruning failed: \(message)"
+    case .downloadCancelled:
+      return "Download was cancelled"
+    case .unknownError:
+      return "An unknown error occurred"
+    }
+  }
+}
+
+/// Protocol defining the interface for file download management
+///
+/// This protocol provides methods to download, manage, and cache audio files
+/// with support for progress tracking, cancellation, and cache management.
+public protocol FileDownloadManaging {
+  /// Downloads a file from a remote URL with progress tracking
+  ///
+  /// - Parameters:
+  ///   - remoteUrl: The URL of the file to download
+  ///   - progressHandler: A closure that receives download progress updates (0.0 to 1.0)
+  ///   - completion: A closure called when download completes with either the local URL or an error
+  /// - Returns: A unique identifier that can be used to cancel this specific download
+  @discardableResult
+  func downloadFile(
+    remoteUrl: URL,
+    progressHandler: @escaping (Float) -> Void,
+    completion: @escaping (Result<URL, FileDownloadError>) -> Void
+  ) -> UUID
+
+  /// Downloads a file asynchronously from a remote URL
+  /// - Parameters:
+  ///   - remoteUrl: The URL of the file to download
+  ///   - progressHandler: A closure that receives download progress updates (0.0 to 1.0)
+  /// - Returns: The local URL where the file was saved
+  /// - Throws: FileDownloadError if the download fails
+  func downloadFileAsync(
+    remoteUrl: URL,
+    progressHandler: ((Float) -> Void)?
+  ) async throws -> URL
+
+  /// Cancels a specific download using its identifier
+  /// - Parameter downloadId: The identifier of the download to cancel
+  /// - Returns: True if a download was found and cancelled, false otherwise
+  @discardableResult
+  func cancelDownload(id downloadId: UUID) -> Bool
+
+  /// Cancels all downloads for a specific remote URL
+  /// - Parameter remoteUrl: The remote URL of the downloads to cancel
+  /// - Returns: The number of downloads cancelled
+  @discardableResult
+  func cancelDownload(for remoteUrl: URL) -> Int
+
+  /// Cancels all active downloads
+  func cancelAllDownloads()
+
+  /// Checks if a file already exists in the cache
+  /// - Parameter remoteUrl: The remote URL to check
+  /// - Returns: True if the file exists in the cache
+  func fileExists(for remoteUrl: URL) -> Bool
+
+  /// Returns the local URL where a file would be stored
+  /// - Parameter remoteUrl: The remote URL of the file
+  /// - Returns: The local cache URL for this file
+  func localURL(for remoteUrl: URL) -> URL
+
+  /// Clears all cached files
+  /// - Throws: FileDownloadError if the cache couldn't be cleared
+  func clearCache() throws
+
+  /// Prunes the cache to stay under the specified size limit
+  /// - Parameters:
+  ///   - maxSize: Maximum size in bytes for the cache (nil uses default)
+  ///   - excludeFilepaths: Paths to exclude from pruning
+  /// - Throws: FileDownloadError if pruning fails
+  func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) throws
+
+  /// Returns the current size of the cache in bytes
+  /// - Returns: The size in bytes
+  func currentCacheSize() -> Int64
+
+  /// Returns the available disk space on the volume containing the cache
+  /// - Returns: Available space in bytes, or nil if it couldn't be determined
+  func availableDiskSpace() -> Int64?
+}
+
 /// Manages multiple file downloads using async/await pattern
 /// Eliminates deadlocks by removing synchronous queue operations and locks
 @MainActor
@@ -68,6 +176,17 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     // Create destination URL
     let destinationURL = cacheURL(for: url)
 
+    // Ensure cache directory exists before downloading
+    do {
+      try fileManager.createDirectory(
+        at: cacheDirectoryURL,
+        withIntermediateDirectories: true,
+        attributes: nil
+      )
+    } catch {
+      throw FileDownloadError.directoryCreationFailed(self.cacheDirectoryURL.path)
+    }
+
     // Create new downloader
     let downloader = FileDownloaderAsync()
     downloaders[downloadId] = downloader
@@ -102,6 +221,8 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     forceRedownload: Bool = false,
     progressHandler: @escaping (Double) -> Void
   ) async throws -> URL {
+    logger.info("Starting download for \(url.lastPathComponent) with ID: \(downloadId)")
+
     // Check cache first
     if !forceRedownload, let cachedURL = getCachedFile(for: url) {
       logger.info("Using cached file for \(url.lastPathComponent)")
@@ -111,34 +232,55 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
 
     // Create destination URL
     let destinationURL = cacheURL(for: url)
+    logger.info("Will download \(url.lastPathComponent) to \(destinationURL.path)")
+
+    // Ensure cache directory exists before downloading
+    do {
+      try fileManager.createDirectory(
+        at: cacheDirectoryURL,
+        withIntermediateDirectories: true,
+        attributes: nil
+      )
+      logger.info("Cache directory ensured at \(self.cacheDirectoryURL.path)")
+    } catch {
+      logger.error("Failed to create cache directory: \(error)")
+      throw FileDownloadError.directoryCreationFailed(self.cacheDirectoryURL.path)
+    }
 
     // Create new downloader
     let downloader = FileDownloaderAsync()
     downloaders[downloadId] = downloader
 
     defer {
+      logger.info("Cleaning up downloader for \(downloadId)")
       downloaders.removeValue(forKey: downloadId)
     }
 
     // Use the progress stream
+    logger.info("Creating progress stream for \(url.lastPathComponent)")
     let eventStream = await downloader.downloadWithProgress(from: url, to: destinationURL)
 
+    logger.info("Starting to consume events for \(url.lastPathComponent)")
     for await event in eventStream {
       switch event {
       case .progress(let progress):
+        logger.info("Progress for \(url.lastPathComponent): \(progress)")
         progressHandler(progress)
 
       case .completed(let result):
+        logger.info("Download completed for \(url.lastPathComponent) at \(result.localURL.path)")
         // Update cache - file is already at the correct location
         return result.localURL
 
       case .failed(let error):
+        logger.error("Download failed for \(url.lastPathComponent): \(error)")
         await errorReporter.reportError(error)
         throw error
       }
     }
 
     // This should never be reached, but Swift requires it
+    logger.error("Unexpected: AsyncStream ended without completion for \(url.lastPathComponent)")
     throw URLError(.unknown)
   }
 
@@ -424,8 +566,11 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
 
   /// Prunes the cache to stay under the specified size limit
   public func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) throws {
-    // For now, we'll use the internal prune method
-    pruneCacheInternal(maxSize: maxSize ?? Self.MAX_AUDIO_FOLDER_SIZE)
+    // For now, we'll use the internal prune method synchronously
+    // Note: This could block but maintains protocol compatibility
+    Task {
+      await pruneCacheInternal(maxSize: maxSize ?? Self.MAX_AUDIO_FOLDER_SIZE)
+    }
   }
 
   /// Returns the current size of the cache in bytes
