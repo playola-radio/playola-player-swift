@@ -156,51 +156,27 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     }
   }
 
-  /// Downloads a file asynchronously
-  /// - Parameters:
-  ///   - url: The URL to download from
-  ///   - downloadId: Unique identifier for this download
-  ///   - forceRedownload: If true, bypasses cache and forces fresh download
-  /// - Returns: The local file URL where the file was saved
-  public func downloadFile(
-    from url: URL,
-    downloadId: String,
-    forceRedownload: Bool = false
-  ) async throws -> URL {
-    // Check cache first
+  public func downloadFile(from url: URL, downloadId: String, forceRedownload: Bool = false)
+    async throws -> URL
+  {
     if !forceRedownload, let cachedURL = getCachedFile(for: url) {
-      logger.info("Using cached file for \(url.lastPathComponent)")
       return cachedURL
     }
 
-    // Create destination URL
     let destinationURL = cacheURL(for: url)
-
-    // Ensure cache directory exists before downloading
     do {
       try fileManager.createDirectory(
-        at: cacheDirectoryURL,
-        withIntermediateDirectories: true,
-        attributes: nil
-      )
+        at: cacheDirectoryURL, withIntermediateDirectories: true, attributes: nil)
     } catch {
       throw FileDownloadError.directoryCreationFailed(self.cacheDirectoryURL.path)
     }
 
-    // Create new downloader
     let downloader = FileDownloaderAsync()
     downloaders[downloadId] = downloader
-
-    defer {
-      downloaders.removeValue(forKey: downloadId)
-    }
+    defer { downloaders.removeValue(forKey: downloadId) }
 
     do {
       let result = try await downloader.download(from: url, to: destinationURL)
-
-      // Update cache
-      // File is already at the correct location after download
-
       return result.localURL
     } catch {
       await errorReporter.reportError(error)
@@ -208,71 +184,42 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     }
   }
 
-  /// Downloads a file with progress tracking
-  /// - Parameters:
-  ///   - url: The URL to download from
-  ///   - downloadId: Unique identifier for this download
-  ///   - forceRedownload: If true, bypasses cache and forces fresh download
-  ///   - progressHandler: Called with download progress (0.0 to 1.0)
-  /// - Returns: The local file URL where the file was saved
   public func downloadFileWithProgress(
     from url: URL,
     downloadId: String,
     forceRedownload: Bool = false,
     progressHandler: @escaping (Double) -> Void
   ) async throws -> URL {
-    // Check cache first
     if !forceRedownload, let cachedURL = getCachedFile(for: url) {
-      progressHandler(1.0)  // Indicate immediate completion
+      progressHandler(1.0)
       return cachedURL
     }
 
-    // Create destination URL
     let destinationURL = cacheURL(for: url)
-
-    // Ensure cache directory exists before downloading
     do {
       try fileManager.createDirectory(
-        at: cacheDirectoryURL,
-        withIntermediateDirectories: true,
-        attributes: nil
-      )
+        at: cacheDirectoryURL, withIntermediateDirectories: true, attributes: nil)
     } catch {
       throw FileDownloadError.directoryCreationFailed(self.cacheDirectoryURL.path)
     }
 
-    // Create new downloader
     let downloader = FileDownloaderAsync()
     downloaders[downloadId] = downloader
+    defer { downloaders.removeValue(forKey: downloadId) }
 
-    defer {
-      downloaders.removeValue(forKey: downloadId)
-    }
-
-    // Use the progress stream
     let eventStream = await downloader.downloadWithProgress(from: url, to: destinationURL)
-
     for await event in eventStream {
       switch event {
-      case .progress(let progress):
-        progressHandler(progress)
-
-      case .completed(let result):
-        // Update cache - file is already at the correct location
-        return result.localURL
-
+      case .progress(let progress): progressHandler(progress)
+      case .completed(let result): return result.localURL
       case .failed(let error):
         await errorReporter.reportError(error)
         throw error
       }
     }
-
-    // This should never be reached, but Swift requires it
     throw URLError(.unknown)
   }
 
-  /// Cancels a specific download
-  /// - Parameter downloadId: The ID of the download to cancel
   public func cancelDownload(_ downloadId: String) async {
     if let downloader = downloaders[downloadId] {
       await downloader.cancel()
@@ -280,19 +227,12 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     }
   }
 
-  /// Cancels all active downloads (async version for internal use)
   public func cancelAllDownloads() async {
     await cancelAllDownloadsInternal()
   }
 
-  /// Returns the IDs of all active downloads
-  public var activeDownloadIds: Set<String> {
-    Set(downloaders.keys)
-  }
+  public var activeDownloadIds: Set<String> { Set(downloaders.keys) }
 
-  /// Preloads multiple files concurrently
-  /// - Parameter urls: Array of URLs to preload
-  /// - Returns: Dictionary mapping URLs to their local file paths (successful downloads only)
   public func preloadFiles(urls: [URL]) async -> [URL: URL] {
     var results: [URL: URL] = [:]
 
@@ -301,12 +241,9 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
         group.addTask {
           do {
             let localURL = try await self.downloadFile(
-              from: url,
-              downloadId: "preload-\(index)-\(UUID().uuidString)"
-            )
+              from: url, downloadId: "preload-\(index)-\(UUID().uuidString)")
             return (url, localURL)
           } catch {
-            self.logger.error("Failed to preload \(url): \(error)")
             return (url, nil)
           }
         }
@@ -322,7 +259,6 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     return results
   }
 
-  /// Cleans up the cache by removing old files
   public func pruneCache() async {
     await Task.detached(priority: .utility) {
       await self.pruneCacheInternal()
@@ -346,19 +282,15 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   {
     do {
       let contents = try fileManager.contentsOfDirectory(
-        at: cacheDirectoryURL,
-        includingPropertiesForKeys: [.fileSizeKey, .creationDateKey],
-        options: [.skipsHiddenFiles]
-      )
+        at: cacheDirectoryURL, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey],
+        options: [.skipsHiddenFiles])
 
       var totalSize: Int64 = 0
       var fileInfos: [(url: URL, size: Int64, date: Date)] = []
 
       for fileURL in contents {
         let attributes = try fileURL.resourceValues(forKeys: [.fileSizeKey, .creationDateKey])
-        if let size = attributes.fileSize,
-          let date = attributes.creationDate
-        {
+        if let size = attributes.fileSize, let date = attributes.creationDate {
           totalSize += Int64(size)
           fileInfos.append((url: fileURL, size: Int64(size), date: date))
         }
