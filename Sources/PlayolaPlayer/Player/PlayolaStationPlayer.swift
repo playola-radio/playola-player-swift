@@ -191,16 +191,12 @@ final public class PlayolaStationPlayer: ObservableObject {
       case .failure(let error):
         // Check if this is a cancellation error - don't retry those
         if let urlError = error as? URLError, urlError.code == .cancelled {
-          os_log(
-            "🛑 Download was cancelled, not retrying", log: PlayolaStationPlayer.logger, type: .info)
           throw error
         }
 
         if let fileDownloadError = error as? FileDownloadError,
           case .downloadCancelled = fileDownloadError
         {
-          os_log(
-            "🛑 Download was cancelled, not retrying", log: PlayolaStationPlayer.logger, type: .info)
           throw error
         }
 
@@ -226,16 +222,12 @@ final public class PlayolaStationPlayer: ObservableObject {
     } catch {
       // Check if this is a cancellation error - don't retry those
       if let urlError = error as? URLError, urlError.code == .cancelled {
-        os_log(
-          "🛑 Download was cancelled, not retrying", log: PlayolaStationPlayer.logger, type: .info)
         throw error
       }
 
       if let fileDownloadError = error as? FileDownloadError,
         case .downloadCancelled = fileDownloadError
       {
-        os_log(
-          "🛑 Download was cancelled, not retrying", log: PlayolaStationPlayer.logger, type: .info)
         throw error
       }
 
@@ -449,30 +441,13 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 3. Clears the current schedule
   /// 4. Reports the end of the listening session
   public func stop() {
-    os_log(
-      "🛑 STOP called - Beginning station stop process", log: PlayolaStationPlayer.logger,
-      type: .info)
-
     // Stop all players (this will cancel their individual downloads)
-    os_log(
-      "🛑 Found %d spin players to stop", log: PlayolaStationPlayer.logger, type: .info,
-      spinPlayers.count)
-    for (index, player) in spinPlayers.enumerated() {
-      os_log(
-        "🛑 Stopping spin player %d with state: %@", log: PlayolaStationPlayer.logger, type: .info,
-        index, String(describing: player.state))
+    for player in spinPlayers {
       player.stop()
-      os_log("🛑 Stopped spin player %d", log: PlayolaStationPlayer.logger, type: .info, index)
     }
 
-    // Cancel any downloads tracked at this level (though activeDownloadIds is currently unused)
-    os_log(
-      "🛑 Cancelling %d tracked downloads", log: PlayolaStationPlayer.logger, type: .info,
-      activeDownloadIds.count)
-    for (spinId, downloadId) in activeDownloadIds {
-      os_log(
-        "🛑 Cancelling download %@ for spin %@", log: PlayolaStationPlayer.logger, type: .info,
-        downloadId.uuidString, spinId)
+    // Cancel any downloads tracked at this level
+    for (_, downloadId) in activeDownloadIds {
       _ = fileDownloadManager.cancelDownload(id: downloadId)
     }
     activeDownloadIds.removeAll()
@@ -480,8 +455,6 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.stationId = nil
     self.currentSchedule = nil
     self.state = .idle
-
-    os_log("🛑 STOP completed - Station is now idle", log: PlayolaStationPlayer.logger, type: .info)
   }
 
   /// Handle audio route changes such as connecting/disconnecting headphones

@@ -71,7 +71,6 @@ public actor FileDownloaderAsync {
     continuation: AsyncStream<DownloadEvent>.Continuation
   ) async {
     guard !isCancelled && !Task.isCancelled else {
-      logger.info("🛑 performDownload cancelled before starting for \(url.lastPathComponent)")
       continuation.yield(.failed(URLError(.cancelled)))
       continuation.finish()
       return
@@ -147,15 +146,8 @@ public actor FileDownloaderAsync {
   }
 
   public func cancel() {
-    logger.info("🛑 FileDownloaderAsync.cancel() called")
     isCancelled = true
     downloadTask?.cancel()
-
-    // If there's an active AsyncStream, we need to signal it to finish
-    // The downloadTask cancellation should trigger the URLSession delegate's didCompleteWithError
-    // which will then call the completion handler with a cancellation error
-
-    logger.info("🛑 FileDownloaderAsync cancellation flags set and downloadTask cancelled")
   }
 
   /// URLSession delegate for handling download progress and completion
@@ -217,18 +209,11 @@ public actor FileDownloaderAsync {
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?)
     {
-      guard !hasCompleted else {
-        logger.info("🛑 URLSession delegate: task already completed, ignoring")
-        return
-      }
+      guard !hasCompleted else { return }
 
       if let error = error {
-        logger.info("🛑 URLSession delegate: task completed with error: \(error)")
         hasCompleted = true
         completionHandler?(.failure(error))
-      } else {
-        logger.info(
-          "🛑 URLSession delegate: task completed successfully (handled by didFinishDownloadingTo)")
       }
     }
   }

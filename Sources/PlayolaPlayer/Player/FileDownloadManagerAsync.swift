@@ -208,34 +208,24 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     defer { downloaders.removeValue(forKey: downloadId) }
 
     let eventStream = await downloader.downloadWithProgress(from: url, to: destinationURL)
-    logger.info("🔄 Starting to consume download events for \(url.lastPathComponent)")
     for await event in eventStream {
-      logger.info("🔄 Received event for \(url.lastPathComponent): \(String(describing: event))")
       switch event {
       case .progress(let progress):
         progressHandler(progress)
       case .completed(let result):
-        logger.info("✅ Download completed for \(url.lastPathComponent)")
         return result.localURL
       case .failed(let error):
-        logger.error("❌ Download failed for \(url.lastPathComponent): \(error)")
         await errorReporter.reportError(error)
         throw error
       }
     }
-    logger.warning("⚠️ AsyncStream ended without completion for \(url.lastPathComponent)")
     throw URLError(.unknown)
   }
 
   public func cancelDownload(_ downloadId: String) async {
-    logger.info("🛑 FileDownloadManagerAsync.cancelDownload called for: \(downloadId)")
     if let downloader = downloaders[downloadId] {
-      logger.info("🛑 Found downloader for \(downloadId), calling cancel()")
       await downloader.cancel()
       downloaders.removeValue(forKey: downloadId)
-      logger.info("🛑 Removed downloader for \(downloadId) from active downloads")
-    } else {
-      logger.warning("🛑 No downloader found for download ID: \(downloadId)")
     }
   }
 
@@ -388,22 +378,15 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   /// Cancels a specific download using its identifier
   @discardableResult
   public func cancelDownload(id downloadId: UUID) -> Bool {
-    logger.info(
-      "🛑 FileDownloadManagerAsync.cancelDownload(id:) called for UUID: \(downloadId.uuidString)")
     guard let downloadKey = downloadIdToKey[downloadId] else {
-      logger.warning("🛑 No downloadKey found for UUID: \(downloadId.uuidString)")
       return false
     }
 
-    logger.info("🛑 Found downloadKey: \(downloadKey) for UUID: \(downloadId.uuidString)")
-
-    // Run the cancellation synchronously to ensure it completes
     Task {
       await cancelDownload(downloadKey)
     }
 
     downloadIdToKey.removeValue(forKey: downloadId)
-    logger.info("🛑 Removed UUID mapping for: \(downloadId.uuidString)")
     return true
   }
 
