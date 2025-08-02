@@ -112,7 +112,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   @MainActor
   internal init(fileDownloadManager: FileDownloadManaging? = nil) {
-    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManager()
+    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
@@ -189,6 +189,17 @@ final public class PlayolaStationPlayer: ObservableObject {
         }
         return
       case .failure(let error):
+        // Check if this is a cancellation error - don't retry those
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+          throw error
+        }
+
+        if let fileDownloadError = error as? FileDownloadError,
+          case .downloadCancelled = fileDownloadError
+        {
+          throw error
+        }
+
         // Handle file loading failure
         let stationError =
           error is FileDownloadError
@@ -209,6 +220,17 @@ final public class PlayolaStationPlayer: ObservableObject {
         }
       }
     } catch {
+      // Check if this is a cancellation error - don't retry those
+      if let urlError = error as? URLError, urlError.code == .cancelled {
+        throw error
+      }
+
+      if let fileDownloadError = error as? FileDownloadError,
+        case .downloadCancelled = fileDownloadError
+      {
+        throw error
+      }
+
       // If we haven't exceeded retry attempts, try again with exponential backoff
       if retryCount < maxRetries {
         let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
@@ -419,18 +441,16 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 3. Clears the current schedule
   /// 4. Reports the end of the listening session
   public func stop() {
-    // Cancel all active downloads
+    // Stop all players (this will cancel their individual downloads)
+    for player in spinPlayers {
+      player.stop()
+    }
+
+    // Cancel any downloads tracked at this level
     for (_, downloadId) in activeDownloadIds {
       _ = fileDownloadManager.cancelDownload(id: downloadId)
     }
     activeDownloadIds.removeAll()
-
-    // Stop all players
-    for player in spinPlayers {
-      if player.state != .available {
-        player.stop()
-      }
-    }
 
     self.stationId = nil
     self.currentSchedule = nil
