@@ -5,6 +5,7 @@
 //  Created by Brian D Keane on 3/22/25.
 //
 import Foundation
+
 @testable import PlayolaPlayer
 
 // Extension to provide additional mock utilities for testing
@@ -22,7 +23,7 @@ extension Schedule {
   ) -> Schedule {
     // Start with the default mock
     let mockSchedule = Schedule.mock
-    
+
     // Create new schedule with overrides
     return Schedule(
       stationId: stationId ?? mockSchedule.stationId,
@@ -30,7 +31,7 @@ extension Schedule {
       dateProvider: dateProvider ?? mockSchedule.dateProvider
     )
   }
-  
+
   /// Creates a mock Schedule with spins at specified time intervals from now
   /// - Parameters:
   ///   - stationId: Optional station ID (defaults to mock station ID)
@@ -45,16 +46,16 @@ extension Schedule {
     spinCount: Int = 10,
     spinDurationSeconds: Int = 30,
     gapSeconds: Int = 0,
-    startOffsetSeconds: TimeInterval = -120, // 2 minutes ago by default
+    startOffsetSeconds: TimeInterval = -120,  // 2 minutes ago by default
     dateProvider: DateProvider = DateProviderMock()
   ) -> Schedule {
     let mockScheduleId = stationId ?? Schedule.mock.stationId
     let now = Date()
     var spins: [Spin] = []
-    
+
     // Start time for the first spin
     var currentStartTime = now.addingTimeInterval(startOffsetSeconds)
-    
+
     for i in 0..<spinCount {
       // Create AudioBlock with specified duration
       let audioBlock = AudioBlock.mockWith(
@@ -64,7 +65,7 @@ extension Schedule {
         durationMS: spinDurationSeconds * 1000,
         endOfMessageMS: spinDurationSeconds * 1000
       )
-      
+
       // Create the spin
       let spin = Spin.mockWith(
         id: "spin-\(i)",
@@ -73,14 +74,14 @@ extension Schedule {
         audioBlock: audioBlock,
         dateProvider: dateProvider
       )
-      
+
       spins.append(spin)
-      
+
       // Update start time for next spin
       let totalDuration = Double(spinDurationSeconds + gapSeconds)
       currentStartTime = currentStartTime.addingTimeInterval(totalDuration)
     }
-    
+
     return Schedule(
       stationId: mockScheduleId,
       spins: spins,

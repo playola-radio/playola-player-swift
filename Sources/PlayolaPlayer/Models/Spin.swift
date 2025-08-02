@@ -56,16 +56,18 @@ public struct Spin: Codable, Sendable {
   /// Date provider for testing time-dependent behavior
   public var dateProvider: DateProvider! = .shared
 
-  public init(id: String,
-              stationId: String,
-              airtime: Date,
-              startingVolume: Float,
-              createdAt: Date,
-              updatedAt: Date,
-              audioBlock: AudioBlock,
-              fades: [Fade],
-              relatedTexts: [RelatedText]? = nil,
-              dateProvider: DateProvider! = DateProvider.shared) {
+  public init(
+    id: String,
+    stationId: String,
+    airtime: Date,
+    startingVolume: Float,
+    createdAt: Date,
+    updatedAt: Date,
+    audioBlock: AudioBlock,
+    fades: [Fade],
+    relatedTexts: [RelatedText]? = nil,
+    dateProvider: DateProvider! = DateProvider.shared
+  ) {
     self.id = id
     self.stationId = stationId
     self.airtime = airtime
@@ -85,18 +87,18 @@ public struct Spin: Codable, Sendable {
 
   /// Whether this spin is currently playing, based on current time compared to airtime and endtime
   public var isPlaying: Bool {
-    return airtime <= dateProvider.now() &&
-    dateProvider.now() <= endtime
+    return airtime <= dateProvider.now() && dateProvider.now() <= endtime
   }
-  
+
   private enum CodingKeys: String, CodingKey {
-    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, startingVolume, relatedTexts
+    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, startingVolume,
+      relatedTexts
   }
 
   // Custom decoder to handle dateProvider
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
-    
+
     id = try container.decode(String.self, forKey: .id)
     stationId = try container.decode(String.self, forKey: .stationId)
     airtime = try container.decode(Date.self, forKey: .airtime)
@@ -106,7 +108,7 @@ public struct Spin: Codable, Sendable {
     audioBlock = try container.decode(AudioBlock.self, forKey: .audioBlock)
     fades = try container.decode([Fade].self, forKey: .fades)
     relatedTexts = try container.decodeIfPresent([RelatedText].self, forKey: .relatedTexts)
-    
+
     // Initialize dateProvider with default value
     dateProvider = DateProvider.shared
   }
@@ -114,7 +116,7 @@ public struct Spin: Codable, Sendable {
   // Custom encoder to handle dateProvider
   public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
-    
+
     try container.encode(id, forKey: .id)
     try container.encode(stationId, forKey: .stationId)
     try container.encode(airtime, forKey: .airtime)

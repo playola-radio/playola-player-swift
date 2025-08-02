@@ -1,3 +1,4 @@
+import AVFoundation
 //
 //  AVAudioFileMock.swift
 //  PlayolaPlayer
@@ -5,7 +6,7 @@
 //  Created by Brian D Keane on 3/22/25.
 //
 import Foundation
-import AVFoundation
+
 @testable import PlayolaPlayer
 
 // Create a cleaner solution using composition instead of inheritance
@@ -42,7 +43,10 @@ class AVAudioFileMock {
 
   // Create a mock PCM buffer with given samples
   private func createBufferWithSamples(_ samples: [Float]) -> AVAudioPCMBuffer? {
-    guard let buffer = AVAudioPCMBuffer(pcmFormat: mockFormat, frameCapacity: AVAudioFrameCount(samples.count)) else {
+    guard
+      let buffer = AVAudioPCMBuffer(
+        pcmFormat: mockFormat, frameCapacity: AVAudioFrameCount(samples.count))
+    else {
       return nil
     }
 
@@ -60,15 +64,21 @@ class AVAudioFileMock {
   // Implementation of AVAudioFile's read method
   func read(into buffer: AVAudioPCMBuffer) throws {
     if shouldThrowReadError {
-      throw NSError(domain: "AVAudioFileMockError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Mock read error"])
+      throw NSError(
+        domain: "AVAudioFileMockError", code: -1,
+        userInfo: [NSLocalizedDescriptionKey: "Mock read error"])
     }
 
     guard let mockBuffer = self.mockBuffer else {
-      throw NSError(domain: "AVAudioFileMockError", code: -2, userInfo: [NSLocalizedDescriptionKey: "No mock buffer available"])
+      throw NSError(
+        domain: "AVAudioFileMockError", code: -2,
+        userInfo: [NSLocalizedDescriptionKey: "No mock buffer available"])
     }
 
     // Copy data from mock buffer to the provided buffer
-    if let destChannelData = buffer.floatChannelData, let sourceChannelData = mockBuffer.floatChannelData {
+    if let destChannelData = buffer.floatChannelData,
+      let sourceChannelData = mockBuffer.floatChannelData
+    {
       let frameCount = min(buffer.frameCapacity, mockBuffer.frameLength)
       for i in 0..<Int(frameCount) {
         destChannelData[0][i] = sourceChannelData[0][i]

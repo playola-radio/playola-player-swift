@@ -1,3 +1,5 @@
+import AVFoundation
+import Testing
 //
 //  AudioNormalizationWaveformTests.swift
 //  PlayolaPlayer
@@ -5,8 +7,7 @@
 //  Created by Brian D Keane on 3/22/25.
 //
 import XCTest
-import Testing
-import AVFoundation
+
 @testable import PlayolaPlayer
 
 struct AudioNormalizationWaveformTests {
@@ -94,10 +95,14 @@ struct AudioNormalizationWaveformTests {
   @Test("Testing consistent volume normalization across waveforms")
   func testConsistentNormalization() throws {
     // Generate different waveforms with different amplitudes
-    let sineWave = AudioBufferTestUtilities.generateTestSamples(pattern: .sine, count: 1000, amplitude: 0.9)
-    let squareWave = AudioBufferTestUtilities.generateTestSamples(pattern: .square, count: 1000, amplitude: 0.7)
-    let rampWave = AudioBufferTestUtilities.generateTestSamples(pattern: .ramp, count: 1000, amplitude: 0.5)
-    let noiseWave = AudioBufferTestUtilities.generateTestSamples(pattern: .noise, count: 1000, amplitude: 0.3)
+    let sineWave = AudioBufferTestUtilities.generateTestSamples(
+      pattern: .sine, count: 1000, amplitude: 0.9)
+    let squareWave = AudioBufferTestUtilities.generateTestSamples(
+      pattern: .square, count: 1000, amplitude: 0.7)
+    let rampWave = AudioBufferTestUtilities.generateTestSamples(
+      pattern: .ramp, count: 1000, amplitude: 0.5)
+    let noiseWave = AudioBufferTestUtilities.generateTestSamples(
+      pattern: .noise, count: 1000, amplitude: 0.3)
 
     // Find the maximum amplitude of each waveform
     let sineAmplitude = sineWave.map { abs($0) }.max() ?? 0
