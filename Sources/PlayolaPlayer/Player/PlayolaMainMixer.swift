@@ -203,7 +203,7 @@ open class PlayolaMainMixer: NSObject {
   public static let shared: PlayolaMainMixer = PlayolaMainMixer()
 }
 
-extension PlayolaMainMixer: AudioEngineProvider {
+extension PlayolaMainMixer {
   @MainActor
   public func start() throws {
     let maxRetries = 3
