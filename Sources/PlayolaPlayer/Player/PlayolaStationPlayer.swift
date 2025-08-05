@@ -71,6 +71,10 @@ final public class PlayolaStationPlayer: ObservableObject {
   // Track active download IDs for potential cancellation
   private var activeDownloadIds: [String: UUID] = [:]
 
+  // Track active async tasks for proper cancellation
+  private var schedulingTask: Task<Void, Never>?
+  private var playTask: Task<Void, Error>?
+
   public weak var delegate: PlayolaStationPlayerDelegate?
 
   var spinPlayers: [SpinPlayer] = []
@@ -262,6 +266,9 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
 
     do {
+      // Check if task is cancelled before proceeding
+      try Task.checkCancellation()
+
       let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
 
       // Log how many spins are in the updated schedule
@@ -282,6 +289,9 @@ final public class PlayolaStationPlayer: ObservableObject {
         spinsToLoad.count)
 
       for spin in spinsToLoad {
+        // Check cancellation before each spin
+        try Task.checkCancellation()
+
         if !isScheduled(spin: spin) {
           os_log(
             "Scheduling new spin: %@ by %@ at %@",
@@ -399,6 +409,9 @@ final public class PlayolaStationPlayer: ObservableObject {
   ///   - Missing audio content in the schedule
   ///   - File download failures
   public func play(stationId: String) async throws {
+    // Cancel any existing play task
+    playTask?.cancel()
+
     self.stationId = stationId
 
     // Get the schedule
@@ -430,7 +443,10 @@ final public class PlayolaStationPlayer: ObservableObject {
     try await scheduleSpin(spin: spinToPlay, showProgress: true)
 
     // Schedule upcoming spins
-    await scheduleUpcomingSpins()
+    schedulingTask?.cancel()
+    schedulingTask = Task {
+      await scheduleUpcomingSpins()
+    }
   }
 
   /// Stops the current playback and releases associated resources.
@@ -441,6 +457,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 3. Clears the current schedule
   /// 4. Reports the end of the listening session
   public func stop() {
+    // Cancel any active async tasks first
+    schedulingTask?.cancel()
+    schedulingTask = nil
+    playTask?.cancel()
+    playTask = nil
+
     // Stop all players (this will cancel their individual downloads)
     for player in spinPlayers {
       player.stop()
@@ -542,7 +564,8 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
 
     self.state = .playing(spin)
 
-    Task {
+    schedulingTask?.cancel()
+    schedulingTask = Task {
       do {
         await self.scheduleUpcomingSpins()
 
