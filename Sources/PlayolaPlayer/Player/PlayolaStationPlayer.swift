@@ -77,7 +77,22 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   public weak var delegate: PlayolaStationPlayerDelegate?
 
-  var spinPlayers: [SpinPlayer] = []
+  // Thread-safe access to spin players - all access must be on main actor
+  private var _spinPlayers: [SpinPlayer] = []
+
+  /// Thread-safe access to spin players array
+  private var spinPlayers: [SpinPlayer] {
+    get {
+      MainActor.assumeIsolated {
+        return _spinPlayers
+      }
+    }
+    set {
+      MainActor.assumeIsolated {
+        _spinPlayers = newValue
+      }
+    }
+  }
   public static let shared = PlayolaStationPlayer()
 
   /// Configure this instance with authentication provider
@@ -137,11 +152,11 @@ final public class PlayolaStationPlayer: ObservableObject {
     category: "PlayolaStationPlayer")
 
   private func getAvailableSpinPlayer() -> SpinPlayer {
-    let availablePlayers = spinPlayers.filter({ $0.state == .available })
+    let availablePlayers = _spinPlayers.filter({ $0.state == .available })
     if let available = availablePlayers.first { return available }
 
     let newPlayer = SpinPlayer(delegate: self)
-    spinPlayers.append(newPlayer)
+    _spinPlayers.append(newPlayer)
     return newPlayer
   }
 
@@ -269,7 +284,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   @MainActor
   private func isScheduled(spin: Spin) -> Bool {
-    return spinPlayers.contains { $0.spin?.id == spin.id }
+    return _spinPlayers.contains { $0.spin?.id == spin.id }
   }
 
   @MainActor
@@ -320,7 +335,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       }
 
       // Log already scheduled spins
-      let scheduledSpinsCount = spinPlayers.filter { $0.spin != nil }.count
+      let scheduledSpinsCount = _spinPlayers.filter { $0.spin != nil }.count
       os_log(
         "Total scheduled spins after update: %d",
         log: PlayolaStationPlayer.logger,
@@ -491,7 +506,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       "Current state: %d active spinPlayers, %d active downloads, stationId: %@",
       log: PlayolaStationPlayer.logger,
       type: .info,
-      spinPlayers.count,
+      _spinPlayers.count,
       activeDownloadIds.count,
       stationId ?? "nil")
 
@@ -513,15 +528,15 @@ final public class PlayolaStationPlayer: ObservableObject {
       "Stopping %d spin players",
       log: PlayolaStationPlayer.logger,
       type: .info,
-      spinPlayers.count)
+      _spinPlayers.count)
 
-    for (index, player) in spinPlayers.enumerated() {
+    for (index, player) in _spinPlayers.enumerated() {
       os_log(
         "Stopping player %d/%d - ID: %@, spin: %@",
         log: PlayolaStationPlayer.logger,
         type: .info,
         index + 1,
-        spinPlayers.count,
+        _spinPlayers.count,
         player.id.uuidString,
         player.spin?.id ?? "nil")
       player.stop()
@@ -646,7 +661,7 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
         await self.scheduleUpcomingSpins()
 
         // Get a list of active file paths to exclude from pruning
-        let activePaths = self.spinPlayers
+        let activePaths = self._spinPlayers
           .compactMap { $0.localUrl?.path }
 
         // Use the new pruning method with proper error handling

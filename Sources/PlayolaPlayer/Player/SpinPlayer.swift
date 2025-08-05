@@ -237,32 +237,36 @@ public class SpinPlayer {
       type: .debug,
       self.id.uuidString)
 
-    if startNotificationTimer != nil {
+    // Invalidate and clear start notification timer atomically
+    if let timer = startNotificationTimer {
       os_log(
         "Invalidating start notification timer",
         log: SpinPlayer.logger,
         type: .debug)
-      startNotificationTimer?.invalidate()
+      timer.invalidate()
       startNotificationTimer = nil
     }
 
-    if clearTimer != nil {
+    // Invalidate and clear clear timer atomically
+    if let timer = clearTimer {
       os_log(
         "Invalidating clear timer",
         log: SpinPlayer.logger,
         type: .debug)
-      clearTimer?.invalidate()
+      timer.invalidate()
       clearTimer = nil
     }
 
+    // Invalidate and clear all fade timers atomically
     if !fadeTimers.isEmpty {
       os_log(
         "Invalidating %d fade timers",
         log: SpinPlayer.logger,
         type: .debug,
         fadeTimers.count)
-      fadeTimers.forEach { $0.invalidate() }
+      let timersToInvalidate = fadeTimers
       fadeTimers.removeAll()
+      timersToInvalidate.forEach { $0.invalidate() }
     }
   }
 
@@ -488,12 +492,15 @@ public class SpinPlayer {
       // Simply use play(at:) which is the most reliable method
       playerNode.play(at: avAudiotime)
 
-      // Use timer for status notification
+      // Use timer for status notification with improved invalidation
       self.startNotificationTimer = Timer(
         fire: scheduledDate,
         interval: 0,
         repeats: false
       ) { [weak self] timer in
+        // Always invalidate timer first to prevent double execution
+        timer.invalidate()
+
         os_log(
           "⏰ Timer fired - Checking if SpinPlayer still exists",
           log: SpinPlayer.logger,
@@ -501,14 +508,26 @@ public class SpinPlayer {
 
         guard let self = self else {
           os_log(
-            "⚠️ Timer fired but SpinPlayer was deallocated - invalidating timer",
+            "⚠️ Timer fired but SpinPlayer was deallocated",
             log: SpinPlayer.logger,
             type: .default)
-          timer.invalidate()
           return
         }
 
-        DispatchQueue.main.async {
+        // Ensure we're on main actor for state checks
+        Task { @MainActor in
+          // Double-check that this timer is still the active one
+          guard self.startNotificationTimer === timer else {
+            os_log(
+              "⚠️ Timer fired but is no longer the active timer",
+              log: SpinPlayer.logger,
+              type: .default)
+            return
+          }
+
+          // Clear the timer reference since it's now invalid
+          self.startNotificationTimer = nil
+
           guard let spin = self.spin, spin.id == scheduledSpinId else {
             os_log(
               "⚠️ Timer fired but spin is nil or has changed (expected: %@, actual: %@)",
@@ -516,7 +535,6 @@ public class SpinPlayer {
               type: .default,
               scheduledSpinId ?? "nil",
               self.spin?.id ?? "nil")
-            timer.invalidate()
             return
           }
 
@@ -532,7 +550,6 @@ public class SpinPlayer {
           self.state = .playing
           self.delegate?.player(self, startedPlaying: spin)
         }
-        timer.invalidate()
       }
 
       os_log(
@@ -739,9 +756,16 @@ public class SpinPlayer {
         interval: 0,
         repeats: false
       ) { [weak self, fade] timer in
-        guard let self = self else { return }
+        // Always invalidate timer first
         timer.invalidate()
-        self.fadePlayer(toVolume: fade.toVolume, overTime: 1.5)
+
+        guard let self = self else { return }
+
+        Task { @MainActor in
+          // Remove timer from the set (it's already invalidated)
+          self.fadeTimers.remove(timer)
+          self.fadePlayer(toVolume: fade.toVolume, overTime: 1.5)
+        }
       }
       RunLoop.main.add(timer, forMode: .default)
       fadeTimers.insert(timer)
@@ -760,13 +784,23 @@ public class SpinPlayer {
       interval: 0,
       repeats: false,
       block: { [weak self] timer in
+        // Always invalidate timer first
+        timer.invalidate()
+
         guard let self = self else { return }
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
+          // Double-check that this timer is still the active one
+          guard self.clearTimer === timer else {
+            return
+          }
+
+          // Clear the timer reference since it's now invalid
+          self.clearTimer = nil
+
           self.stopAudio()
           self.clear()
         }
-        timer.invalidate()
       })
     RunLoop.main.add(self.clearTimer!, forMode: .default)
   }
