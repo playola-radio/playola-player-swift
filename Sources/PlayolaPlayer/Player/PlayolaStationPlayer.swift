@@ -71,9 +71,28 @@ final public class PlayolaStationPlayer: ObservableObject {
   // Track active download IDs for potential cancellation
   private var activeDownloadIds: [String: UUID] = [:]
 
+  // Track active async tasks for proper cancellation
+  private var schedulingTask: Task<Void, Never>?
+  private var playTask: Task<Void, Error>?
+
   public weak var delegate: PlayolaStationPlayerDelegate?
 
-  var spinPlayers: [SpinPlayer] = []
+  // Thread-safe access to spin players - all access must be on main actor
+  private var _spinPlayers: [SpinPlayer] = []
+
+  /// Thread-safe access to spin players array
+  private var spinPlayers: [SpinPlayer] {
+    get {
+      MainActor.assumeIsolated {
+        return _spinPlayers
+      }
+    }
+    set {
+      MainActor.assumeIsolated {
+        _spinPlayers = newValue
+      }
+    }
+  }
   public static let shared = PlayolaStationPlayer()
 
   /// Configure this instance with authentication provider
@@ -89,7 +108,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
   }
 
-  public enum State {
+  public enum State: Sendable {
     case loading(Float)
     case playing(Spin)
     case idle
@@ -133,11 +152,11 @@ final public class PlayolaStationPlayer: ObservableObject {
     category: "PlayolaStationPlayer")
 
   private func getAvailableSpinPlayer() -> SpinPlayer {
-    let availablePlayers = spinPlayers.filter({ $0.state == .available })
+    let availablePlayers = _spinPlayers.filter({ $0.state == .available })
     if let available = availablePlayers.first { return available }
 
     let newPlayer = SpinPlayer(delegate: self)
-    spinPlayers.append(newPlayer)
+    _spinPlayers.append(newPlayer)
     return newPlayer
   }
 
@@ -145,7 +164,13 @@ final public class PlayolaStationPlayer: ObservableObject {
   private func scheduleSpin(spin: Spin, showProgress: Bool = false, retryCount: Int = 0)
     async throws
   {
+    os_log(
+      "📅 Scheduling spin: %@ - Retry: %d", log: PlayolaStationPlayer.logger, type: .info, spin.id,
+      retryCount)
+
     let spinPlayer = getAvailableSpinPlayer()
+
+    os_log("Using SpinPlayer for spin: %@", log: PlayolaStationPlayer.logger, type: .debug, spin.id)
 
     guard let audioFileUrl = spin.audioBlock.downloadUrl else {
       let spinDetails = """
@@ -250,7 +275,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   @MainActor
   private func isScheduled(spin: Spin) -> Bool {
-    return spinPlayers.contains { $0.spin?.id == spin.id }
+    return _spinPlayers.contains { $0.spin?.id == spin.id }
   }
 
   @MainActor
@@ -262,55 +287,54 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
 
     do {
+      // Check if task is cancelled before proceeding
+      try Task.checkCancellation()
+
       let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
 
       // Log how many spins are in the updated schedule
       os_log(
-        "Retrieved schedule with %d total spins, %d current spins",
-        log: PlayolaStationPlayer.logger,
-        type: .info,
-        updatedSchedule.spins.count,
-        updatedSchedule.current.count)
+        "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
+        updatedSchedule.spins.count, updatedSchedule.current.count)
 
       // Extend the time window to load more upcoming spins (10 minutes instead of 6)
       let spinsToLoad = updatedSchedule.current.filter { $0.airtime < .now + TimeInterval(600) }
 
       os_log(
-        "Preparing to load %d upcoming spins",
-        log: PlayolaStationPlayer.logger,
-        type: .info,
+        "Loading %d upcoming spins", log: PlayolaStationPlayer.logger, type: .info,
         spinsToLoad.count)
 
       for spin in spinsToLoad {
+        // Check cancellation before each spin
+        try Task.checkCancellation()
+
         if !isScheduled(spin: spin) {
           os_log(
-            "Scheduling new spin: %@ by %@ at %@",
-            log: PlayolaStationPlayer.logger,
-            type: .info,
-            spin.audioBlock.title,
-            spin.audioBlock.artist,
+            "Scheduling new spin: %@ at %@", log: PlayolaStationPlayer.logger, type: .info, spin.id,
             ISO8601DateFormatter().string(from: spin.airtime))
           try await scheduleSpin(spin: spin)
         }
       }
 
       // Log already scheduled spins
-      let scheduledSpinsCount = spinPlayers.filter { $0.spin != nil }.count
+      let scheduledSpinsCount = _spinPlayers.filter { $0.spin != nil }.count
       os_log(
-        "Total scheduled spins after update: %d",
-        log: PlayolaStationPlayer.logger,
-        type: .info,
+        "Total scheduled spins: %d", log: PlayolaStationPlayer.logger, type: .info,
         scheduledSpinsCount)
 
     } catch {
-      errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
+      // Check if this was a cancellation
+      if error is CancellationError {
+        os_log("📛 Schedule update cancelled", log: PlayolaStationPlayer.logger, type: .info)
+      } else {
+        errorReporter.reportError(
+          error, context: "Failed to schedule upcoming spins", level: .error)
 
-      // Log more details about the error
-      os_log(
-        "Schedule update failed: %@",
-        log: PlayolaStationPlayer.logger,
-        type: .error,
-        error.localizedDescription)
+        // Log more details about the error
+        os_log(
+          "Schedule update failed: %@", log: PlayolaStationPlayer.logger, type: .error,
+          error.localizedDescription)
+      }
     }
   }
 
@@ -399,6 +423,9 @@ final public class PlayolaStationPlayer: ObservableObject {
   ///   - Missing audio content in the schedule
   ///   - File download failures
   public func play(stationId: String) async throws {
+    // Cancel any existing play task
+    playTask?.cancel()
+
     self.stationId = stationId
 
     // Get the schedule
@@ -415,22 +442,17 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
 
     // Log success with context
-    let nowDate = Date()
-    let formattedDate = ISO8601DateFormatter().string(from: nowDate)
     os_log(
-      "Starting playback for station: %@ | First spin: %@ by %@ at %@",
-      log: PlayolaStationPlayer.logger,
-      type: .info,
-      stationId,
-      spinToPlay.audioBlock.title,
-      spinToPlay.audioBlock.artist,
-      formattedDate)
+      "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info, stationId)
 
     // Schedule the first spin with progress shown
     try await scheduleSpin(spin: spinToPlay, showProgress: true)
 
     // Schedule upcoming spins
-    await scheduleUpcomingSpins()
+    schedulingTask?.cancel()
+    schedulingTask = Task {
+      await scheduleUpcomingSpins()
+    }
   }
 
   /// Stops the current playback and releases associated resources.
@@ -441,13 +463,43 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 3. Clears the current schedule
   /// 4. Reports the end of the listening session
   public func stop() {
+    os_log("🛑 STOP called", log: PlayolaStationPlayer.logger, type: .info)
+
+    // Log current state before stopping
+    os_log(
+      "Current state: %d players, %d downloads", log: PlayolaStationPlayer.logger, type: .info,
+      _spinPlayers.count, activeDownloadIds.count)
+
+    // Cancel any active async tasks first
+    if schedulingTask != nil {
+      os_log("Cancelling scheduling task", log: PlayolaStationPlayer.logger, type: .info)
+      schedulingTask?.cancel()
+      schedulingTask = nil
+    }
+
+    if playTask != nil {
+      os_log("Cancelling play task", log: PlayolaStationPlayer.logger, type: .info)
+      playTask?.cancel()
+      playTask = nil
+    }
+
     // Stop all players (this will cancel their individual downloads)
-    for player in spinPlayers {
+    os_log("Stopping %d players", log: PlayolaStationPlayer.logger, type: .info, _spinPlayers.count)
+
+    for (index, player) in _spinPlayers.enumerated() {
+      os_log(
+        "Stopping player %d/%d", log: PlayolaStationPlayer.logger, type: .info, index + 1,
+        _spinPlayers.count)
       player.stop()
     }
 
     // Cancel any downloads tracked at this level
-    for (_, downloadId) in activeDownloadIds {
+    os_log(
+      "Cancelling %d downloads", log: PlayolaStationPlayer.logger, type: .info,
+      activeDownloadIds.count)
+
+    for (spinId, downloadId) in activeDownloadIds {
+      os_log("Cancelling download: %@", log: PlayolaStationPlayer.logger, type: .info, spinId)
       _ = fileDownloadManager.cancelDownload(id: downloadId)
     }
     activeDownloadIds.removeAll()
@@ -455,6 +507,8 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.stationId = nil
     self.currentSchedule = nil
     self.state = .idle
+
+    os_log("✅ STOP completed", log: PlayolaStationPlayer.logger, type: .info)
   }
 
   /// Handle audio route changes such as connecting/disconnecting headphones
@@ -533,21 +587,17 @@ final public class PlayolaStationPlayer: ObservableObject {
 
 extension PlayolaStationPlayer: SpinPlayerDelegate {
   public func player(_ player: SpinPlayer, startedPlaying spin: Spin) {
-    os_log(
-      "Delegate notified: Started playing %@ by %@ (spinID: %@)",
-      log: PlayolaStationPlayer.logger, type: .info,
-      spin.audioBlock.title,
-      spin.audioBlock.artist,
-      spin.id)
+    os_log("Started playing: %@", log: PlayolaStationPlayer.logger, type: .info, spin.id)
 
     self.state = .playing(spin)
 
-    Task {
+    schedulingTask?.cancel()
+    schedulingTask = Task {
       do {
         await self.scheduleUpcomingSpins()
 
         // Get a list of active file paths to exclude from pruning
-        let activePaths = self.spinPlayers
+        let activePaths = self._spinPlayers
           .compactMap { $0.localUrl?.path }
 
         // Use the new pruning method with proper error handling
@@ -570,10 +620,7 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
     os_log(
-      "Spin player state changed to: %@ for player: %@",
-      log: PlayolaStationPlayer.logger, type: .info,
-      String(describing: state),
-      player.id.uuidString)
+      "Player state: %@", log: PlayolaStationPlayer.logger, type: .info, String(describing: state))
   }
 }
 

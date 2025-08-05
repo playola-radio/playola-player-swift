@@ -175,8 +175,21 @@ public class SpinPlayer {
   // MARK: Playback
 
   public func stop() {
+    os_log(
+      "🛑 SpinPlayer.stop() called - ID: %@, spin: %@",
+      log: SpinPlayer.logger,
+      type: .info,
+      self.id.uuidString,
+      self.spin?.id ?? "nil")
+
     // Cancel any active download
     if let activeDownloadId = activeDownloadId {
+      os_log(
+        "Cancelling download ID: %@ for spin: %@",
+        log: SpinPlayer.logger,
+        type: .info,
+        activeDownloadId.uuidString,
+        self.spin?.id ?? "nil")
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
       self.activeDownloadId = nil
     }
@@ -201,6 +214,12 @@ public class SpinPlayer {
   }
 
   private func clear() {
+    os_log(
+      "Clearing SpinPlayer - ID: %@",
+      log: SpinPlayer.logger,
+      type: .debug,
+      self.id.uuidString)
+
     stopAudio()
     clearTimers()
     clearFades()
@@ -212,12 +231,43 @@ public class SpinPlayer {
   }
 
   func clearTimers() {
-    startNotificationTimer?.invalidate()
-    startNotificationTimer = nil
-    clearTimer?.invalidate()
-    clearTimer = nil
-    fadeTimers.forEach { $0.invalidate() }
-    fadeTimers.removeAll()
+    os_log(
+      "Clearing timers for SpinPlayer - ID: %@",
+      log: SpinPlayer.logger,
+      type: .debug,
+      self.id.uuidString)
+
+    // Invalidate and clear start notification timer atomically
+    if let timer = startNotificationTimer {
+      os_log(
+        "Invalidating start notification timer",
+        log: SpinPlayer.logger,
+        type: .debug)
+      timer.invalidate()
+      startNotificationTimer = nil
+    }
+
+    // Invalidate and clear clear timer atomically
+    if let timer = clearTimer {
+      os_log(
+        "Invalidating clear timer",
+        log: SpinPlayer.logger,
+        type: .debug)
+      timer.invalidate()
+      clearTimer = nil
+    }
+
+    // Invalidate and clear all fade timers atomically
+    if !fadeTimers.isEmpty {
+      os_log(
+        "Invalidating %d fade timers",
+        log: SpinPlayer.logger,
+        type: .debug,
+        fadeTimers.count)
+      let timersToInvalidate = fadeTimers
+      fadeTimers.removeAll()
+      timersToInvalidate.forEach { $0.invalidate() }
+    }
   }
 
   func clearFades() {
@@ -241,15 +291,20 @@ public class SpinPlayer {
   /// If this method is called on a spin that is not loaded, playback will not start.
   public func playNow(from: Double, to: Double? = nil) {
     do {
-      os_log(
-        "Starting playback of %@ by %@ (spinID: %@) from position %f",
-        log: SpinPlayer.logger, type: .info,
-        spin?.audioBlock.title ?? "unknown",
-        spin?.audioBlock.artist ?? "unknown",
-        spin?.id ?? "unknown", from)
+      os_log("Starting playback from position %f", log: SpinPlayer.logger, type: .info, from)
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
       try engine.start()
+
+      // Check if file is still available (not cleared by stop())
+      guard let audioFile = currentFile else {
+        os_log(
+          "Cannot play - audio file was cleared (likely by stop())",
+          log: SpinPlayer.logger,
+          type: .info)
+        self.state = .available
+        return
+      }
 
       // calculate segment info
       let sampleRate = playerNode.outputFormat(forBus: 0).sampleRate
@@ -260,7 +315,7 @@ public class SpinPlayer {
       self.volume = spin?.startingVolume ?? 1.0
       playerNode.stop()
       playerNode.scheduleSegment(
-        currentFile!, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil,
+        audioFile, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil,
         completionHandler: nil)
       playerNode.play()
 
@@ -268,17 +323,10 @@ public class SpinPlayer {
       if let spin {
         delegate?.player(self, startedPlaying: spin)
       }
-      os_log(
-        "Successfully started playback of %@ (spinID: %@)",
-        log: SpinPlayer.logger, type: .info,
-        spin?.audioBlock.title ?? "unknown",
-        spin?.id ?? "unknown")
+      os_log("Successfully started playback", log: SpinPlayer.logger, type: .info)
     } catch {
       errorReporter.reportError(
-        error,
-        context:
-          "Failed to start playback at position \(from)s for spin ID: \(spin?.id ?? "unknown")",
-        level: .error)
+        error, context: "Failed to start playback at position \(from)s", level: .error)
       self.state = .available
     }
   }
@@ -302,12 +350,7 @@ public class SpinPlayer {
     self.state = .loading
     self.spin = spin
 
-    os_log(
-      "Loading spin: %@ by %@ (spinID: %@)",
-      log: SpinPlayer.logger, type: .info,
-      spin.audioBlock.title,
-      spin.audioBlock.artist,
-      spin.id)
+    os_log("Loading spin: %@", log: SpinPlayer.logger, type: .info, spin.id)
 
     guard let audioFileUrl = spin.audioBlock.downloadUrl else {
       let error = NSError(
@@ -318,10 +361,7 @@ public class SpinPlayer {
           "audioBlockId": spin.audioBlock.id,
           "audioBlockTitle": spin.audioBlock.title,
         ])
-      errorReporter.reportError(
-        error,
-        context: "Missing or invalid download URL for spin ID: \(spin.id)",
-        level: .error)
+      errorReporter.reportError(error, context: "Missing download URL", level: .error)
       self.state = .available
       return .failure(error)
     }
@@ -362,10 +402,7 @@ public class SpinPlayer {
             }
 
           case .failure(let error):
-            self.errorReporter.reportError(
-              error,
-              context: "Failed to download audio file: \(audioFileUrl.lastPathComponent)",
-              level: .error)
+            self.errorReporter.reportError(error, context: "Download failed", level: .error)
             self.state = .available
             continuation.resume(returning: .failure(error))
           }
@@ -400,12 +437,8 @@ public class SpinPlayer {
   public func schedulePlay(at scheduledDate: Date) {
     do {
       os_log(
-        "Scheduling play at %@ for %@ by %@ (spinID: %@)",
-        log: SpinPlayer.logger, type: .info,
-        ISO8601DateFormatter().string(from: scheduledDate),
-        spin?.audioBlock.title ?? "unknown",
-        spin?.audioBlock.artist ?? "unknown",
-        spin?.id ?? "unknown")
+        "Scheduling play at %@", log: SpinPlayer.logger, type: .info,
+        ISO8601DateFormatter().string(from: scheduledDate))
 
       // Make sure audio session is configured before scheduling playback
       playolaMainMixer.configureAudioSession()
@@ -432,37 +465,50 @@ public class SpinPlayer {
       // Simply use play(at:) which is the most reliable method
       playerNode.play(at: avAudiotime)
 
-      // Use timer for status notification
+      // Use timer for status notification with improved invalidation
       self.startNotificationTimer = Timer(
         fire: scheduledDate,
         interval: 0,
         repeats: false
       ) { [weak self] timer in
+        // Always invalidate timer first to prevent double execution
+        timer.invalidate()
+
+        os_log("⏰ Timer fired", log: SpinPlayer.logger, type: .info)
+
         guard let self = self else {
-          timer.invalidate()
+          os_log("⚠️ Timer fired but SpinPlayer deallocated", log: SpinPlayer.logger, type: .default)
           return
         }
 
-        DispatchQueue.main.async {
-          guard let spin = self.spin, spin.id == scheduledSpinId else {
-            os_log(
-              "Timer fired but spin is nil or has changed", log: SpinPlayer.logger, type: .error)
-            timer.invalidate()
+        // Ensure we're on main actor for state checks
+        Task { @MainActor in
+          // Validate timer is still active and spin hasn't changed
+          guard self.startNotificationTimer === timer,
+            let spin = self.spin,
+            spin.id == scheduledSpinId
+          else {
+            os_log("⚠️ Timer invalid or spin changed", log: SpinPlayer.logger, type: .default)
             return
           }
 
-          os_log(
-            "Timer fired for scheduled play of %@ by %@ (spinID: %@)",
-            log: SpinPlayer.logger, type: .info,
-            spin.audioBlock.title,
-            spin.audioBlock.artist,
-            spin.id)
+          // Clear the timer reference since it's now invalid
+          self.startNotificationTimer = nil
+
+          os_log("✅ Timer fired successfully", log: SpinPlayer.logger, type: .info)
 
           self.state = .playing
           self.delegate?.player(self, startedPlaying: spin)
         }
-        timer.invalidate()
       }
+
+      os_log(
+        "Added timer to RunLoop for spin: %@ scheduled at %@",
+        log: SpinPlayer.logger,
+        type: .debug,
+        scheduledSpinId ?? "nil",
+        ISO8601DateFormatter().string(from: scheduledDate))
+
       RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
 
     } catch {
@@ -478,13 +524,7 @@ public class SpinPlayer {
   }
 
   public func loadFile(with url: URL) async {
-    os_log(
-      "Attempting to load audio file: %@ for %@ by %@ (spinID: %@)",
-      log: SpinPlayer.logger, type: .info,
-      url.lastPathComponent,
-      spin?.audioBlock.title ?? "unknown",
-      spin?.audioBlock.artist ?? "unknown",
-      spin?.id ?? "unknown")
+    os_log("Loading audio file: %@", log: SpinPlayer.logger, type: .info, url.lastPathComponent)
     do {
       // First check if the file exists and has a reasonable size
       let fileManager = FileManager.default
@@ -521,11 +561,8 @@ public class SpinPlayer {
         currentFile = try AVAudioFile(forReading: url)
         normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
         os_log(
-          "Successfully loaded audio file: %@ for %@ (spinID: %@)",
-          log: SpinPlayer.logger, type: .info,
-          url.lastPathComponent,
-          spin?.audioBlock.title ?? "unknown",
-          spin?.id ?? "unknown")
+          "Successfully loaded audio file: %@", log: SpinPlayer.logger, type: .info,
+          url.lastPathComponent)
       } catch let audioError as NSError {
         // More detailed context with file information
         let contextInfo =
@@ -558,10 +595,7 @@ public class SpinPlayer {
       if !error.localizedDescription.contains("too small")
         && !error.localizedDescription.contains("not found")
       {
-        errorReporter.reportError(
-          error,
-          context: "Error during file validation: \(url.lastPathComponent)",
-          level: .error)
+        errorReporter.reportError(error, context: "File validation failed", level: .error)
       }
       // State is already set to .available in the inner catch blocks
       self.state = .available
@@ -600,9 +634,8 @@ public class SpinPlayer {
 
     // Log fade operation
     os_log(
-      "Scheduled volume fade from %.2f to %.2f over %.2f seconds",
-      log: SpinPlayer.logger, type: .debug,
-      startVolume, endVolume, time)
+      "Scheduled fade: %.2f→%.2f over %.2fs", log: SpinPlayer.logger, type: .debug, startVolume,
+      endVolume, time)
   }
 
   @objc private func updateFades(_ displayLink: CADisplayLink) {
@@ -646,9 +679,7 @@ public class SpinPlayer {
       activeDisplayLink?.invalidate()
       activeDisplayLink = nil
 
-      os_log(
-        "All volume fades completed",
-        log: SpinPlayer.logger, type: .debug)
+      os_log("All fades completed", log: SpinPlayer.logger, type: .debug)
     }
   }
 
@@ -660,9 +691,16 @@ public class SpinPlayer {
         interval: 0,
         repeats: false
       ) { [weak self, fade] timer in
-        guard let self = self else { return }
+        // Always invalidate timer first
         timer.invalidate()
-        self.fadePlayer(toVolume: fade.toVolume, overTime: 1.5)
+
+        guard let self = self else { return }
+
+        Task { @MainActor in
+          // Remove timer from the set (it's already invalidated)
+          self.fadeTimers.remove(timer)
+          self.fadePlayer(toVolume: fade.toVolume, overTime: 1.5)
+        }
       }
       RunLoop.main.add(timer, forMode: .default)
       fadeTimers.insert(timer)
@@ -681,13 +719,21 @@ public class SpinPlayer {
       interval: 0,
       repeats: false,
       block: { [weak self] timer in
+        // Always invalidate timer first
+        timer.invalidate()
+
         guard let self = self else { return }
 
-        DispatchQueue.main.async {
+        Task { @MainActor in
+          // Validate timer is still active
+          guard self.clearTimer === timer else { return }
+
+          // Clear the timer reference since it's now invalid
+          self.clearTimer = nil
+
           self.stopAudio()
           self.clear()
         }
-        timer.invalidate()
       })
     RunLoop.main.add(self.clearTimer!, forMode: .default)
   }
