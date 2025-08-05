@@ -149,7 +149,22 @@ final public class PlayolaStationPlayer: ObservableObject {
   private func scheduleSpin(spin: Spin, showProgress: Bool = false, retryCount: Int = 0)
     async throws
   {
+    os_log(
+      "📅 Scheduling spin: %@ (ID: %@) - Retry: %d",
+      log: PlayolaStationPlayer.logger,
+      type: .info,
+      spin.audioBlock.title,
+      spin.id,
+      retryCount)
+
     let spinPlayer = getAvailableSpinPlayer()
+
+    os_log(
+      "Using SpinPlayer ID: %@ for spin: %@",
+      log: PlayolaStationPlayer.logger,
+      type: .debug,
+      spinPlayer.id.uuidString,
+      spin.id)
 
     guard let audioFileUrl = spin.audioBlock.downloadUrl else {
       let spinDetails = """
@@ -313,14 +328,23 @@ final public class PlayolaStationPlayer: ObservableObject {
         scheduledSpinsCount)
 
     } catch {
-      errorReporter.reportError(error, context: "Failed to schedule upcoming spins", level: .error)
+      // Check if this was a cancellation
+      if error is CancellationError {
+        os_log(
+          "📛 Schedule update was cancelled",
+          log: PlayolaStationPlayer.logger,
+          type: .info)
+      } else {
+        errorReporter.reportError(
+          error, context: "Failed to schedule upcoming spins", level: .error)
 
-      // Log more details about the error
-      os_log(
-        "Schedule update failed: %@",
-        log: PlayolaStationPlayer.logger,
-        type: .error,
-        error.localizedDescription)
+        // Log more details about the error
+        os_log(
+          "Schedule update failed: %@",
+          log: PlayolaStationPlayer.logger,
+          type: .error,
+          error.localizedDescription)
+      }
     }
   }
 
@@ -457,19 +481,66 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 3. Clears the current schedule
   /// 4. Reports the end of the listening session
   public func stop() {
+    os_log(
+      "🛑 STOP called - Beginning shutdown sequence",
+      log: PlayolaStationPlayer.logger,
+      type: .info)
+
+    // Log current state before stopping
+    os_log(
+      "Current state: %d active spinPlayers, %d active downloads, stationId: %@",
+      log: PlayolaStationPlayer.logger,
+      type: .info,
+      spinPlayers.count,
+      activeDownloadIds.count,
+      stationId ?? "nil")
+
     // Cancel any active async tasks first
-    schedulingTask?.cancel()
-    schedulingTask = nil
-    playTask?.cancel()
-    playTask = nil
+    if schedulingTask != nil {
+      os_log("Cancelling active scheduling task", log: PlayolaStationPlayer.logger, type: .info)
+      schedulingTask?.cancel()
+      schedulingTask = nil
+    }
+
+    if playTask != nil {
+      os_log("Cancelling active play task", log: PlayolaStationPlayer.logger, type: .info)
+      playTask?.cancel()
+      playTask = nil
+    }
 
     // Stop all players (this will cancel their individual downloads)
-    for player in spinPlayers {
+    os_log(
+      "Stopping %d spin players",
+      log: PlayolaStationPlayer.logger,
+      type: .info,
+      spinPlayers.count)
+
+    for (index, player) in spinPlayers.enumerated() {
+      os_log(
+        "Stopping player %d/%d - ID: %@, spin: %@",
+        log: PlayolaStationPlayer.logger,
+        type: .info,
+        index + 1,
+        spinPlayers.count,
+        player.id.uuidString,
+        player.spin?.id ?? "nil")
       player.stop()
     }
 
     // Cancel any downloads tracked at this level
-    for (_, downloadId) in activeDownloadIds {
+    os_log(
+      "Cancelling %d active downloads",
+      log: PlayolaStationPlayer.logger,
+      type: .info,
+      activeDownloadIds.count)
+
+    for (spinId, downloadId) in activeDownloadIds {
+      os_log(
+        "Cancelling download for spin: %@ (downloadId: %@)",
+        log: PlayolaStationPlayer.logger,
+        type: .info,
+        spinId,
+        downloadId.uuidString)
       _ = fileDownloadManager.cancelDownload(id: downloadId)
     }
     activeDownloadIds.removeAll()
@@ -477,6 +548,11 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.stationId = nil
     self.currentSchedule = nil
     self.state = .idle
+
+    os_log(
+      "✅ STOP completed - All resources cleaned up",
+      log: PlayolaStationPlayer.logger,
+      type: .info)
   }
 
   /// Handle audio route changes such as connecting/disconnecting headphones

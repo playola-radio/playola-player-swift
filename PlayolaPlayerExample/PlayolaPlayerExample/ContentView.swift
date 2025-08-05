@@ -148,16 +148,15 @@ struct ContentView: View {
             Button(action: playOrPause) {
               ZStack {
                 Circle()
-                  .fill(player.isPlaying ? Color.red : Color.green)
+                  .fill(buttonColor(for: player.state))
                   .frame(width: 80, height: 80)
 
-                Image(systemName: player.isPlaying ? "stop.fill" : "play.fill")
+                Image(systemName: buttonIcon(for: player.state))
                   .font(.title)
                   .foregroundColor(.white)
-                  .offset(x: player.isPlaying ? 0 : 3)  // Center play icon
+                  .offset(x: shouldOffsetIcon(for: player.state) ? 3 : 0)  // Center play icon
               }
             }
-            .disabled(isLoading(player.state))
 
             // Placeholder for future control
             Image(systemName: "speaker.wave.2")
@@ -279,14 +278,48 @@ func isLoading(_ state: PlayolaStationPlayer.State) -> Bool {
   return false
 }
 
+func buttonColor(for state: PlayolaStationPlayer.State) -> Color {
+  switch state {
+  case .loading:
+    return Color.orange
+  case .playing:
+    return Color.red
+  case .idle:
+    return Color.green
+  }
+}
+
+func buttonIcon(for state: PlayolaStationPlayer.State) -> String {
+  switch state {
+  case .loading:
+    return "stop.fill"
+  case .playing:
+    return "stop.fill"
+  case .idle:
+    return "play.fill"
+  }
+}
+
+func shouldOffsetIcon(for state: PlayolaStationPlayer.State) -> Bool {
+  if case .idle = state {
+    return true
+  }
+  return false
+}
+
 func playOrPause() {
   Task {
-    if await PlayolaStationPlayer.shared.isPlaying {
+    switch await PlayolaStationPlayer.shared.state {
+    case .loading:
+      // Cancel loading
       await PlayolaStationPlayer.shared.stop()
-    } else {
+    case .playing:
+      // Stop playing
+      await PlayolaStationPlayer.shared.stop()
+    case .idle:
+      // Start playing
       try! await PlayolaStationPlayer.shared.play(stationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
     }
-
   }
 }
 
