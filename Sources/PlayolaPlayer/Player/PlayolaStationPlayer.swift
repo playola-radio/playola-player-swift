@@ -108,7 +108,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
   }
 
-  public enum State {
+  public enum State: Sendable {
     case loading(Float)
     case playing(Spin)
     case idle
