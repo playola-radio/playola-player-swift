@@ -253,7 +253,11 @@ struct StationPickerView: View {
       List(stations, id: \.0) { station in
         Button(action: {
           Task {
-            try? await PlayolaStationPlayer.shared.play(stationId: station.0)
+            do {
+              try await PlayolaStationPlayer.shared.play(stationId: station.0)
+            } catch {
+              print("Failed to start playback: \(error)")
+            }
           }
           dismiss()
         }) {
@@ -318,7 +322,13 @@ func playOrPause() {
       await PlayolaStationPlayer.shared.stop()
     case .idle:
       // Start playing
-      try! await PlayolaStationPlayer.shared.play(stationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
+      do {
+        try await PlayolaStationPlayer.shared.play(
+          stationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
+      } catch {
+        // Handle errors gracefully (including cancellation during loading)
+        print("Failed to start playback: \(error)")
+      }
     }
   }
 }
