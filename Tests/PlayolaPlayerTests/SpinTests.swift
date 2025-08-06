@@ -22,7 +22,7 @@ struct SpinTests {
   func testIsPlaying_nowIsBeforeSpin() throws {
     // Use mockWith to create a spin with a controlled airtime
     let now = Date()
-    dateProviderMock.mockDate = now
+    dateProviderMock.setMockDate(now)
 
     // Create a spin that starts 30 seconds in the future
     let futureSpin = Spin.mockWith(
@@ -37,7 +37,7 @@ struct SpinTests {
   func testIsPlaying_nowIsDuringSpin() throws {
     // Use mockWith to create a spin that's currently playing
     let now = Date()
-    dateProviderMock.mockDate = now
+    dateProviderMock.setMockDate(now)
 
     // Create a spin that started 3 seconds ago
     let playingSpin = Spin.mockWith(
@@ -58,7 +58,7 @@ struct SpinTests {
 
     // Set up the current time
     let now = Date()
-    dateProviderMock.mockDate = now
+    dateProviderMock.setMockDate(now)
 
     // Create a spin that started 30 seconds ago with a 10-second duration
     // This means it finished 20 seconds ago
@@ -75,7 +75,7 @@ struct SpinTests {
   func testIsPlaying_exactlyAtAirtime() throws {
     // Set up the current time
     let now = Date()
-    dateProviderMock.mockDate = now
+    dateProviderMock.setMockDate(now)
 
     // Create a spin that starts exactly now
     let startingSpin = Spin.mockWith(
@@ -96,7 +96,7 @@ struct SpinTests {
 
     // Set up the current time
     let now = Date()
-    dateProviderMock.mockDate = now
+    dateProviderMock.setMockDate(now)
 
     // Create a spin that started almost 10 seconds ago (just 1 millisecond before endtime)
     let almostFinishedSpin = Spin.mockWith(
@@ -118,7 +118,7 @@ struct SpinTests {
 
     // Set up the current time
     let now = Date()
-    dateProviderMock.mockDate = now
+    dateProviderMock.setMockDate(now)
 
     // Create a spin that started exactly 10 seconds ago (exactly at endtime)
     let justFinishedSpin = Spin.mockWith(
@@ -148,7 +148,7 @@ struct SpinTests {
 
     // Set up the current time
     let now = Date()
-    dateProviderMock.mockDate = now
+    dateProviderMock.setMockDate(now)
 
     // Test with the current time before the spin's airtime
     let futureSpin = Spin.mockWith(

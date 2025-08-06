@@ -393,7 +393,7 @@ struct ScheduleTests {
     #expect(schedule.nowPlaying?.id == "current")
 
     // Advance time to when nextSpin starts and execute timer
-    dateProviderMock.mockDate = mockTime.addingTimeInterval(15)
+    dateProviderMock.setMockDate(mockTime.addingTimeInterval(15))
     testTimerProvider.executeNextTimer()
 
     // Now the nextSpin should be playing
@@ -437,17 +437,17 @@ struct ScheduleTests {
     #expect(schedule.nowPlaying?.id == "spin1")
 
     // Middle of first spin (t=15)
-    dateProviderMock.mockDate = mockTime.addingTimeInterval(15)
+    dateProviderMock.setMockDate(mockTime.addingTimeInterval(15))
     testTimerProvider.executeNextTimer()
     #expect(schedule.nowPlaying?.id == "spin1")
 
     // At transition (t=30)
-    dateProviderMock.mockDate = mockTime.addingTimeInterval(30)
+    dateProviderMock.setMockDate(mockTime.addingTimeInterval(30))
     testTimerProvider.executeNextTimer()
     #expect(schedule.nowPlaying?.id == "spin2")
 
     // After all spins (t=70)
-    dateProviderMock.mockDate = mockTime.addingTimeInterval(70)
+    dateProviderMock.setMockDate(mockTime.addingTimeInterval(70))
     testTimerProvider.executeNextTimer()
     #expect(schedule.nowPlaying == nil)
   }
