@@ -179,7 +179,9 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
       let result = try await downloader.download(from: url, to: destinationURL)
       return result.localURL
     } catch {
-      await errorReporter.reportError(error)
+      Task {
+        await errorReporter.reportError(error)
+      }
       throw error
     }
   }
@@ -215,7 +217,9 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
       case .completed(let result):
         return result.localURL
       case .failed(let error):
-        await errorReporter.reportError(error)
+        Task {
+          await errorReporter.reportError(error)
+        }
         throw error
       }
     }

@@ -204,8 +204,10 @@ public class SpinPlayer {
         playolaMainMixer.configureAudioSession()
         try engine.start()
       } catch {
-        errorReporter.reportError(
-          error, context: "Failed to start engine during stop operation", level: .error)
+        Task {
+          await errorReporter.reportError(
+            error, context: "Failed to start engine during stop operation", level: .error)
+        }
         return
       }
     }
@@ -325,8 +327,10 @@ public class SpinPlayer {
       }
       os_log("Successfully started playback", log: SpinPlayer.logger, type: .info)
     } catch {
-      errorReporter.reportError(
-        error, context: "Failed to start playback at position \(from)s", level: .error)
+      Task {
+        await errorReporter.reportError(
+          error, context: "Failed to start playback at position \(from)s", level: .error)
+      }
       self.state = .available
     }
   }
@@ -361,7 +365,9 @@ public class SpinPlayer {
           "audioBlockId": spin.audioBlock.id,
           "audioBlockTitle": spin.audioBlock.title,
         ])
-      errorReporter.reportError(error, context: "Missing download URL", level: .error)
+      Task {
+        await errorReporter.reportError(error, context: "Missing download URL", level: .error)
+      }
       self.state = .available
       return .failure(error)
     }
@@ -402,7 +408,9 @@ public class SpinPlayer {
             }
 
           case .failure(let error):
-            self.errorReporter.reportError(error, context: "Download failed", level: .error)
+            Task { @MainActor in
+              await self.errorReporter.reportError(error, context: "Download failed", level: .error)
+            }
             self.state = .available
             continuation.resume(returning: .failure(error))
           }
@@ -420,7 +428,9 @@ public class SpinPlayer {
         userInfo: [
           NSLocalizedDescriptionKey: "Could not get last render time from player node"
         ])
-      errorReporter.reportError(error, context: "Missing render time", level: .warning)
+      Task {
+        await errorReporter.reportError(error, context: "Missing render time", level: .warning)
+      }
       // Fallback to a reasonable default
       return AVAudioTime(sampleTime: 0, atRate: outputFormat.sampleRate)
     }
@@ -454,8 +464,10 @@ public class SpinPlayer {
           userInfo: [
             NSLocalizedDescriptionKey: "No audio file loaded when trying to schedule playback"
           ])
-        errorReporter.reportError(
-          error, context: "Missing audio file for scheduled playback", level: .error)
+        Task {
+          await errorReporter.reportError(
+            error, context: "Missing audio file for scheduled playback", level: .error)
+        }
         return
       }
 
@@ -512,7 +524,10 @@ public class SpinPlayer {
       RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
 
     } catch {
-      errorReporter.reportError(error, context: "Failed to schedule playback", level: .error)
+      Task {
+        await errorReporter.reportError(
+          error, context: "Failed to schedule playback", level: .error)
+      }
     }
   }
 
@@ -531,10 +546,12 @@ public class SpinPlayer {
 
       guard fileManager.fileExists(atPath: url.path) else {
         let error = FileDownloadError.fileNotFound(url.path)
-        errorReporter.reportError(
-          error,
-          context: "Audio file not found at path",
-          level: .error)
+        Task {
+          await errorReporter.reportError(
+            error,
+            context: "Audio file not found at path",
+            level: .error)
+        }
         self.state = .available
         return
       }
@@ -546,10 +563,12 @@ public class SpinPlayer {
       // Consider files under 10KB as suspicious (adjust as needed)
       if fileSize < 10 * 1024 {
         let error = FileDownloadError.downloadFailed("Audio file is too small: \(fileSize) bytes")
-        errorReporter.reportError(
-          error,
-          context: "Suspiciously small file detected: \(url.lastPathComponent)",
-          level: .error)
+        Task {
+          await errorReporter.reportError(
+            error,
+            context: "Suspiciously small file detected: \(url.lastPathComponent)",
+            level: .error)
+        }
         // Delete the invalid file
         try? fileManager.removeItem(at: url)
         self.state = .available
@@ -572,17 +591,23 @@ public class SpinPlayer {
         if audioError.domain == "com.apple.coreaudio.avfaudio" {
           switch audioError.code {
           case 1_954_115_647:  // 'fmt?' in ASCII - format error
-            errorReporter.reportError(
-              audioError,
-              context: "\(contextInfo) - Invalid audio format or corrupt file",
-              level: .error)
+            Task {
+              await errorReporter.reportError(
+                audioError,
+                context: "\(contextInfo) - Invalid audio format or corrupt file",
+                level: .error)
+            }
             // Delete the corrupt file
             try? fileManager.removeItem(at: url)
           default:
-            errorReporter.reportError(audioError, context: contextInfo, level: .error)
+            Task {
+              await errorReporter.reportError(audioError, context: contextInfo, level: .error)
+            }
           }
         } else {
-          errorReporter.reportError(audioError, context: contextInfo, level: .error)
+          Task {
+            await errorReporter.reportError(audioError, context: contextInfo, level: .error)
+          }
         }
 
         // State management after error
@@ -595,7 +620,9 @@ public class SpinPlayer {
       if !error.localizedDescription.contains("too small")
         && !error.localizedDescription.contains("not found")
       {
-        errorReporter.reportError(error, context: "File validation failed", level: .error)
+        Task {
+          await errorReporter.reportError(error, context: "File validation failed", level: .error)
+        }
       }
       // State is already set to .available in the inner catch blocks
       self.state = .available

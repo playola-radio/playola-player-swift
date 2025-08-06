@@ -55,7 +55,7 @@ open class PlayolaMainMixer: NSObject {
           format: TapProperties.default.format)
       } catch {
         Task { @MainActor in
-          errorReporter.reportError(
+          await errorReporter.reportError(
             error,
             context: "Failed to connect mixer nodes: \(error.localizedDescription)",
             level: .critical)
@@ -73,7 +73,7 @@ open class PlayolaMainMixer: NSObject {
           block: self.onTap(_:_:))
       } catch {
         Task { @MainActor in
-          errorReporter.reportError(
+          await errorReporter.reportError(
             error,
             context: "Failed to install tap on mixer node: \(error.localizedDescription)",
             level: .critical)
@@ -82,7 +82,7 @@ open class PlayolaMainMixer: NSObject {
       }
     } catch {
       Task { @MainActor in
-        errorReporter.reportError(
+        await errorReporter.reportError(
           error,
           context: "Critical failure initializing PlayolaMainMixer: \(error.localizedDescription)",
           level: .critical)
@@ -116,7 +116,7 @@ open class PlayolaMainMixer: NSObject {
       } catch {
         // This is not a critical error, just log it
         Task { @MainActor in
-          errorReporter.reportError(
+          await errorReporter.reportError(
             error,
             context: "Non-critical: Failed to deactivate audio session before configuration",
             level: .warning)
@@ -137,7 +137,7 @@ open class PlayolaMainMixer: NSObject {
         Task { @MainActor in
           let deviceName = UIDevice.current.name
           let systemVersion = UIDevice.current.systemVersion
-          errorReporter.reportError(
+          await errorReporter.reportError(
             error,
             context:
               "Failed to set audio session category | Device: \(deviceName) | iOS: \(systemVersion)",
@@ -157,7 +157,7 @@ open class PlayolaMainMixer: NSObject {
           let currentRoute = session.currentRoute.outputs.map { $0.portName }.joined(
             separator: ", ")
 
-          errorReporter.reportError(
+          await errorReporter.reportError(
             error,
             context:
               "Failed to activate audio session | Device: \(deviceName) | iOS: \(systemVersion) | Route: \(currentRoute)",
@@ -167,7 +167,7 @@ open class PlayolaMainMixer: NSObject {
       }
     } catch {
       Task { @MainActor in
-        errorReporter.reportError(
+        await errorReporter.reportError(
           error,
           context: "Critical error configuring audio session: \(error.localizedDescription)",
           level: .critical)
@@ -188,7 +188,7 @@ open class PlayolaMainMixer: NSObject {
       os_log("Audio session deactivated", log: PlayolaMainMixer.logger, type: .info)
     } catch {
       Task { @MainActor in
-        errorReporter.reportError(
+        await errorReporter.reportError(
           error, context: "Failed to deactivate audio session", level: .warning)
       }
     }
@@ -231,9 +231,11 @@ extension PlayolaMainMixer {
     // If we get here, all retries failed
     if let error = lastError {
 
-      errorReporter.reportError(
-        error, context: "Failed to start audio engine after \(maxRetries) attempts",
-        level: .critical)
+      Task {
+        await errorReporter.reportError(
+          error, context: "Failed to start audio engine after \(maxRetries) attempts",
+          level: .critical)
+      }
       throw error
     }
   }

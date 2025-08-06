@@ -181,10 +181,12 @@ final public class PlayolaStationPlayer: ObservableObject {
             Download URL: \(spin.audioBlock.downloadUrl?.absoluteString ?? "nil")
         """
       let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
-      errorReporter.reportError(
-        error,
-        context: "Invalid or missing download URL for spin | \(spinDetails)",
-        level: .error)
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Invalid or missing download URL for spin | \(spinDetails)",
+          level: .error)
+      }
       throw error
     }
 
@@ -231,7 +233,9 @@ final public class PlayolaStationPlayer: ObservableObject {
           ? error
           : StationPlayerError.fileDownloadError(error.localizedDescription)
 
-        self.errorReporter.reportError(stationError, level: .error)
+        Task {
+          await self.errorReporter.reportError(stationError, level: .error)
+        }
 
         // If we haven't exceeded retry attempts, try again
         if retryCount < maxRetries {
@@ -267,7 +271,9 @@ final public class PlayolaStationPlayer: ObservableObject {
           error is StationPlayerError
           ? error
           : StationPlayerError.fileDownloadError(error.localizedDescription)
-        errorReporter.reportError(stationError, level: .error)
+        Task {
+          await errorReporter.reportError(stationError, level: .error)
+        }
         throw error
       }
     }
@@ -282,7 +288,9 @@ final public class PlayolaStationPlayer: ObservableObject {
   private func scheduleUpcomingSpins() async {
     guard let stationId else {
       let error = StationPlayerError.invalidStationId("No station ID available")
-      errorReporter.reportError(error, level: .warning)
+      Task {
+        await errorReporter.reportError(error, level: .warning)
+      }
       return
     }
 
@@ -327,8 +335,10 @@ final public class PlayolaStationPlayer: ObservableObject {
       if error is CancellationError {
         os_log("📛 Schedule update cancelled", log: PlayolaStationPlayer.logger, type: .info)
       } else {
-        errorReporter.reportError(
-          error, context: "Failed to schedule upcoming spins", level: .error)
+        Task {
+          await errorReporter.reportError(
+            error, context: "Failed to schedule upcoming spins", level: .error)
+        }
 
         // Log more details about the error
         os_log(
@@ -346,10 +356,12 @@ final public class PlayolaStationPlayer: ObservableObject {
 
       guard let httpResponse = response as? HTTPURLResponse else {
         let error = StationPlayerError.networkError("Invalid response type")
-        errorReporter.reportError(
-          error,
-          context: "Non-HTTP response received from schedule endpoint: \(url.absoluteString)",
-          level: .error)
+        Task {
+          await errorReporter.reportError(
+            error,
+            context: "Non-HTTP response received from schedule endpoint: \(url.absoluteString)",
+            level: .error)
+        }
         throw error
       }
 
@@ -358,16 +370,20 @@ final public class PlayolaStationPlayer: ObservableObject {
         let error = StationPlayerError.networkError("HTTP error: \(httpResponse.statusCode)")
 
         if httpResponse.statusCode == 404 {
-          errorReporter.reportError(
-            error,
-            context: "Station not found: \(stationId) | Response: \(responseText.prefix(100))",
-            level: .error)
+          Task {
+            await errorReporter.reportError(
+              error,
+              context: "Station not found: \(stationId) | Response: \(responseText.prefix(100))",
+              level: .error)
+          }
         } else {
-          errorReporter.reportError(
-            error,
-            context:
-              "HTTP \(httpResponse.statusCode) error getting schedule for station: \(stationId) | Response: \(responseText.prefix(100))",
-            level: .error)
+          Task {
+            await errorReporter.reportError(
+              error,
+              context:
+                "HTTP \(httpResponse.statusCode) error getting schedule for station: \(stationId) | Response: \(responseText.prefix(100))",
+              level: .error)
+          }
         }
         throw error
       }
@@ -379,7 +395,9 @@ final public class PlayolaStationPlayer: ObservableObject {
         guard !spins.isEmpty else {
           let error = StationPlayerError.scheduleError(
             "No spins returned in schedule for station ID: \(stationId)")
-          errorReporter.reportError(error, level: .error)
+          Task {
+            await errorReporter.reportError(error, level: .error)
+          }
           throw error
         }
         return Schedule(stationId: spins[0].stationId, spins: spins)
@@ -397,13 +415,17 @@ final public class PlayolaStationPlayer: ObservableObject {
           context = "Unknown decoding error"
         }
 
-        errorReporter.reportError(
-          decodingError, context: "Failed to decode schedule: \(context)", level: .error)
+        Task {
+          await errorReporter.reportError(
+            decodingError, context: "Failed to decode schedule: \(context)", level: .error)
+        }
         throw StationPlayerError.scheduleError("Invalid schedule data: \(context)")
       }
     } catch {
-      errorReporter.reportError(
-        error, context: "Failed to fetch schedule for station: \(stationId)", level: .error)
+      Task {
+        await errorReporter.reportError(
+          error, context: "Failed to fetch schedule for station: \(stationId)", level: .error)
+      }
       throw error
     }
   }
@@ -433,11 +455,13 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     guard let spinToPlay = currentSchedule?.current.first else {
       let error = StationPlayerError.scheduleError("No available spins to play")
-      errorReporter.reportError(
-        error,
-        context:
-          "Schedule for station \(stationId) contains no current spins | Total spins: \(currentSchedule?.spins.count ?? 0)",
-        level: .error)
+      Task {
+        await errorReporter.reportError(
+          error,
+          context:
+            "Schedule for station \(stationId) contains no current spins | Total spins: \(currentSchedule?.spins.count ?? 0)",
+          level: .error)
+      }
       throw error
     }
 
@@ -603,8 +627,10 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
         // Use the new pruning method with proper error handling
         try self.fileDownloadManager.pruneCache(maxSize: nil, excludeFilepaths: activePaths)
       } catch {
-        errorReporter.reportError(
-          error, context: "Error during cache pruning after starting playback", level: .warning)
+        Task {
+          await errorReporter.reportError(
+            error, context: "Error during cache pruning after starting playback", level: .warning)
+        }
       }
     }
   }

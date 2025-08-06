@@ -34,13 +34,11 @@ struct AudioNormalizationCalculator {
           calculator.amplitude = calculator.getAmplitude(samples)
         } catch {
           // Report error on main thread
-          await MainActor.run {
-            PlayolaErrorReporter.shared.reportError(
-              error,
-              context:
-                "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description) | Length: \(file.length)",
-              level: .warning)
-          }
+          await PlayolaErrorReporter.shared.reportError(
+            error,
+            context:
+              "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description) | Length: \(file.length)",
+            level: .warning)
         }
         continuation.resume(returning: calculator)
       }
@@ -55,8 +53,8 @@ struct AudioNormalizationCalculator {
       self.amplitude = getAmplitude(samples)
     } catch {
       // Replace print with proper error reporting
-      Task { @MainActor in
-        PlayolaErrorReporter.shared.reportError(
+      Task {
+        await PlayolaErrorReporter.shared.reportError(
           error,
           context:
             "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description) | Length: \(file.length)",
@@ -84,8 +82,8 @@ struct AudioNormalizationCalculator {
         pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))
     else {
       let detailedError = AudioError.bufferConversion
-      Task { @MainActor in
-        PlayolaErrorReporter.shared.reportError(
+      Task {
+        await PlayolaErrorReporter.shared.reportError(
           detailedError,
           context:
             "Failed to create PCM buffer | File format: \(file.processingFormat.description) | Frame capacity: \(file.length)",
@@ -98,8 +96,8 @@ struct AudioNormalizationCalculator {
       try file.read(into: buffer)
     } catch {
       // Enhance the error with context before throwing
-      Task { @MainActor in
-        PlayolaErrorReporter.shared.reportError(
+      Task {
+        await PlayolaErrorReporter.shared.reportError(
           error,
           context:
             "Failed to read audio file into buffer | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description)",
@@ -110,8 +108,8 @@ struct AudioNormalizationCalculator {
 
     guard let channelData = buffer.floatChannelData?.pointee else {
       let error = AudioError.bufferConversion
-      Task { @MainActor in
-        PlayolaErrorReporter.shared.reportError(
+      Task {
+        await PlayolaErrorReporter.shared.reportError(
           error,
           context:
             "Failed to get float channel data from buffer | Buffer length: \(buffer.frameLength)",
