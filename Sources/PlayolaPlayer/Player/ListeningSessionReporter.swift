@@ -126,7 +126,7 @@ public class ListeningSessionReporter {
 
     // Use modern async/await API
     do {
-      var request = try await createPostRequest(url: url, requestBody: requestBody)
+      let request = try await createPostRequest(url: url, requestBody: requestBody)
       let (_, response) = try await urlSession.data(for: request)
 
       guard let httpResponse = response as? HTTPURLResponse,
@@ -161,7 +161,7 @@ public class ListeningSessionReporter {
       stationId: stationId)
 
     do {
-      var request = try await createPostRequest(url: url, requestBody: requestBody)
+      let request = try await createPostRequest(url: url, requestBody: requestBody)
       let (_, response) = try await urlSession.data(for: request)
 
       guard let httpResponse = response as? HTTPURLResponse else {
@@ -251,7 +251,7 @@ public class ListeningSessionReporter {
     refreshAttempts += 1
     lastRefreshAttemptTime = Date()
 
-    if let refreshedToken = await authProvider?.refreshToken() {
+    if (await authProvider?.refreshToken()) != nil {
       // Retry with refreshed token
       let refreshedRequest = try await createPostRequest(url: url, requestBody: requestBody)
       let (_, retryResponse) = try await urlSession.data(for: refreshedRequest)
