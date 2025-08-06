@@ -19,7 +19,7 @@ extension Schedule {
   public static func mockWith(
     stationId: String? = nil,
     spins: [Spin]? = nil,
-    dateProvider: DateProvider? = nil
+    dateProvider: DateProviderProtocol? = nil
   ) -> Schedule {
     // Start with the default mock
     let mockSchedule = Schedule.mock
@@ -47,7 +47,7 @@ extension Schedule {
     spinDurationSeconds: Int = 30,
     gapSeconds: Int = 0,
     startOffsetSeconds: TimeInterval = -120,  // 2 minutes ago by default
-    dateProvider: DateProvider = DateProviderMock()
+    dateProvider: DateProviderProtocol? = nil
   ) -> Schedule {
     let mockScheduleId = stationId ?? Schedule.mock.stationId
     let now = Date()
@@ -55,6 +55,7 @@ extension Schedule {
 
     // Start time for the first spin
     var currentStartTime = now.addingTimeInterval(startOffsetSeconds)
+    let dateProvider = dateProvider ?? DateProviderMock()
 
     for i in 0..<spinCount {
       // Create AudioBlock with specified duration

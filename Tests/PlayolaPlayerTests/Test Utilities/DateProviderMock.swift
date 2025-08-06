@@ -6,15 +6,23 @@
 //
 
 import Foundation
+import os
 
 @testable import PlayolaPlayer
 
-public class DateProviderMock: DateProvider {
-  public var mockDate: Date!
-  public init(mockDate: Date = .now) {
-    self.mockDate = mockDate
-  }
-  override public func now() -> Date {
-    return mockDate
-  }
+final class DateProviderMock: DateProviderProtocol, @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
+    private var _mockDate: Date
+
+    init(mockDate: Date = Date()) {
+        self._mockDate = mockDate
+    }
+
+    func now() -> Date {
+        lock.withLock { _mockDate }
+    }
+
+    func setMockDate(_ date: Date) {
+        lock.withLock { _mockDate = date }
+    }
 }

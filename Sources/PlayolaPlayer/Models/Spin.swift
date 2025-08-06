@@ -54,7 +54,7 @@ public struct Spin: Codable, Sendable {
   public let relatedTexts: [RelatedText]?
 
   /// Date provider for testing time-dependent behavior
-  public var dateProvider: DateProvider! = .shared
+  public var dateProvider: DateProviderProtocol! = DateProvider()
 
   public init(
     id: String,
@@ -66,7 +66,7 @@ public struct Spin: Codable, Sendable {
     audioBlock: AudioBlock,
     fades: [Fade],
     relatedTexts: [RelatedText]? = nil,
-    dateProvider: DateProvider! = DateProvider.shared
+    dateProvider: DateProviderProtocol? = nil
   ) {
     self.id = id
     self.stationId = stationId
@@ -77,7 +77,7 @@ public struct Spin: Codable, Sendable {
     self.audioBlock = audioBlock
     self.fades = fades
     self.relatedTexts = relatedTexts
-    self.dateProvider = dateProvider
+    self.dateProvider = dateProvider ?? DateProvider()
   }
 
   /// Calculated end time for this spin based on airtime plus audio duration
@@ -110,7 +110,7 @@ public struct Spin: Codable, Sendable {
     relatedTexts = try container.decodeIfPresent([RelatedText].self, forKey: .relatedTexts)
 
     // Initialize dateProvider with default value
-    dateProvider = DateProvider.shared
+    dateProvider = DateProvider()
   }
 
   // Custom encoder to handle dateProvider
@@ -160,7 +160,7 @@ extension Spin {
     createdAt: Date? = nil,
     updatedAt: Date? = nil,
     relatedTexts: [RelatedText]? = nil,
-    dateProvider: DateProvider? = nil
+    dateProvider: DateProviderProtocol? = nil
   ) -> Spin {
     // Start with the default mock
     let mockSpin = Spin.mock

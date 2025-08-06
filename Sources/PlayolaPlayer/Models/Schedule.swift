@@ -12,7 +12,7 @@ public struct Schedule: Sendable {
   public let id = UUID()
   public let stationId: String
   public let spins: [Spin]
-  public let dateProvider: DateProvider
+  public let dateProvider: DateProviderProtocol
   private let timerProvider: TimerProvider
 
   public var nowPlaying: Spin? {
@@ -30,10 +30,11 @@ public struct Schedule: Sendable {
   public init(
     stationId: String,
     spins: [Spin],
-    dateProvider: DateProvider = .shared,
+    dateProvider: DateProviderProtocol? = nil,
     timerProvider: TimerProvider = LiveTimerProvider.shared
   ) {
     self.stationId = stationId
+    let dateProvider = dateProvider ?? DateProvider()
     self.spins = spins.map { spin in
       var updatedSpin = spin
       updatedSpin.dateProvider = dateProvider
