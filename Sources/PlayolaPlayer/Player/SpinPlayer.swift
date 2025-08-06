@@ -458,7 +458,7 @@ public class SpinPlayer {
       let avAudiotime = avAudioTimeFromDate(date: scheduledDate)
 
       // If the file isn't loaded yet, we need to schedule it
-      guard let currentFile = self.currentFile else {
+      guard self.currentFile != nil else {
         let error = NSError(
           domain: "fm.playola.PlayolaPlayer", code: 400,
           userInfo: [
