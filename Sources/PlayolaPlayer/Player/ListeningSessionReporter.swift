@@ -78,11 +78,13 @@ public class ListeningSessionReporter {
             try await self.reportOrExtendListeningSession(stationId)
             self.startPeriodicNotifications()
           } catch {
-            self.errorReporter.reportError(
-              error,
-              context: "Failed to initiate listening session for station \(stationId)",
-              level: .warning
-            )
+            Task {
+              await self.errorReporter.reportError(
+                error,
+                context: "Failed to initiate listening session for station \(stationId)",
+                level: .warning
+              )
+            }
           }
         }
       } else {
@@ -92,11 +94,13 @@ public class ListeningSessionReporter {
             self.stopPeriodicNotifications()
           } catch {
             // Just log the error but don't fail critically since this is cleanup
-            self.errorReporter.reportError(
-              error,
-              context: "Failed to cleanly end listening session",
-              level: .warning
-            )
+            Task {
+              await self.errorReporter.reportError(
+                error,
+                context: "Failed to cleanly end listening session",
+                level: .warning
+              )
+            }
           }
         }
       }
@@ -111,7 +115,9 @@ public class ListeningSessionReporter {
   public func endListeningSession() async throws {
     guard let deviceId else {
       let error = ListeningSessionError.missingDeviceId
-      errorReporter.reportError(error, level: .warning)
+      Task {
+        await errorReporter.reportError(error, level: .warning)
+      }
       throw error
     }
 
@@ -130,7 +136,10 @@ public class ListeningSessionReporter {
         throw ListeningSessionError.invalidResponse("HTTP status code: \(statusCode)")
       }
     } catch {
-      errorReporter.reportError(error, context: "Error ending listening session", level: .error)
+      Task {
+        await errorReporter.reportError(
+          error, context: "Error ending listening session", level: .error)
+      }
       throw error
     }
   }
@@ -138,7 +147,9 @@ public class ListeningSessionReporter {
   public func reportOrExtendListeningSession(_ stationId: String) async throws {
     guard let deviceId else {
       let error = ListeningSessionError.missingDeviceId
-      errorReporter.reportError(error, level: .warning)
+      Task {
+        await errorReporter.reportError(error, level: .warning)
+      }
       throw error
     }
 
@@ -167,7 +178,10 @@ public class ListeningSessionReporter {
         throw ListeningSessionError.invalidResponse("HTTP status code: \(httpResponse.statusCode)")
       }
     } catch {
-      errorReporter.reportError(error, context: "Error reporting listening session", level: .error)
+      Task {
+        await errorReporter.reportError(
+          error, context: "Error reporting listening session", level: .error)
+      }
       throw error
     }
   }
@@ -180,7 +194,9 @@ public class ListeningSessionReporter {
         guard let stationId = self.stationPlayer?.stationId else {
           let error = ListeningSessionError.invalidResponse(
             "Missing stationId in periodic notification")
-          self.errorReporter.reportError(error, level: .warning)
+          Task {
+            await self.errorReporter.reportError(error, level: .warning)
+          }
           return
         }
 
@@ -189,11 +205,13 @@ public class ListeningSessionReporter {
             try await self.reportOrExtendListeningSession(stationId)
           } catch {
             // Log errors but continue running - we'll try again next interval
-            self.errorReporter.reportError(
-              error,
-              context: "Failed periodic listening session update",
-              level: .warning
-            )
+            Task {
+              await self.errorReporter.reportError(
+                error,
+                context: "Failed periodic listening session update",
+                level: .warning
+              )
+            }
           }
         }
       })
@@ -216,11 +234,13 @@ public class ListeningSessionReporter {
 
     // Check if we've exceeded retry limits
     if refreshAttempts >= maxRefreshAttempts {
-      errorReporter.reportError(
-        ListeningSessionError.authenticationFailed("Max refresh attempts exceeded"),
-        context: "Exceeded maximum refresh attempts (\(maxRefreshAttempts))",
-        level: .warning
-      )
+      Task {
+        await errorReporter.reportError(
+          ListeningSessionError.authenticationFailed("Max refresh attempts exceeded"),
+          context: "Exceeded maximum refresh attempts (\(maxRefreshAttempts))",
+          level: .warning
+        )
+      }
 
       // Fall back to Basic auth
       try await attemptWithBasicAuth(url: url, requestBody: requestBody)
@@ -279,11 +299,13 @@ public class ListeningSessionReporter {
 
     if (200...299).contains(httpResponse.statusCode) {
       // Success with Basic auth
-      errorReporter.reportError(
-        ListeningSessionError.authenticationFailed("Fell back to Basic auth"),
-        context: "Authentication failed, using Basic auth fallback",
-        level: .warning
-      )
+      Task {
+        await errorReporter.reportError(
+          ListeningSessionError.authenticationFailed("Fell back to Basic auth"),
+          context: "Authentication failed, using Basic auth fallback",
+          level: .warning
+        )
+      }
     } else {
       throw ListeningSessionError.authenticationFailed("Both Bearer token and Basic auth failed")
     }

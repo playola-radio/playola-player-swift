@@ -73,8 +73,7 @@ public struct PlayolaErrorReport: Sendable {
 }
 
 /// Main error reporting class for PlayolaPlayer
-@MainActor
-public final class PlayolaErrorReporter: @unchecked Sendable {
+public actor PlayolaErrorReporter {
   // MARK: - Singleton
   public static let shared = PlayolaErrorReporter()
 
@@ -93,9 +92,6 @@ public final class PlayolaErrorReporter: @unchecked Sendable {
 
   /// Maximum stack frame count to include in reports
   public var maxStackFrames: Int = 20
-
-  /// Queue to serialize error reporting
-  private let reportingQueue = DispatchQueue(label: "fm.playola.errorReporting", qos: .utility)
 
   /// Keeps track of recently reported errors to avoid duplicate reporting
   private var recentErrorHashes: [Int: Date] = [:]
@@ -119,7 +115,7 @@ public final class PlayolaErrorReporter: @unchecked Sendable {
     line: Int = #line,
     function: String = #function,
     level: PlayolaErrorReportingLevel = .error
-  ) {
+  ) async {
 
     // Don't process if reporting level is not high enough
     guard level.rawValue <= reportingLevel.rawValue else { return }
@@ -140,24 +136,21 @@ public final class PlayolaErrorReporter: @unchecked Sendable {
       reportingLevel: level
     )
 
-    // Process on background queue to avoid blocking the main thread
-    reportingQueue.async { [weak self] in
-      guard let self = self else { return }
+    // Deduplicate recent identical errors
+    let errorHash = hashForError(error, file: fileName, line: line, function: function)
+    if await isDuplicateError(hash: errorHash) {
+      return
+    }
 
-      // Deduplicate recent identical errors
-      let errorHash = self.hashForError(error, file: fileName, line: line, function: function)
-      if self.isDuplicateError(hash: errorHash) {
-        return
-      }
+    // Log to system console if enabled
+    if logToConsole {
+      logErrorToConsole(report)
+    }
 
-      // Log to system console if enabled
-      if self.logToConsole {
-        self.logErrorToConsole(report)
-      }
-
-      // Dispatch to main thread for delegate call
-      Task { @MainActor in
-        self.delegate?.playolaDidEncounterError(
+    // Call delegate on main thread
+    if let delegate = delegate {
+      await MainActor.run {
+        delegate.playolaDidEncounterError(
           report.error,
           sourceFile: report.sourceFile,
           sourceLine: report.sourceLine,
@@ -183,7 +176,7 @@ public final class PlayolaErrorReporter: @unchecked Sendable {
     line: Int = #line,
     function: String = #function,
     level: PlayolaErrorReportingLevel = .error
-  ) {
+  ) async {
 
     // Wrap the error with context
     let contextualError = NSError(
@@ -195,7 +188,7 @@ public final class PlayolaErrorReporter: @unchecked Sendable {
       ]
     )
 
-    reportError(contextualError, file: file, line: line, function: function, level: level)
+    await reportError(contextualError, file: file, line: line, function: function, level: level)
   }
 
   // MARK: - Private Methods
@@ -239,7 +232,7 @@ public final class PlayolaErrorReporter: @unchecked Sendable {
     return hasher.finalize()
   }
 
-  private func isDuplicateError(hash: Int) -> Bool {
+  private func isDuplicateError(hash: Int) async -> Bool {
     let now = Date()
 
     // Clean up old entries
@@ -276,8 +269,8 @@ extension Error {
     function: String = #function,
     level: PlayolaErrorReportingLevel = .error
   ) {
-    Task { @MainActor in
-      PlayolaErrorReporter.shared.reportError(
+    Task {
+      await PlayolaErrorReporter.shared.reportError(
         self, file: file, line: line, function: function, level: level)
     }
   }
