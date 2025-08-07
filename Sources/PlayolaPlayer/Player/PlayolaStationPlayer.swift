@@ -172,7 +172,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     os_log("Using SpinPlayer for spin: %@", log: PlayolaStationPlayer.logger, type: .debug, spin.id)
 
-    guard let audioFileUrl = spin.audioBlock.downloadUrl else {
+    guard spin.audioBlock.downloadUrl != nil else {
       let spinDetails = """
             Spin ID: \(spin.id)
             Audio Block ID: \(spin.audioBlock.id)
@@ -210,7 +210,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       )
 
       switch result {
-      case .success(let localUrl):
+      case .success(_):
         if showProgress {
           self.state = .playing(spin)
         }

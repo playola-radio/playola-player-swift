@@ -45,61 +45,24 @@ open class PlayolaMainMixer: NSObject {
     self.engine = AVAudioEngine()
 
     super.init()
-    do {
-      self.engine.attach(self.mixerNode)
+    self.engine.attach(self.mixerNode)
 
-      do {
-        self.engine.connect(
-          self.mixerNode,
-          to: self.engine.mainMixerNode,
-          format: TapProperties.default.format)
-      } catch {
-        Task { @MainActor in
-          await errorReporter.reportError(
-            error,
-            context: "Failed to connect mixer nodes: \(error.localizedDescription)",
-            level: .critical)
-        }
-        throw error
-      }
+    self.engine.connect(
+      self.mixerNode,
+      to: self.engine.mainMixerNode,
+      format: TapProperties.default.format)
 
-      self.engine.prepare()
+    self.engine.prepare()
 
-      do {
-        self.mixerNode.installTap(
-          onBus: 0,
-          bufferSize: TapProperties.default.bufferSize,
-          format: TapProperties.default.format,
-          block: self.onTap(_:_:))
-      } catch {
-        Task { @MainActor in
-          await errorReporter.reportError(
-            error,
-            context: "Failed to install tap on mixer node: \(error.localizedDescription)",
-            level: .critical)
-        }
-        throw error
-      }
-    } catch {
-      Task { @MainActor in
-        await errorReporter.reportError(
-          error,
-          context: "Critical failure initializing PlayolaMainMixer: \(error.localizedDescription)",
-          level: .critical)
-      }
-    }
+    self.mixerNode.installTap(
+      onBus: 0,
+      bufferSize: TapProperties.default.bufferSize,
+      format: TapProperties.default.format,
+      block: self.onTap(_:_:))
   }
 
   deinit {
-    do {
-      self.mixerNode.removeTap(onBus: 0)
-    } catch {
-      // Cannot report via errorReporter in deinit as it might be async
-      // For deinit errors, we'll keep using os_log
-      os_log(
-        "Error removing tap during deinit: %@", log: PlayolaMainMixer.logger, type: .error,
-        error.localizedDescription)
-    }
+    self.mixerNode.removeTap(onBus: 0)
   }
 
   /// Configures the shared audio session for playback
