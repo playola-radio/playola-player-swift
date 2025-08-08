@@ -15,16 +15,11 @@ public struct Schedule: Sendable {
   public let dateProvider: DateProviderProtocol
   private let timerProvider: TimerProvider
 
-  public var nowPlaying: Spin? {
-    let now = dateProvider.now()
-    return
-      spins
-      .filter { spin in
-        // A spin is playing if current time is between its airtime and endtime
-        spin.airtime <= now && spin.endtime > now
-      }
-      .sorted { $0.airtime > $1.airtime }  // Sort by airtime descending
-      .first
+  public func current(offsetTimeInterval: TimeInterval? = nil) -> [Spin] {
+    let adjustedSpins = adjustedSpins(offsetTimeInterval: offsetTimeInterval)
+    return adjustedSpins.filter({ $0.endtime > dateProvider.now() }).sorted {
+      $0.airtime < $1.airtime
+    }
   }
 
   public init(
@@ -44,9 +39,19 @@ public struct Schedule: Sendable {
     self.timerProvider = timerProvider
   }
 
-  public var current: [Spin] {
+  public func nowPlaying(offsetTimeInterval: TimeInterval? = nil) -> Spin? {
+    let adjustedSpins = adjustedSpins(offsetTimeInterval: offsetTimeInterval)
     let now = dateProvider.now()
-    return spins.filter({ $0.endtime > now }).sorted { $0.airtime < $1.airtime }
+    return
+      adjustedSpins
+      .filter { $0.airtime <= now && $0.endtime > now }
+      .sorted { $0.airtime > $1.airtime }
+      .first
+  }
+
+  private func adjustedSpins(offsetTimeInterval: TimeInterval? = nil) -> [Spin] {
+    guard let offsetTimeInterval else { return spins }
+    return spins.map { $0.withOffset(-offsetTimeInterval) }
   }
 }
 

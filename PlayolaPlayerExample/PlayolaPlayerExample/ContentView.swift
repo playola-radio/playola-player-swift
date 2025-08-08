@@ -135,7 +135,49 @@ struct ContentView: View {
           }
           .frame(height: 80)
 
-          // Playback controls
+          // Offset playback controls
+          VStack(spacing: 20) {
+            // Time offset buttons
+            Text("Play from different times:")
+              .font(.caption)
+              .foregroundColor(.white.opacity(0.6))
+
+            HStack(spacing: 15) {
+              Button("5min ago") {
+                playWithOffset(-300)  // 5 minutes ago
+              }
+              .buttonStyle(OffsetButtonStyle())
+
+              Button("1min ago") {
+                playWithOffset(-60)  // 1 minute ago
+              }
+              .buttonStyle(OffsetButtonStyle())
+
+              Button("10sec ago") {
+                playWithOffset(-10)  // 10 seconds ago
+              }
+              .buttonStyle(OffsetButtonStyle())
+            }
+
+            HStack(spacing: 15) {
+              Button("10sec future") {
+                playWithOffset(10)  // 10 seconds from now
+              }
+              .buttonStyle(OffsetButtonStyle())
+
+              Button("1min future") {
+                playWithOffset(60)  // 1 minute from now
+              }
+              .buttonStyle(OffsetButtonStyle())
+
+              Button("5min future") {
+                playWithOffset(300)  // 5 minutes from now
+              }
+              .buttonStyle(OffsetButtonStyle())
+            }
+          }
+
+          // Main playback controls
           HStack(spacing: 40) {
             // Station picker
             Button(action: { showingStationPicker.toggle() }) {
@@ -144,7 +186,7 @@ struct ContentView: View {
                 .foregroundColor(.white.opacity(0.8))
             }
 
-            // Play/Stop button
+            // Play/Stop button (current time)
             Button(action: playOrPause) {
               ZStack {
                 Circle()
@@ -330,6 +372,43 @@ func playOrPause() {
         print("Failed to start playback: \(error)")
       }
     }
+  }
+}
+
+func playWithOffset(_ offsetSeconds: TimeInterval) {
+  Task {
+    // Always stop current playback first
+    await PlayolaStationPlayer.shared.stop()
+
+    // Calculate the target date
+    let atDate = Date().addingTimeInterval(offsetSeconds)
+
+    do {
+      try await PlayolaStationPlayer.shared.play(
+        stationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c",
+        atDate: atDate
+      )
+      print("Started playback with offset: \(offsetSeconds) seconds (at: \(atDate))")
+    } catch {
+      print("Failed to start offset playback: \(error)")
+    }
+  }
+}
+
+// Custom button style for offset buttons
+struct OffsetButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.caption)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+      .background(
+        RoundedRectangle(cornerRadius: 16)
+          .fill(Color.white.opacity(configuration.isPressed ? 0.3 : 0.2))
+      )
+      .foregroundColor(.white)
+      .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+      .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
   }
 }
 
