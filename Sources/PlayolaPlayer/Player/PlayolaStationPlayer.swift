@@ -135,16 +135,18 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
-    NotificationCenter.default.addObserver(
-      self,
-      selector: #selector(handleAudioSessionInterruption(_:)),
-      name: AVAudioSession.interruptionNotification,
-      object: nil
-    )
+    #if os(iOS)
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(handleAudioSessionInterruption(_:)),
+        name: AVAudioSession.interruptionNotification,
+        object: nil
+      )
 
-    NotificationCenter.default.addObserver(
-      self, selector: #selector(handleAudioRouteChange(_:)),
-      name: AVAudioSession.routeChangeNotification, object: nil)
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(handleAudioRouteChange(_:)),
+        name: AVAudioSession.routeChangeNotification, object: nil)
+    #endif
   }
 
   private static let logger = OSLog(
@@ -535,76 +537,77 @@ final public class PlayolaStationPlayer: ObservableObject {
     os_log("✅ STOP completed", log: PlayolaStationPlayer.logger, type: .info)
   }
 
-  /// Handle audio route changes such as connecting/disconnecting headphones
-  @objc public func handleAudioRouteChange(_ notification: Notification) {
-    guard let userInfo = notification.userInfo,
-      let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-      let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue)
-    else {
-      return
-    }
-
-    // Check if the audio route changed
-    switch reason {
-    case .newDeviceAvailable:
-      // New device (like headphones) was connected
-      os_log("New audio route device available", log: PlayolaStationPlayer.logger, type: .info)
-
-    case .oldDeviceUnavailable:
-      // Old device (like headphones) was disconnected
-      // You might want to pause playback here
-      os_log("Audio route device disconnected", log: PlayolaStationPlayer.logger, type: .info)
-
-    default:
-      // Handle other route changes if needed
-      os_log(
-        "Audio route changed for reason: %d", log: PlayolaStationPlayer.logger, type: .info,
-        reasonValue)
-    }
-  }
-
-  /// Handle audio session interruptions such as phone calls
-  @objc public func handleAudioSessionInterruption(_ notification: Notification) {
-    guard let userInfo = notification.userInfo,
-      let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-      let type = AVAudioSession.InterruptionType(rawValue: typeValue)
-    else {
-      return
-    }
-
-    switch type {
-    case .began:
-      // Audio session was interrupted - might need to pause playback
-      os_log("Audio session interrupted", log: PlayolaStationPlayer.logger, type: .info)
-      self.interruptedStationId = stationId
-      stop()
-
-    case .ended:
-      // Interruption ended - might need to resume playback
-      guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+  #if os(iOS)
+    /// Handle audio route changes such as connecting/disconnecting headphones
+    @objc public func handleAudioRouteChange(_ notification: Notification) {
+      guard let userInfo = notification.userInfo,
+        let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+        let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue)
+      else {
         return
       }
-      let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
 
-      if options.contains(.shouldResume) {
-        // The system indicates that we can resume audio
-        if let interruptedStationId {
-          Task { @MainActor [interruptedStationId] in
-            try? await self.play(stationId: interruptedStationId)
-          }
-          self.interruptedStationId = nil
-        }
+      // Check if the audio route changed
+      switch reason {
+      case .newDeviceAvailable:
+        // New device (like headphones) was connected
+        os_log("New audio route device available", log: PlayolaStationPlayer.logger, type: .info)
+
+      case .oldDeviceUnavailable:
+        // Old device (like headphones) was disconnected
+        // You might want to pause playback here
+        os_log("Audio route device disconnected", log: PlayolaStationPlayer.logger, type: .info)
+
+      default:
+        // Handle other route changes if needed
+        os_log(
+          "Audio route changed for reason: %d", log: PlayolaStationPlayer.logger, type: .info,
+          reasonValue)
+      }
+    }
+
+    /// Handle audio session interruptions such as phone calls
+    @objc public func handleAudioSessionInterruption(_ notification: Notification) {
+      guard let userInfo = notification.userInfo,
+        let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+        let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+      else {
+        return
       }
 
-    @unknown default:
-      os_log(
-        "Unknown audio session interruption type: %d", log: PlayolaStationPlayer.logger,
-        type: .error, typeValue)
+      switch type {
+      case .began:
+        // Audio session was interrupted - might need to pause playback
+        os_log("Audio session interrupted", log: PlayolaStationPlayer.logger, type: .info)
+        self.interruptedStationId = stationId
+        stop()
+
+      case .ended:
+        // Interruption ended - might need to resume playback
+        guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+          return
+        }
+        let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+
+        if options.contains(.shouldResume) {
+          // The system indicates that we can resume audio
+          if let interruptedStationId {
+            Task { @MainActor [interruptedStationId] in
+              try? await self.play(stationId: interruptedStationId)
+            }
+            self.interruptedStationId = nil
+          }
+        }
+
+      @unknown default:
+        os_log(
+          "Unknown audio session interruption type: %d", log: PlayolaStationPlayer.logger,
+          type: .error, typeValue)
+      }
     }
-  }
+  #endif
 
   deinit {
-    // Ensure all resources are properly cleaned up
     fileDownloadManager.cancelAllDownloads()
   }
 }
@@ -641,7 +644,6 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
     atTime time: TimeInterval,
     withBuffer buffer: AVAudioPCMBuffer
   ) {
-    // No error handling needed here
   }
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
