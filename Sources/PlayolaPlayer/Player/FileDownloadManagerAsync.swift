@@ -137,11 +137,23 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   /// File manager for cache operations
   private let fileManager = FileManager.default
 
-  /// Cache directory URL
-  private var cacheDirectoryURL: URL {
-    let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-    return documentsPath.appendingPathComponent(Self.subfolderName)
-  }
+  #if os(iOS)
+    /// Cache directory URL
+    private var cacheDirectoryURL: URL {
+      let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+      return documentsPath.appendingPathComponent(Self.subfolderName)
+    }
+  #endif
+
+  #if os(macOS)
+    /// Cache directory URL
+    private var cacheDirectoryURL: URL {
+      let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+        .first!
+      let bundleID = Bundle.main.bundleIdentifier ?? "fm.playola.PlayolaPlayer"
+      return appSupport.appendingPathComponent(bundleID).appendingPathComponent(Self.subfolderName)
+    }
+  #endif
 
   public init() {
     createCacheDirectoryIfNeeded()
