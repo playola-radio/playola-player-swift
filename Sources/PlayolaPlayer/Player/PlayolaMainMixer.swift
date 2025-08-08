@@ -7,8 +7,11 @@
 
 import AVFoundation
 import Foundation
-import UIKit
 import os.log
+
+#if os(iOS)
+  import UIKit
+#endif
 
 public protocol PlayolaMainMixerDelegate {
   func player(_ mainMixer: PlayolaMainMixer, didPlayBuffer: AVAudioPCMBuffer)
@@ -98,8 +101,8 @@ open class PlayolaMainMixer: NSObject {
         )
       } catch {
         Task { @MainActor in
-          let deviceName = UIDevice.current.name
-          let systemVersion = UIDevice.current.systemVersion
+          let deviceName = DeviceInfoProvider.deviceName
+          let systemVersion = DeviceInfoProvider.systemVersion
           await errorReporter.reportError(
             error,
             context:
@@ -115,8 +118,8 @@ open class PlayolaMainMixer: NSObject {
         os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
       } catch {
         Task { @MainActor in
-          let deviceName = UIDevice.current.name
-          let systemVersion = UIDevice.current.systemVersion
+          let deviceName = DeviceInfoProvider.deviceName
+          let systemVersion = DeviceInfoProvider.systemVersion
           let currentRoute = session.currentRoute.outputs.map { $0.portName }.joined(
             separator: ", ")
 

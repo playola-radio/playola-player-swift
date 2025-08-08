@@ -8,7 +8,10 @@
 import AVFoundation
 import Combine
 import Foundation
-import UIKit
+
+#if os(iOS)
+  import UIKit
+#endif
 
 /// Errors specific to the listening session reporting
 public enum ListeningSessionError: Error, LocalizedError {
@@ -44,7 +47,7 @@ public class ListeningSessionReporter {
   }
 
   var deviceId: String? {
-    return UIDevice.current.identifierForVendor?.uuidString
+    return DeviceInfoProvider.identifierForVendor?.uuidString
   }
   var timer: Timer?
   let basicToken = "aW9zQXBwOnNwb3RpZnlTdWNrc0FCaWcx"  // TODO: De-hard-code this
