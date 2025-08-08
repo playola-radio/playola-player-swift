@@ -39,13 +39,14 @@ open class PlayolaMainMixer: NSObject {
 
   open var delegate: PlayolaMainMixerDelegate?
   private let errorReporter = PlayolaErrorReporter.shared
-  private var isAudioSessionConfigured = false
+  private let audioSessionManager: AudioSessionManager
 
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
 
   override init() {
     self.mixerNode = AVAudioMixerNode()
     self.engine = AVAudioEngine()
+    self.audioSessionManager = AudioSessionManager()
 
     super.init()
     self.engine.attach(self.mixerNode)
@@ -70,90 +71,34 @@ open class PlayolaMainMixer: NSObject {
 
   /// Configures the shared audio session for playback
   public func configureAudioSession() {
-    guard !isAudioSessionConfigured else { return }
-    isAudioSessionConfigured = true
+    guard !audioSessionManager.isConfigured else { return }
 
-    do {
-      let session = AVAudioSession.sharedInstance()
-
-      // First deactivate with appropriate options to reset state
+    Task { @MainActor in
       do {
-        try session.setActive(false, options: .notifyOthersOnDeactivation)
-      } catch {
-        // This is not a critical error, just log it
-        Task { @MainActor in
-          await errorReporter.reportError(
-            error,
-            context: "Non-critical: Failed to deactivate audio session before configuration",
-            level: .warning)
-        }
-      }
-
-      // Configure for playback category
-      do {
-        try session.setCategory(
-          .playback,
-          mode: .default,
-          options: [
-            .allowBluetoothA2DP,
-            .allowAirPlay,
-          ]
-        )
-      } catch {
-        Task { @MainActor in
-          let deviceName = DeviceInfoProvider.deviceName
-          let systemVersion = DeviceInfoProvider.systemVersion
-          await errorReporter.reportError(
-            error,
-            context:
-              "Failed to set audio session category | Device: \(deviceName) | iOS: \(systemVersion)",
-            level: .critical)
-        }
-        throw error
-      }
-
-      // Set the audio session active
-      do {
-        try session.setActive(true)
+        try await audioSessionManager.configureForPlayback()
+        try await audioSessionManager.activate()
         os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
       } catch {
-        Task { @MainActor in
-          let deviceName = DeviceInfoProvider.deviceName
-          let systemVersion = DeviceInfoProvider.systemVersion
-          let currentRoute = session.currentRoute.outputs.map { $0.portName }.joined(
-            separator: ", ")
-
-          await errorReporter.reportError(
-            error,
-            context:
-              "Failed to activate audio session | Device: \(deviceName) | iOS: \(systemVersion) | Route: \(currentRoute)",
-            level: .critical)
-        }
-        throw error
-      }
-    } catch {
-      Task { @MainActor in
+        let deviceName = DeviceInfoProvider.deviceName
+        let systemVersion = DeviceInfoProvider.systemVersion
         await errorReporter.reportError(
           error,
-          context: "Critical error configuring audio session: \(error.localizedDescription)",
+          context:
+            "Failed to configure audio session | Device: \(deviceName) | OS: \(systemVersion)",
           level: .critical)
       }
-      // Don't set isAudioSessionConfigured to true since we failed
     }
   }
 
   /// Deactivates the audio session when it's no longer needed
   public func deactivateAudioSession() {
-    guard isAudioSessionConfigured else { return }
+    guard audioSessionManager.isConfigured else { return }
 
-    do {
-      let session = AVAudioSession.sharedInstance()
-      try session.setActive(false, options: .notifyOthersOnDeactivation)
-      isAudioSessionConfigured = false
-
-      os_log("Audio session deactivated", log: PlayolaMainMixer.logger, type: .info)
-    } catch {
-      Task { @MainActor in
+    Task { @MainActor in
+      do {
+        try await audioSessionManager.deactivate()
+        os_log("Audio session deactivated", log: PlayolaMainMixer.logger, type: .info)
+      } catch {
         await errorReporter.reportError(
           error, context: "Failed to deactivate audio session", level: .warning)
       }

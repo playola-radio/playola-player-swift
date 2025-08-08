@@ -8,8 +8,11 @@
 import AVFoundation
 import AudioToolbox
 import Foundation
-import QuartzCore
 import os.log
+
+#if os(iOS)
+  import QuartzCore
+#endif
 
 /// Handles playback of a single spin (audio item) with precise timing control.
 ///
@@ -40,8 +43,11 @@ public class SpinPlayer {
   public var clearTimer: Timer?
   public var fadeTimers = Set<Timer>()
 
-  // Add these properties for the improved fade system
-  private var activeDisplayLink: CADisplayLink?
+  #if os(iOS)
+    private var activeDisplayLink: CADisplayLink?
+  #else
+    private var fadeUpdateTimer: Timer?
+  #endif
   private var activeFades: Set<FadeOperation> = []
 
   public var localUrl: URL? { return currentFile?.url }
@@ -273,8 +279,13 @@ public class SpinPlayer {
   }
 
   func clearFades() {
-    activeDisplayLink?.invalidate()
-    activeDisplayLink = nil
+    #if os(iOS)
+      activeDisplayLink?.invalidate()
+      activeDisplayLink = nil
+    #else
+      fadeUpdateTimer?.invalidate()
+      fadeUpdateTimer = nil
+    #endif
     activeFades.removeAll()
   }
 
@@ -653,11 +664,18 @@ public class SpinPlayer {
     // Add to active fades
     activeFades.insert(fadeOperation)
 
-    // Create display link if not already running
-    if activeDisplayLink == nil {
-      activeDisplayLink = CADisplayLink(target: self, selector: #selector(updateFades))
-      activeDisplayLink?.add(to: .current, forMode: .common)
-    }
+    #if os(iOS)
+      if activeDisplayLink == nil {
+        activeDisplayLink = CADisplayLink(target: self, selector: #selector(updateFades))
+        activeDisplayLink?.add(to: .current, forMode: .common)
+      }
+    #else
+      if fadeUpdateTimer == nil {
+        fadeUpdateTimer = Timer.scheduledTimer(
+          timeInterval: 1.0 / 60.0, target: self, selector: #selector(updateFades), userInfo: nil,
+          repeats: true)
+      }
+    #endif
 
     // Log fade operation
     os_log(
@@ -665,7 +683,7 @@ public class SpinPlayer {
       endVolume, time)
   }
 
-  @objc private func updateFades(_ displayLink: CADisplayLink) {
+  @objc private func updateFades(_ sender: Any) {
     // Current time
     let currentTime = CACurrentMediaTime()
 
@@ -701,10 +719,14 @@ public class SpinPlayer {
     // Remove completed fades
     activeFades.subtract(completedFades)
 
-    // If no more fades, stop the display link
     if activeFades.isEmpty {
-      activeDisplayLink?.invalidate()
-      activeDisplayLink = nil
+      #if os(iOS)
+        activeDisplayLink?.invalidate()
+        activeDisplayLink = nil
+      #else
+        fadeUpdateTimer?.invalidate()
+        fadeUpdateTimer = nil
+      #endif
 
       os_log("All fades completed", log: SpinPlayer.logger, type: .debug)
     }
