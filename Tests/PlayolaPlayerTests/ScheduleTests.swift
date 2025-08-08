@@ -461,4 +461,363 @@ struct ScheduleTests {
 
     #expect(schedule.nowPlaying() == nil)
   }
+
+  // MARK: - offsetTimeInterval Tests
+
+  @Test("nowPlaying with negative offset returns past spin with updated time")
+  func testNowPlayingWithNegativeOffset() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    // Create a spin that was playing 5 minutes ago
+    let pastSpin = Spin.mockWith(
+      id: "past-spin",
+      airtime: now.addingTimeInterval(-300),  // 5 minutes ago
+      audioBlock: AudioBlock.mockWith(durationMS: 180000),  // 3 minute duration
+      dateProvider: dateProvider
+    )
+
+    // Create a spin that is currently playing
+    let currentSpin = Spin.mockWith(
+      id: "current-spin",
+      airtime: now.addingTimeInterval(-30),  // 30 seconds ago
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [pastSpin, currentSpin],
+      dateProvider: dateProvider
+    )
+
+    // Without offset, should return current spin
+    #expect(schedule.nowPlaying()?.id == "current-spin")
+
+    // With -5 minute offset, should return the past spin with updated time
+    let offsetSpin = schedule.nowPlaying(offsetTimeInterval: -300)
+    #expect(offsetSpin?.id == "past-spin")
+
+    // The returned spin should have its airtime adjusted by the offset
+    #expect(offsetSpin?.airtime == now)  // Original was 5 min ago, offset brings it to now
+  }
+
+  @Test("nowPlaying with positive offset returns future spin with updated time")
+  func testNowPlayingWithPositiveOffset() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    // Create a spin that is currently playing
+    let currentSpin = Spin.mockWith(
+      id: "current-spin",
+      airtime: now.addingTimeInterval(-30),  // 30 seconds ago
+      audioBlock: AudioBlock.mockWith(durationMS: 60000),  // 1 minute duration
+      dateProvider: dateProvider
+    )
+
+    // Create a future spin
+    let futureSpin = Spin.mockWith(
+      id: "future-spin",
+      airtime: now.addingTimeInterval(300),  // 5 minutes from now
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [currentSpin, futureSpin],
+      dateProvider: dateProvider
+    )
+
+    // Without offset, should return current spin
+    #expect(schedule.nowPlaying()?.id == "current-spin")
+
+    // With +5 minute offset, should return the future spin with updated time
+    let offsetSpin = schedule.nowPlaying(offsetTimeInterval: 300)
+    #expect(offsetSpin?.id == "future-spin")
+
+    // The returned spin should have its airtime adjusted by the offset
+    #expect(offsetSpin?.airtime == now)  // Original was 5 min future, offset brings it to now
+  }
+
+  @Test("nowPlaying with nil offset behaves like no offset")
+  func testNowPlayingWithNilOffset() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    let currentSpin = Spin.mockWith(
+      id: "current-spin",
+      airtime: now.addingTimeInterval(-30),
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [currentSpin],
+      dateProvider: dateProvider
+    )
+
+    // Both calls should return the same result
+    let withoutOffset = schedule.nowPlaying()
+    let withNilOffset = schedule.nowPlaying(offsetTimeInterval: nil)
+
+    #expect(withoutOffset?.id == withNilOffset?.id)
+    #expect(withoutOffset?.airtime == withNilOffset?.airtime)
+  }
+
+  @Test("nowPlaying with offset returns nil when no spin matches")
+  func testNowPlayingWithOffsetNoMatch() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    // Create only future spins
+    let futureSpin = Spin.mockWith(
+      id: "future-spin",
+      airtime: now.addingTimeInterval(600),  // 10 minutes from now
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [futureSpin],
+      dateProvider: dateProvider
+    )
+
+    // With -5 minute offset, still no spin playing at that time
+    #expect(schedule.nowPlaying(offsetTimeInterval: -300) == nil)
+  }
+
+  @Test("current with negative offset returns past spins as current")
+  func testCurrentWithNegativeOffset() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    // Create spins at different times
+    let longPastSpin = Spin.mockWith(
+      id: "long-past",
+      airtime: now.addingTimeInterval(-600),  // 10 minutes ago
+      audioBlock: AudioBlock.mockWith(durationMS: 60000),  // 1 minute duration (ended 9 min ago)
+      dateProvider: dateProvider
+    )
+
+    let recentPastSpin = Spin.mockWith(
+      id: "recent-past",
+      airtime: now.addingTimeInterval(-180),  // 3 minutes ago
+      audioBlock: AudioBlock.mockWith(durationMS: 60000),  // 1 minute duration (ended 2 min ago)
+      dateProvider: dateProvider
+    )
+
+    let currentSpin = Spin.mockWith(
+      id: "current",
+      airtime: now.addingTimeInterval(-30),  // 30 seconds ago
+      audioBlock: AudioBlock.mockWith(durationMS: 180000),  // 3 minute duration
+      dateProvider: dateProvider
+    )
+
+    let futureSpin = Spin.mockWith(
+      id: "future",
+      airtime: now.addingTimeInterval(300),  // 5 minutes from now
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [longPastSpin, recentPastSpin, currentSpin, futureSpin],
+      dateProvider: dateProvider
+    )
+
+    // Without offset, should only include current and future
+    let currentSpins = schedule.current()
+    #expect(currentSpins.count == 2)
+    #expect(currentSpins.map { $0.id }.contains("current"))
+    #expect(currentSpins.map { $0.id }.contains("future"))
+
+    // With -5 minute offset, we go back to 5 minutes ago
+    // At that time: longPastSpin had ended, recentPastSpin was future, current was future, future was further future
+    let offsetSpins = schedule.current(offsetTimeInterval: -300)
+    #expect(offsetSpins.count == 3)  // recentPast, current, and future
+
+    // Verify the spins have adjusted airtimes
+    let offsetRecentPast = offsetSpins.first { $0.id == "recent-past" }
+    #expect(offsetRecentPast?.airtime == now.addingTimeInterval(120))  // -180 + 300 = 120
+  }
+
+  @Test("current with positive offset filters out soon-to-end spins")
+  func testCurrentWithPositiveOffset() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    // Create spins with different end times
+    let endingSoonSpin = Spin.mockWith(
+      id: "ending-soon",
+      airtime: now.addingTimeInterval(-50),  // 50 seconds ago
+      audioBlock: AudioBlock.mockWith(durationMS: 60000),  // 1 minute duration (10 sec left)
+      dateProvider: dateProvider
+    )
+
+    let endingLaterSpin = Spin.mockWith(
+      id: "ending-later",
+      airtime: now,  // Starting now
+      audioBlock: AudioBlock.mockWith(durationMS: 180000),  // 3 minute duration
+      dateProvider: dateProvider
+    )
+
+    let futureSpin = Spin.mockWith(
+      id: "future",
+      airtime: now.addingTimeInterval(300),  // 5 minutes from now
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [endingSoonSpin, endingLaterSpin, futureSpin],
+      dateProvider: dateProvider
+    )
+
+    // Without offset, all spins are current
+    #expect(schedule.current().count == 3)
+
+    // With +30 second offset, endingSoonSpin should have ended
+    let offsetSpins = schedule.current(offsetTimeInterval: 30)
+    #expect(offsetSpins.count == 2)
+    #expect(!offsetSpins.map { $0.id }.contains("ending-soon"))
+
+    // Verify remaining spins have adjusted times
+    let offsetEndingLater = offsetSpins.first { $0.id == "ending-later" }
+    #expect(offsetEndingLater?.airtime == now.addingTimeInterval(-30))  // 0 - 30 = -30
+  }
+
+  @Test("current with nil offset behaves like no offset")
+  func testCurrentWithNilOffset() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    let spin1 = Spin.mockWith(
+      id: "spin1",
+      airtime: now,
+      audioBlock: AudioBlock.mockWith(durationMS: 180000),  // 3 minute duration
+      dateProvider: dateProvider
+    )
+    let spin2 = Spin.mockWith(
+      id: "spin2",
+      airtime: now.addingTimeInterval(60),
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [spin1, spin2],
+      dateProvider: dateProvider
+    )
+
+    // Both calls should return the same results
+    let withoutOffset = schedule.current()
+    let withNilOffset = schedule.current(offsetTimeInterval: nil)
+
+    #expect(withoutOffset.count == withNilOffset.count)
+    #expect(withoutOffset.map { $0.id } == withNilOffset.map { $0.id })
+
+    // Verify airtimes are the same
+    for i in 0..<withoutOffset.count {
+      #expect(withoutOffset[i].airtime == withNilOffset[i].airtime)
+    }
+  }
+
+  @Test("current with offset maintains sort order")
+  func testCurrentWithOffsetMaintainsSortOrder() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    // Create spins in non-chronological order
+    let spin3 = Spin.mockWith(
+      id: "spin3",
+      airtime: now.addingTimeInterval(180),  // 3 minutes from now
+      audioBlock: AudioBlock.mockWith(durationMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let spin1 = Spin.mockWith(
+      id: "spin1",
+      airtime: now.addingTimeInterval(60),  // 1 minute from now
+      audioBlock: AudioBlock.mockWith(durationMS: 180000),  // 3 minute duration
+      dateProvider: dateProvider
+    )
+
+    let spin2 = Spin.mockWith(
+      id: "spin2",
+      airtime: now.addingTimeInterval(120),  // 2 minutes from now
+      audioBlock: AudioBlock.mockWith(durationMS: 150000),  // 2.5 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [spin3, spin1, spin2],  // Intentionally out of order
+      dateProvider: dateProvider
+    )
+
+    // Get current with offset
+    let offsetSpins = schedule.current(offsetTimeInterval: -60)
+
+    // Verify they are sorted by airtime (after offset adjustment)
+    #expect(offsetSpins.count == 3)
+    #expect(offsetSpins[0].id == "spin1")  // Should be first (airtime: now)
+    #expect(offsetSpins[1].id == "spin2")  // Should be second (airtime: now + 60)
+    #expect(offsetSpins[2].id == "spin3")  // Should be third (airtime: now + 120)
+
+    // Verify the adjusted airtimes
+    #expect(offsetSpins[0].airtime == now)
+    #expect(offsetSpins[1].airtime == now.addingTimeInterval(60))
+    #expect(offsetSpins[2].airtime == now.addingTimeInterval(120))
+  }
+
+  @Test("nowPlaying with offset handles overlapping spins correctly")
+  func testNowPlayingWithOffsetOverlappingSpins() throws {
+    let dateProvider = DateProviderMock()
+    let now = Date()
+    dateProvider.setMockDate(now)
+
+    // Create overlapping spins
+    let spin1 = Spin.mockWith(
+      id: "spin1",
+      airtime: now.addingTimeInterval(-120),  // 2 minutes ago
+      audioBlock: AudioBlock.mockWith(durationMS: 180000, endOfMessageMS: 180000),  // 3 minute duration
+      dateProvider: dateProvider
+    )
+
+    let spin2 = Spin.mockWith(
+      id: "spin2",
+      airtime: now.addingTimeInterval(-60),  // 1 minute ago
+      audioBlock: AudioBlock.mockWith(durationMS: 120000, endOfMessageMS: 120000),  // 2 minute duration
+      dateProvider: dateProvider
+    )
+
+    let schedule = Schedule(
+      stationId: "test-station",
+      spins: [spin1, spin2],
+      dateProvider: dateProvider
+    )
+
+    // Both spins are currently playing, should return spin2 (most recent)
+    #expect(schedule.nowPlaying()?.id == "spin2")
+
+    // With -90 second offset (go back to 1.5 minutes ago)
+    // At that time, only spin1 was playing
+    let offsetSpin = schedule.nowPlaying(offsetTimeInterval: -90)
+    #expect(offsetSpin?.id == "spin1")
+    #expect(offsetSpin?.airtime == now.addingTimeInterval(-30))  // -120 + 90 = -30
+  }
 }
