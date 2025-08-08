@@ -305,10 +305,10 @@ final public class PlayolaStationPlayer: ObservableObject {
       // Log how many spins are in the updated schedule
       os_log(
         "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
-        updatedSchedule.spins.count, updatedSchedule.current.count)
+        updatedSchedule.spins.count, updatedSchedule.current().count)
 
       // Extend the time window to load more upcoming spins (10 minutes instead of 6)
-      let spinsToLoad = updatedSchedule.current.filter { $0.airtime < .now + TimeInterval(600) }
+      let spinsToLoad = updatedSchedule.current().filter { $0.airtime < .now + TimeInterval(600) }
 
       os_log(
         "Loading %d upcoming spins", log: PlayolaStationPlayer.logger, type: .info,
@@ -455,7 +455,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     // Get the schedule
     self.currentSchedule = try await getUpdatedSchedule(stationId: stationId)
 
-    guard let spinToPlay = currentSchedule?.current.first else {
+    guard let spinToPlay = currentSchedule?.current().first else {
       let error = StationPlayerError.scheduleError("No available spins to play")
       Task {
         await errorReporter.reportError(

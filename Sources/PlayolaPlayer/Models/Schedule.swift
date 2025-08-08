@@ -15,7 +15,7 @@ public struct Schedule: Sendable {
   public let dateProvider: DateProviderProtocol
   private let timerProvider: TimerProvider
 
-  public var nowPlaying: Spin? {
+  public func nowPlaying() -> Spin? {
     let now = dateProvider.now()
     return
       spins
@@ -44,7 +44,7 @@ public struct Schedule: Sendable {
     self.timerProvider = timerProvider
   }
 
-  public var current: [Spin] {
+  public func current() -> [Spin] {
     let now = dateProvider.now()
     return spins.filter({ $0.endtime > now }).sorted { $0.airtime < $1.airtime }
   }

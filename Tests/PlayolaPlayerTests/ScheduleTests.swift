@@ -78,10 +78,10 @@ struct ScheduleTests {
 
     // Current should only include spins whose endtime is after now
     // The order in current will be the same as in the original array: [currentSpin, futureSpin]
-    #expect(schedule.current.count == 2)
+    #expect(schedule.current().count == 2)
 
     // Verify the correct spins are included without assuming order
-    let currentIds = schedule.current.map { $0.id }
+    let currentIds = schedule.current().map { $0.id }
     #expect(currentIds.contains("current-spin"))
     #expect(currentIds.contains("future-spin"))
     #expect(!currentIds.contains("past-spin"))
@@ -145,7 +145,7 @@ struct ScheduleTests {
     )
 
     // nowPlaying should be the currently playing spin
-    #expect(schedule.nowPlaying?.id == "current-spin")
+    #expect(schedule.nowPlaying()?.id == "current-spin")
 
     // Test with multiple concurrent playing spins
     // Create two overlapping playing spins
@@ -181,7 +181,7 @@ struct ScheduleTests {
     )
 
     // nowPlaying should be the last playing spin in the array
-    #expect(overlappingSchedule.nowPlaying?.id == "playing-2")
+    #expect(overlappingSchedule.nowPlaying()?.id == "playing-2")
   }
 
   @Test("Schedule uses the injected DateProvider")
@@ -209,10 +209,10 @@ struct ScheduleTests {
     )
 
     // With pastProvider (set to 1 minute ago), the spin should be in the future (not ended yet)
-    #expect(!pastSchedule.current.isEmpty)
+    #expect(!pastSchedule.current().isEmpty)
 
     // With futureProvider (set to now), the spin should be in the past (already ended)
-    #expect(futureSchedule.current.isEmpty)
+    #expect(futureSchedule.current().isEmpty)
   }
 
   @Test("Schedule handles empty spins array")
@@ -224,8 +224,8 @@ struct ScheduleTests {
     )
 
     // Verify that empty arrays are handled correctly
-    #expect(emptySchedule.current.isEmpty)
-    #expect(emptySchedule.nowPlaying == nil)
+    #expect(emptySchedule.current().isEmpty)
+    #expect(emptySchedule.nowPlaying() == nil)
   }
 
   @Test("Schedule correctly filters out past spins")
@@ -273,11 +273,11 @@ struct ScheduleTests {
     )
 
     // Current should contain only the spin that hasn't ended yet
-    #expect(schedule.current.count == 1)
-    #expect(schedule.current[0].id == "long-spin")
+    #expect(schedule.current().count == 1)
+    #expect(schedule.current()[0].id == "long-spin")
 
     // nowPlaying should be longSpin since it's the only spin that's currently playing
-    #expect(schedule.nowPlaying?.id == "long-spin")
+    #expect(schedule.nowPlaying()?.id == "long-spin")
   }
 
   @Test("Schedule behavior when no spins are currently playing")
@@ -315,10 +315,10 @@ struct ScheduleTests {
     )
 
     // Current should contain both future spins
-    #expect(futureSchedule.current.count == 2)
+    #expect(futureSchedule.current().count == 2)
 
     // nowPlaying should be nil since no spins are currently playing
-    #expect(futureSchedule.nowPlaying == nil)
+    #expect(futureSchedule.nowPlaying() == nil)
 
     // Create only past spins
     let pastSpin1 = Spin.mockWith(
@@ -349,10 +349,10 @@ struct ScheduleTests {
     )
 
     // Current should contain spins that haven't ended yet
-    #expect(pastSchedule.current.isEmpty)
+    #expect(pastSchedule.current().isEmpty)
 
     // nowPlaying should be nil when no spins are playing
-    #expect(pastSchedule.nowPlaying == nil)
+    #expect(pastSchedule.nowPlaying() == nil)
   }
 
   @Test("Schedule updates nowPlaying when spins change status")
@@ -390,14 +390,14 @@ struct ScheduleTests {
     )
 
     // Initial state - currentSpin should be playing
-    #expect(schedule.nowPlaying?.id == "current")
+    #expect(schedule.nowPlaying()?.id == "current")
 
     // Advance time to when nextSpin starts and execute timer
     dateProviderMock.setMockDate(mockTime.addingTimeInterval(15))
     testTimerProvider.executeNextTimer()
 
     // Now the nextSpin should be playing
-    #expect(schedule.nowPlaying?.id == "next")
+    #expect(schedule.nowPlaying()?.id == "next")
   }
 
   @Test("Schedule properly handles nowPlaying transitions")
@@ -434,22 +434,22 @@ struct ScheduleTests {
     )
 
     // At start (t=0)
-    #expect(schedule.nowPlaying?.id == "spin1")
+    #expect(schedule.nowPlaying()?.id == "spin1")
 
     // Middle of first spin (t=15)
     dateProviderMock.setMockDate(mockTime.addingTimeInterval(15))
     testTimerProvider.executeNextTimer()
-    #expect(schedule.nowPlaying?.id == "spin1")
+    #expect(schedule.nowPlaying()?.id == "spin1")
 
     // At transition (t=30)
     dateProviderMock.setMockDate(mockTime.addingTimeInterval(30))
     testTimerProvider.executeNextTimer()
-    #expect(schedule.nowPlaying?.id == "spin2")
+    #expect(schedule.nowPlaying()?.id == "spin2")
 
     // After all spins (t=70)
     dateProviderMock.setMockDate(mockTime.addingTimeInterval(70))
     testTimerProvider.executeNextTimer()
-    #expect(schedule.nowPlaying == nil)
+    #expect(schedule.nowPlaying() == nil)
   }
 
   @Test("Schedule handles empty spins for nowPlaying")
@@ -459,6 +459,6 @@ struct ScheduleTests {
       spins: []
     )
 
-    #expect(schedule.nowPlaying == nil)
+    #expect(schedule.nowPlaying() == nil)
   }
 }
