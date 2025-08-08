@@ -68,6 +68,10 @@ final public class PlayolaStationPlayer: ObservableObject {
   private let errorReporter = PlayolaErrorReporter.shared
   private var authProvider: PlayolaAuthenticationProvider?
 
+  /// Time offset for playing station from a different point in time
+  /// Negative values play from the past, positive values play from the future
+  private var scheduleOffset: TimeInterval?
+
   // Track active download IDs for potential cancellation
   private var activeDownloadIds: [String: UUID] = [:]
 
@@ -305,10 +309,13 @@ final public class PlayolaStationPlayer: ObservableObject {
       // Log how many spins are in the updated schedule
       os_log(
         "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
-        updatedSchedule.spins.count, updatedSchedule.current().count)
+        updatedSchedule.spins.count,
+        updatedSchedule.current(offsetTimeInterval: scheduleOffset).count)
 
       // Extend the time window to load more upcoming spins (10 minutes instead of 6)
-      let spinsToLoad = updatedSchedule.current().filter { $0.airtime < .now + TimeInterval(600) }
+      let spinsToLoad = updatedSchedule.current(offsetTimeInterval: scheduleOffset).filter {
+        $0.airtime < .now + TimeInterval(600)
+      }
 
       os_log(
         "Loading %d upcoming spins", log: PlayolaStationPlayer.logger, type: .info,
@@ -440,22 +447,28 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 3. Schedules upcoming audio blocks to ensure smooth transitions
   /// 4. Reports the listening session to Playola analytics
   ///
-  /// - Parameter stationId: The unique identifier of the station to play
+  /// - Parameters:
+  ///   - stationId: The unique identifier of the station to play
+  ///   - atDate: Optional date to play from. If provided, the station will play as if it were that date/time.
+  ///             For example, passing a date 1 hour ago will play the station from 1 hour ago.
   /// - Throws: `StationPlayerError` if playback cannot be started due to:
   ///   - Network errors when fetching the schedule
   ///   - Invalid station ID
   ///   - Missing audio content in the schedule
   ///   - File download failures
-  public func play(stationId: String) async throws {
+  public func play(stationId: String, atDate: Date? = nil) async throws {
     // Cancel any existing play task
     playTask?.cancel()
+
+    // Calculate schedule offset if atDate is provided
+    self.scheduleOffset = atDate?.timeIntervalSinceNow
 
     self.stationId = stationId
 
     // Get the schedule
     self.currentSchedule = try await getUpdatedSchedule(stationId: stationId)
 
-    guard let spinToPlay = currentSchedule?.current().first else {
+    guard let spinToPlay = currentSchedule?.current(offsetTimeInterval: scheduleOffset).first else {
       let error = StationPlayerError.scheduleError("No available spins to play")
       Task {
         await errorReporter.reportError(
