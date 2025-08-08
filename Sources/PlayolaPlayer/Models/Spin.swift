@@ -6,7 +6,7 @@
 //
 import Foundation
 
-public struct Fade: Codable, Sendable {
+public struct Fade: Codable, Sendable, Equatable {
   public let atMS: Int
   public let toVolume: Float
 
@@ -88,6 +88,30 @@ public struct Spin: Codable, Sendable {
   /// Whether this spin is currently playing, based on current time compared to airtime and endtime
   public var isPlaying: Bool {
     return airtime <= dateProvider.now() && dateProvider.now() <= endtime
+  }
+
+  /// Creates a new Spin with the airtime adjusted by the given offset.
+  /// All other properties remain unchanged from the original spin.
+  ///
+  /// - Parameter offset: The time interval to add to the airtime (positive for future, negative for past)
+  /// - Returns: A new Spin instance with adjusted airtime
+  public func withOffset(_ offset: TimeInterval) -> Spin {
+    var newSpin = Spin(
+      id: id,
+      stationId: stationId,
+      airtime: airtime.addingTimeInterval(offset),
+      startingVolume: startingVolume,
+      createdAt: createdAt,
+      updatedAt: updatedAt,
+      audioBlock: audioBlock,
+      fades: fades,
+      relatedTexts: relatedTexts
+    )
+
+    // Preserve the dateProvider
+    newSpin.dateProvider = dateProvider
+
+    return newSpin
   }
 
   private enum CodingKeys: String, CodingKey {

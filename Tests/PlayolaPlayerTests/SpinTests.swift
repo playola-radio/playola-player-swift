@@ -418,4 +418,204 @@ struct SpinTests {
     #expect(spin.id == "948fb1e9-6f86-473b-ab04-725b4de63dc4")
     #expect(spin.relatedTexts == nil)
   }
+
+  // MARK: - withOffset Tests
+
+  @Test("withOffset creates new spin with positive offset")
+  func testWithOffset_positiveOffset() throws {
+    let originalAirtime = Date()
+    let offset: TimeInterval = 300  // 5 minutes forward
+
+    let originalSpin = Spin.mockWith(
+      airtime: originalAirtime,
+      dateProvider: dateProviderMock
+    )
+
+    let offsetSpin = originalSpin.withOffset(offset)
+
+    // Verify new spin has adjusted airtime
+    #expect(offsetSpin.airtime == originalAirtime.addingTimeInterval(offset))
+
+    // Verify all other properties remain unchanged
+    #expect(offsetSpin.id == originalSpin.id)
+    #expect(offsetSpin.stationId == originalSpin.stationId)
+    #expect(offsetSpin.startingVolume == originalSpin.startingVolume)
+    #expect(offsetSpin.createdAt == originalSpin.createdAt)
+    #expect(offsetSpin.updatedAt == originalSpin.updatedAt)
+    #expect(offsetSpin.audioBlock == originalSpin.audioBlock)
+    #expect(offsetSpin.fades == originalSpin.fades)
+    #expect(offsetSpin.relatedTexts == originalSpin.relatedTexts)
+
+    // Verify original spin is unchanged (immutability)
+    #expect(originalSpin.airtime == originalAirtime)
+  }
+
+  @Test("withOffset creates new spin with negative offset")
+  func testWithOffset_negativeOffset() throws {
+    let originalAirtime = Date()
+    let offset: TimeInterval = -600  // 10 minutes backward
+
+    let originalSpin = Spin.mockWith(
+      airtime: originalAirtime,
+      dateProvider: dateProviderMock
+    )
+
+    let offsetSpin = originalSpin.withOffset(offset)
+
+    // Verify new spin has adjusted airtime
+    #expect(offsetSpin.airtime == originalAirtime.addingTimeInterval(offset))
+
+    // Verify endtime is also adjusted correctly
+    let expectedEndtime =
+      offsetSpin.airtime + TimeInterval(Double(offsetSpin.audioBlock.endOfMessageMS) / 1000.0)
+    #expect(offsetSpin.endtime == expectedEndtime)
+  }
+
+  @Test("withOffset with zero offset returns identical spin")
+  func testWithOffset_zeroOffset() throws {
+    let originalSpin = Spin.mockWith(dateProvider: dateProviderMock)
+
+    let offsetSpin = originalSpin.withOffset(0)
+
+    // All properties should be identical
+    #expect(offsetSpin.airtime == originalSpin.airtime)
+    #expect(offsetSpin.id == originalSpin.id)
+    #expect(offsetSpin.stationId == originalSpin.stationId)
+    #expect(offsetSpin.startingVolume == originalSpin.startingVolume)
+    #expect(offsetSpin.createdAt == originalSpin.createdAt)
+    #expect(offsetSpin.updatedAt == originalSpin.updatedAt)
+    #expect(offsetSpin.audioBlock == originalSpin.audioBlock)
+    #expect(offsetSpin.fades == originalSpin.fades)
+    #expect(offsetSpin.relatedTexts == originalSpin.relatedTexts)
+  }
+
+  @Test("withOffset preserves dateProvider")
+  func testWithOffset_preservesDateProvider() throws {
+    let testDate = Date()
+    let customDateProvider = DateProviderMock(mockDate: testDate)
+    let originalSpin = Spin.mockWith(dateProvider: customDateProvider)
+
+    let offsetSpin = originalSpin.withOffset(300)
+
+    // Verify dateProvider is preserved by checking it returns the same mock date
+    #expect(offsetSpin.dateProvider.now() == testDate)
+
+    // Update the mock date to verify it's the same instance
+    let newTestDate = testDate.addingTimeInterval(1000)
+    customDateProvider.setMockDate(newTestDate)
+    #expect(offsetSpin.dateProvider.now() == newTestDate)
+  }
+
+  @Test("withOffset affects isPlaying calculation correctly")
+  func testWithOffset_affectsIsPlaying() throws {
+    let now = Date()
+    dateProviderMock.setMockDate(now)
+
+    // Create a spin that is currently playing
+    let playingSpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(-5),  // Started 5 seconds ago
+      dateProvider: dateProviderMock
+    )
+
+    #expect(playingSpin.isPlaying == true)
+
+    // Offset it to the future (should no longer be playing)
+    let futureOffsetSpin = playingSpin.withOffset(60)  // Move 60 seconds forward
+    #expect(futureOffsetSpin.isPlaying == false)
+
+    // Offset it to the past (should have already finished)
+    let audioBlock = AudioBlock.mockWith(durationMS: 10000)  // 10 second duration
+    let shortSpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(-5),
+      audioBlock: audioBlock,
+      dateProvider: dateProviderMock
+    )
+
+    let pastOffsetSpin = shortSpin.withOffset(-60)  // Move 60 seconds backward
+    #expect(pastOffsetSpin.isPlaying == false)
+  }
+
+  @Test("withOffset with very large offsets")
+  func testWithOffset_largeOffsets() throws {
+    let originalAirtime = Date()
+    let originalSpin = Spin.mockWith(
+      airtime: originalAirtime,
+      dateProvider: dateProviderMock
+    )
+
+    // Test with large positive offset (1 year forward)
+    let yearForward: TimeInterval = 365 * 24 * 60 * 60
+    let yearForwardSpin = originalSpin.withOffset(yearForward)
+    #expect(yearForwardSpin.airtime == originalAirtime.addingTimeInterval(yearForward))
+
+    // Test with large negative offset (1 month backward)
+    let monthBackward: TimeInterval = -30 * 24 * 60 * 60
+    let monthBackwardSpin = originalSpin.withOffset(monthBackward)
+    #expect(monthBackwardSpin.airtime == originalAirtime.addingTimeInterval(monthBackward))
+  }
+
+  @Test("withOffset preserves complex fades array")
+  func testWithOffset_preservesFades() throws {
+    let complexFades = [
+      Fade(atMS: 1000, toVolume: 0.8),
+      Fade(atMS: 5000, toVolume: 0.5),
+      Fade(atMS: 10000, toVolume: 0.2),
+      Fade(atMS: 15000, toVolume: 0.0),
+    ]
+
+    let originalSpin = Spin.mockWith(
+      fades: complexFades,
+      dateProvider: dateProviderMock
+    )
+
+    let offsetSpin = originalSpin.withOffset(300)
+
+    // Verify fades array is preserved exactly
+    #expect(offsetSpin.fades.count == complexFades.count)
+    for (index, fade) in offsetSpin.fades.enumerated() {
+      #expect(fade.atMS == complexFades[index].atMS)
+      #expect(fade.toVolume == complexFades[index].toVolume)
+    }
+  }
+
+  @Test("withOffset preserves relatedTexts")
+  func testWithOffset_preservesRelatedTexts() throws {
+    let relatedTexts = [
+      RelatedText(title: "Story 1", body: "This is the first story"),
+      RelatedText(title: "Story 2", body: "This is the second story"),
+    ]
+
+    let originalSpin = Spin.mockWith(
+      relatedTexts: relatedTexts,
+      dateProvider: dateProviderMock
+    )
+
+    let offsetSpin = originalSpin.withOffset(-3600)  // 1 hour backward
+
+    // Verify relatedTexts are preserved
+    #expect(offsetSpin.relatedTexts?.count == relatedTexts.count)
+    #expect(offsetSpin.relatedTexts?[0].title == "Story 1")
+    #expect(offsetSpin.relatedTexts?[0].body == "This is the first story")
+    #expect(offsetSpin.relatedTexts?[1].title == "Story 2")
+    #expect(offsetSpin.relatedTexts?[1].body == "This is the second story")
+  }
+
+  @Test("withOffset chain multiple offsets")
+  func testWithOffset_chainMultipleOffsets() throws {
+    let originalAirtime = Date()
+    let originalSpin = Spin.mockWith(
+      airtime: originalAirtime,
+      dateProvider: dateProviderMock
+    )
+
+    // Chain multiple offsets
+    let finalSpin =
+      originalSpin
+      .withOffset(300)  // +5 minutes
+      .withOffset(-100)  // -100 seconds
+      .withOffset(50)  // +50 seconds
+
+    let totalOffset: TimeInterval = 300 - 100 + 50
+    #expect(finalSpin.airtime == originalAirtime.addingTimeInterval(totalOffset))
+  }
 }
