@@ -608,7 +608,6 @@ final public class PlayolaStationPlayer: ObservableObject {
   #endif
 
   deinit {
-    // Ensure all resources are properly cleaned up
     fileDownloadManager.cancelAllDownloads()
   }
 }
@@ -645,7 +644,6 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
     atTime time: TimeInterval,
     withBuffer buffer: AVAudioPCMBuffer
   ) {
-    // No error handling needed here
   }
 
   public func player(_ player: SpinPlayer, didChangeState state: SpinPlayer.State) {
