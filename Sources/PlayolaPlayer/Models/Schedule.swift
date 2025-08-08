@@ -51,7 +51,7 @@ public struct Schedule: Sendable {
 
   private func adjustedSpins(offsetTimeInterval: TimeInterval? = nil) -> [Spin] {
     guard let offsetTimeInterval else { return spins }
-    return spins.map { $0.withOffset(offsetTimeInterval) }
+    return spins.map { $0.withOffset(-offsetTimeInterval) }
   }
 }
 
