@@ -400,80 +400,101 @@ public class SpinPlayer {
     self.spin = spin
 
     guard let audioFileUrl = spin.audioBlock.downloadUrl else {
-      let error = NSError(
-        domain: "fm.playola.PlayolaPlayer",
-        code: 400,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
-          "spinId": spin.id,
-          "audioBlockId": spin.audioBlock.id,
-          "audioBlockTitle": spin.audioBlock.title,
-        ]
-      )
-      Task {
-        await errorReporter.reportError(
-          error,
-          context: "Missing download URL",
-          level: .error
-        )
-      }
-      self.state = .available
-      return .failure(error)
+      return .failure(await handleMissingDownloadUrl(for: spin))
     }
 
-    // Cancel any existing download
-    if let activeDownloadId = activeDownloadId {
-      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
-      self.activeDownloadId = nil
-    }
+    cancelActiveDownload()
 
     return await withCheckedContinuation { continuation in
       self.activeDownloadId = fileDownloadManager.downloadFile(
         remoteUrl: audioFileUrl,
         progressHandler: onDownloadProgress ?? { _ in },
         completion: { [weak self] result in
-          guard let self = self else {
-            continuation.resume(
-              returning: .failure(FileDownloadError.downloadCancelled)
-            )
-            return
-          }
-
-          switch result {
-          case .success(let localUrl):
-            Task { @MainActor in
-              await self.loadFile(with: localUrl)
-
-              if spin.isPlaying {
-                let currentTimeInSeconds = Date().timeIntervalSince(
-                  spin.airtime
-                )
-                self.playNow(from: currentTimeInSeconds)
-                self.volume = 1.0
-              } else {
-                self.schedulePlay(at: spin.airtime)
-                self.volume = spin.startingVolume
-              }
-
-              self.scheduleFades(spin)
-              self.state = .loaded
-              continuation.resume(returning: .success(localUrl))
-            }
-
-          case .failure(let error):
-            Task { @MainActor in
-              await self.errorReporter.reportError(
-                error,
-                context: "Download failed",
-                level: .error
-              )
-            }
-            self.state = .available
-            continuation.resume(returning: .failure(error))
-          }
+          self?.handleDownloadCompletion(result: result, spin: spin, continuation: continuation)
         }
       )
     }
+  }
+
+  private func handleMissingDownloadUrl(for spin: Spin) async -> Error {
+    let error = NSError(
+      domain: "fm.playola.PlayolaPlayer",
+      code: 400,
+      userInfo: [
+        NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
+        "spinId": spin.id,
+        "audioBlockId": spin.audioBlock.id,
+        "audioBlockTitle": spin.audioBlock.title,
+      ]
+    )
+    Task {
+      await errorReporter.reportError(
+        error,
+        context: "Missing download URL",
+        level: .error
+      )
+    }
+    self.state = .available
+    return error
+  }
+
+  private func cancelActiveDownload() {
+    if let activeDownloadId = activeDownloadId {
+      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
+      self.activeDownloadId = nil
+    }
+  }
+
+  private func handleDownloadCompletion(
+    result: Result<URL, FileDownloadError>,
+    spin: Spin,
+    continuation: CheckedContinuation<Result<URL, Error>, Never>
+  ) {
+
+    switch result {
+    case .success(let localUrl):
+      handleSuccessfulDownload(localUrl: localUrl, spin: spin, continuation: continuation)
+    case .failure(let error):
+      handleFailedDownload(error: error, continuation: continuation)
+    }
+  }
+
+  private func handleSuccessfulDownload(
+    localUrl: URL,
+    spin: Spin,
+    continuation: CheckedContinuation<Result<URL, Error>, Never>
+  ) {
+    Task { @MainActor in
+      await self.loadFile(with: localUrl)
+
+      if spin.isPlaying {
+        let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+        self.playNow(from: currentTimeInSeconds)
+        self.volume = 1.0
+      } else {
+        self.schedulePlay(at: spin.airtime)
+        self.volume = spin.startingVolume
+      }
+
+      self.scheduleFades(spin)
+      self.state = .loaded
+      continuation.resume(returning: .success(localUrl))
+    }
+  }
+
+  private func handleFailedDownload(
+    error: FileDownloadError,
+    continuation: CheckedContinuation<Result<URL, Error>, Never>
+  ) {
+    Task { @MainActor in
+      await self.errorReporter.reportError(
+        error,
+        context: "Download failed",
+        level: .error
+      )
+    }
+    self.state = .available
+    continuation.resume(returning: .failure(error))
   }
 
   private func avAudioTimeFromDate(date: Date) -> AVAudioTime {

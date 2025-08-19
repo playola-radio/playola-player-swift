@@ -9,6 +9,12 @@ import Testing
 
 @testable import PlayolaPlayer
 
+private struct TestSpins {
+  let pastSpin: Spin
+  let currentSpin: Spin
+  let futureSpin: Spin
+}
+
 struct ScheduleTests {
 
   @Test("Schedule initializes with correct properties")
@@ -93,62 +99,68 @@ struct ScheduleTests {
 
   @Test("Schedule.nowPlaying returns the currently playing spin")
   func testNowPlayingProperty() throws {
-    // Create a date provider with a fixed mock time
     let mockTime = Date()
     let dateProviderMock = DateProviderMock(mockDate: mockTime)
 
-    // Create test spins with different playing status
+    let testSpins = createTestSpinsForNowPlayingTest(
+      mockTime: mockTime, dateProviderMock: dateProviderMock)
+    verifySpinPlayingStates(testSpins: testSpins)
 
-    // Spin that has already finished
-    let pastSpin = Spin.mockWith(
-      id: "past-spin",
-      airtime: mockTime.addingTimeInterval(-60),  // 60 seconds ago
-      audioBlock: AudioBlock.mockWith(
-        durationMS: 30000,  // 30 seconds duration
-        endOfMessageMS: 30000  // Important: endOfMessageMS is used for endtime calculation
-      ),
-      dateProvider: dateProviderMock
-    )
-
-    // Spin that is currently playing
-    let currentSpin = Spin.mockWith(
-      id: "current-spin",
-      airtime: mockTime.addingTimeInterval(-15),  // 15 seconds ago
-      audioBlock: AudioBlock.mockWith(
-        durationMS: 30000,  // 30 seconds duration
-        endOfMessageMS: 30000  // Important: endOfMessageMS is used for endtime calculation
-      ),
-      dateProvider: dateProviderMock
-    )
-
-    // Future spin that hasn't started yet
-    let futureSpin = Spin.mockWith(
-      id: "future-spin",
-      airtime: mockTime.addingTimeInterval(30),  // 30 seconds from now
-      audioBlock: AudioBlock.mockWith(
-        durationMS: 30000,  // 30 seconds duration
-        endOfMessageMS: 30000  // Important: endOfMessageMS is used for endtime calculation
-      ),
-      dateProvider: dateProviderMock
-    )
-
-    // First verify our test assumptions
-    #expect(!pastSpin.isPlaying)  // Past spin should not be playing
-    #expect(currentSpin.isPlaying)  // Current spin should be playing
-    #expect(!futureSpin.isPlaying)  // Future spin should not be playing yet
-
-    // Create a schedule with all three spins
     let schedule = Schedule(
       stationId: "test-station",
-      spins: [pastSpin, currentSpin, futureSpin],
+      spins: [testSpins.pastSpin, testSpins.currentSpin, testSpins.futureSpin],
       dateProvider: dateProviderMock
     )
 
     // nowPlaying should be the currently playing spin
     #expect(schedule.nowPlaying()?.id == "current-spin")
 
-    // Test with multiple concurrent playing spins
-    // Create two overlapping playing spins
+    testOverlappingSpins(mockTime: mockTime, dateProviderMock: dateProviderMock)
+  }
+
+  private func createTestSpinsForNowPlayingTest(mockTime: Date, dateProviderMock: DateProviderMock)
+    -> TestSpins
+  {
+    let pastSpin = Spin.mockWith(
+      id: "past-spin",
+      airtime: mockTime.addingTimeInterval(-60),  // 60 seconds ago
+      audioBlock: AudioBlock.mockWith(
+        durationMS: 30000,  // 30 seconds duration
+        endOfMessageMS: 30000
+      ),
+      dateProvider: dateProviderMock
+    )
+
+    let currentSpin = Spin.mockWith(
+      id: "current-spin",
+      airtime: mockTime.addingTimeInterval(-15),  // 15 seconds ago
+      audioBlock: AudioBlock.mockWith(
+        durationMS: 30000,  // 30 seconds duration
+        endOfMessageMS: 30000
+      ),
+      dateProvider: dateProviderMock
+    )
+
+    let futureSpin = Spin.mockWith(
+      id: "future-spin",
+      airtime: mockTime.addingTimeInterval(30),  // 30 seconds from now
+      audioBlock: AudioBlock.mockWith(
+        durationMS: 30000,  // 30 seconds duration
+        endOfMessageMS: 30000
+      ),
+      dateProvider: dateProviderMock
+    )
+
+    return TestSpins(pastSpin: pastSpin, currentSpin: currentSpin, futureSpin: futureSpin)
+  }
+
+  private func verifySpinPlayingStates(testSpins: TestSpins) {
+    #expect(!testSpins.pastSpin.isPlaying)  // Past spin should not be playing
+    #expect(testSpins.currentSpin.isPlaying)  // Current spin should be playing
+    #expect(!testSpins.futureSpin.isPlaying)  // Future spin should not be playing yet
+  }
+
+  private func testOverlappingSpins(mockTime: Date, dateProviderMock: DateProviderMock) {
     let playingSpin1 = Spin.mockWith(
       id: "playing-1",
       airtime: mockTime.addingTimeInterval(-20),  // 20 seconds ago
@@ -282,77 +294,56 @@ struct ScheduleTests {
 
   @Test("Schedule behavior when no spins are currently playing")
   func testNoCurrentlyPlayingSpins() throws {
-    // Create a date provider with a fixed mock time
     let mockTime = Date()
     let dateProviderMock = DateProviderMock(mockDate: mockTime)
 
-    // Create only future spins
+    let futureSchedule = createFutureSpinsSchedule(
+      mockTime: mockTime, dateProvider: dateProviderMock)
+    #expect(futureSchedule.current().count == 2)
+    #expect(futureSchedule.nowPlaying() == nil)
+
+    let pastSchedule = createPastSpinsSchedule(mockTime: mockTime, dateProvider: dateProviderMock)
+    #expect(pastSchedule.current().isEmpty)
+    #expect(pastSchedule.nowPlaying() == nil)
+  }
+
+  private func createFutureSpinsSchedule(mockTime: Date, dateProvider: DateProviderMock) -> Schedule
+  {
     let futureSpin1 = Spin.mockWith(
       id: "future-1",
-      airtime: mockTime.addingTimeInterval(30),  // 30 seconds from now
-      audioBlock: AudioBlock.mockWith(
-        durationMS: 30000,  // 30 seconds duration
-        endOfMessageMS: 30000  // Important: endOfMessageMS is used for endtime calculation
-      ),
-      dateProvider: dateProviderMock
+      airtime: mockTime.addingTimeInterval(30),
+      audioBlock: AudioBlock.mockWith(durationMS: 30000, endOfMessageMS: 30000),
+      dateProvider: dateProvider
     )
 
     let futureSpin2 = Spin.mockWith(
       id: "future-2",
-      airtime: mockTime.addingTimeInterval(60),  // 60 seconds from now
-      audioBlock: AudioBlock.mockWith(
-        durationMS: 30000,  // 30 seconds duration
-        endOfMessageMS: 30000  // Important: endOfMessageMS is used for endtime calculation
-      ),
-      dateProvider: dateProviderMock
+      airtime: mockTime.addingTimeInterval(60),
+      audioBlock: AudioBlock.mockWith(durationMS: 30000, endOfMessageMS: 30000),
+      dateProvider: dateProvider
     )
 
-    // Create a schedule with only future spins
-    let futureSchedule = Schedule(
-      stationId: "test-station",
-      spins: [futureSpin1, futureSpin2],
-      dateProvider: dateProviderMock
-    )
+    return Schedule(
+      stationId: "test-station", spins: [futureSpin1, futureSpin2], dateProvider: dateProvider)
+  }
 
-    // Current should contain both future spins
-    #expect(futureSchedule.current().count == 2)
-
-    // nowPlaying should be nil since no spins are currently playing
-    #expect(futureSchedule.nowPlaying() == nil)
-
-    // Create only past spins
+  private func createPastSpinsSchedule(mockTime: Date, dateProvider: DateProviderMock) -> Schedule {
     let pastSpin1 = Spin.mockWith(
       id: "past-1",
-      airtime: mockTime.addingTimeInterval(-60),  // 60 seconds ago
-      audioBlock: AudioBlock.mockWith(
-        durationMS: 30000,  // 30 seconds duration
-        endOfMessageMS: 30000  // Important: endOfMessageMS is used for endtime calculation
-      ),
-      dateProvider: dateProviderMock
+      airtime: mockTime.addingTimeInterval(-60),
+      audioBlock: AudioBlock.mockWith(durationMS: 30000, endOfMessageMS: 30000),
+      dateProvider: dateProvider
     )
 
     let pastSpin2 = Spin.mockWith(
       id: "past-2",
-      airtime: mockTime.addingTimeInterval(-40),  // 40 seconds ago
-      audioBlock: AudioBlock.mockWith(
-        durationMS: 30000,  // 30 seconds duration
-        endOfMessageMS: 30000  // Important: endOfMessageMS is used for endtime calculation
-      ),
-      dateProvider: dateProviderMock
+      airtime: mockTime.addingTimeInterval(-40),
+      audioBlock: AudioBlock.mockWith(durationMS: 30000, endOfMessageMS: 30000),
+      dateProvider: dateProvider
     )
 
-    // Create a schedule with only past spins
-    let pastSchedule = Schedule(
-      stationId: "test-station",
-      spins: [pastSpin1, pastSpin2],
-      dateProvider: dateProviderMock
-    )
-
-    // Current should contain spins that haven't ended yet
-    #expect(pastSchedule.current().isEmpty)
-
-    // nowPlaying should be nil when no spins are playing
-    #expect(pastSchedule.nowPlaying() == nil)
+    return Schedule(
+      stationId: "test-station", spins: [pastSpin1, pastSpin2], dateProvider: dateProvider)
   }
 
   @Test("Schedule updates nowPlaying when spins change status")
