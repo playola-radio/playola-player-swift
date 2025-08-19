@@ -32,7 +32,8 @@ public class SpinPlayer {
   }
   private static let logger = OSLog(
     subsystem: "fm.playola.playolaCore",
-    category: "Player")
+    category: "Player"
+  )
 
   public var id: UUID = UUID()
   public var spin: Spin? {
@@ -156,7 +157,8 @@ public class SpinPlayer {
     delegate: SpinPlayerDelegate? = nil,
     fileDownloadManager: FileDownloadManaging? = nil
   ) {
-    self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
+    self.fileDownloadManager =
+      fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.delegate = delegate
 
     // Use the centralized audio session management instead of configuring here
@@ -167,7 +169,8 @@ public class SpinPlayer {
     engine.connect(
       playerNode,
       to: playolaMainMixer.mixerNode,
-      format: TapProperties.default.format)
+      format: TapProperties.default.format
+    )
     engine.prepare()
   }
 
@@ -186,7 +189,8 @@ public class SpinPlayer {
       log: SpinPlayer.logger,
       type: .info,
       self.id.uuidString,
-      self.spin?.id ?? "nil")
+      self.spin?.id ?? "nil"
+    )
 
     // Cancel any active download
     if let activeDownloadId = activeDownloadId {
@@ -195,7 +199,8 @@ public class SpinPlayer {
         log: SpinPlayer.logger,
         type: .info,
         activeDownloadId.uuidString,
-        self.spin?.id ?? "nil")
+        self.spin?.id ?? "nil"
+      )
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
       self.activeDownloadId = nil
     }
@@ -212,7 +217,10 @@ public class SpinPlayer {
       } catch {
         Task {
           await errorReporter.reportError(
-            error, context: "Failed to start engine during stop operation", level: .error)
+            error,
+            context: "Failed to start engine during stop operation",
+            level: .error
+          )
         }
         return
       }
@@ -226,7 +234,8 @@ public class SpinPlayer {
       "Clearing SpinPlayer - ID: %@",
       log: SpinPlayer.logger,
       type: .debug,
-      self.id.uuidString)
+      self.id.uuidString
+    )
 
     stopAudio()
     clearTimers()
@@ -243,14 +252,16 @@ public class SpinPlayer {
       "Clearing timers for SpinPlayer - ID: %@",
       log: SpinPlayer.logger,
       type: .debug,
-      self.id.uuidString)
+      self.id.uuidString
+    )
 
     // Invalidate and clear start notification timer atomically
     if let timer = startNotificationTimer {
       os_log(
         "Invalidating start notification timer",
         log: SpinPlayer.logger,
-        type: .debug)
+        type: .debug
+      )
       timer.invalidate()
       startNotificationTimer = nil
     }
@@ -260,7 +271,8 @@ public class SpinPlayer {
       os_log(
         "Invalidating clear timer",
         log: SpinPlayer.logger,
-        type: .debug)
+        type: .debug
+      )
       timer.invalidate()
       clearTimer = nil
     }
@@ -271,7 +283,8 @@ public class SpinPlayer {
         "Invalidating %d fade timers",
         log: SpinPlayer.logger,
         type: .debug,
-        fadeTimers.count)
+        fadeTimers.count
+      )
       let timersToInvalidate = fadeTimers
       fadeTimers.removeAll()
       timersToInvalidate.forEach { $0.invalidate() }
@@ -304,7 +317,12 @@ public class SpinPlayer {
   /// If this method is called on a spin that is not loaded, playback will not start.
   public func playNow(from: Double, to: Double? = nil) {
     do {
-      os_log("Starting playback from position %f", log: SpinPlayer.logger, type: .info, from)
+      os_log(
+        "Starting playback from position %f",
+        log: SpinPlayer.logger,
+        type: .info,
+        from
+      )
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
       try engine.start()
@@ -314,7 +332,8 @@ public class SpinPlayer {
         os_log(
           "Cannot play - audio file was cleared (likely by stop())",
           log: SpinPlayer.logger,
-          type: .info)
+          type: .info
+        )
         self.state = .available
         return
       }
@@ -328,19 +347,30 @@ public class SpinPlayer {
       self.volume = spin?.startingVolume ?? 1.0
       playerNode.stop()
       playerNode.scheduleSegment(
-        audioFile, startingFrame: newSampleTime, frameCount: framesToPlay, at: nil,
-        completionHandler: nil)
+        audioFile,
+        startingFrame: newSampleTime,
+        frameCount: framesToPlay,
+        at: nil,
+        completionHandler: nil
+      )
       playerNode.play()
 
       self.state = .playing
       if let spin {
         delegate?.player(self, startedPlaying: spin)
       }
-      os_log("Successfully started playback", log: SpinPlayer.logger, type: .info)
+      os_log(
+        "Successfully started playback",
+        log: SpinPlayer.logger,
+        type: .info
+      )
     } catch {
       Task {
         await errorReporter.reportError(
-          error, context: "Failed to start playback at position \(from)s", level: .error)
+          error,
+          context: "Failed to start playback at position \(from)s",
+          level: .error
+        )
       }
       self.state = .available
     }
@@ -359,9 +389,11 @@ public class SpinPlayer {
   ///   - onDownloadProgress: Optional callback providing download progress updates (0.0 to 1.0)
   ///
   /// - Returns: A result containing either the local URL of the loaded audio file, or an error
-  public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil) async -> Result<
-    URL, Error
-  > {
+  public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil)
+    async -> Result<
+      URL, Error
+    >
+  {
     os_log("Loading spin: %@", log: SpinPlayer.logger, type: .info, spin.id)
 
     self.state = .loading
@@ -369,15 +401,21 @@ public class SpinPlayer {
 
     guard let audioFileUrl = spin.audioBlock.downloadUrl else {
       let error = NSError(
-        domain: "fm.playola.PlayolaPlayer", code: 400,
+        domain: "fm.playola.PlayolaPlayer",
+        code: 400,
         userInfo: [
           NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
           "spinId": spin.id,
           "audioBlockId": spin.audioBlock.id,
           "audioBlockTitle": spin.audioBlock.title,
-        ])
+        ]
+      )
       Task {
-        await errorReporter.reportError(error, context: "Missing download URL", level: .error)
+        await errorReporter.reportError(
+          error,
+          context: "Missing download URL",
+          level: .error
+        )
       }
       self.state = .available
       return .failure(error)
@@ -395,7 +433,9 @@ public class SpinPlayer {
         progressHandler: onDownloadProgress ?? { _ in },
         completion: { [weak self] result in
           guard let self = self else {
-            continuation.resume(returning: .failure(FileDownloadError.downloadCancelled))
+            continuation.resume(
+              returning: .failure(FileDownloadError.downloadCancelled)
+            )
             return
           }
 
@@ -405,7 +445,9 @@ public class SpinPlayer {
               await self.loadFile(with: localUrl)
 
               if spin.isPlaying {
-                let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+                let currentTimeInSeconds = Date().timeIntervalSince(
+                  spin.airtime
+                )
                 self.playNow(from: currentTimeInSeconds)
                 self.volume = 1.0
               } else {
@@ -420,7 +462,11 @@ public class SpinPlayer {
 
           case .failure(let error):
             Task { @MainActor in
-              await self.errorReporter.reportError(error, context: "Download failed", level: .error)
+              await self.errorReporter.reportError(
+                error,
+                context: "Download failed",
+                level: .error
+              )
             }
             self.state = .available
             continuation.resume(returning: .failure(error))
@@ -435,12 +481,19 @@ public class SpinPlayer {
     guard let lastRenderTime = playerNode.lastRenderTime else {
       // Handle missing render time
       let error = NSError(
-        domain: "fm.playola.PlayolaPlayer", code: 500,
+        domain: "fm.playola.PlayolaPlayer",
+        code: 500,
         userInfo: [
-          NSLocalizedDescriptionKey: "Could not get last render time from player node"
-        ])
+          NSLocalizedDescriptionKey:
+            "Could not get last render time from player node"
+        ]
+      )
       Task {
-        await errorReporter.reportError(error, context: "Missing render time", level: .warning)
+        await errorReporter.reportError(
+          error,
+          context: "Missing render time",
+          level: .warning
+        )
       }
       // Fallback to a reasonable default
       return AVAudioTime(sampleTime: 0, atRate: outputFormat.sampleRate)
@@ -450,7 +503,8 @@ public class SpinPlayer {
     let secsUntilDate = date.timeIntervalSinceNow
     return AVAudioTime(
       sampleTime: now + Int64(secsUntilDate * outputFormat.sampleRate),
-      atRate: outputFormat.sampleRate)
+      atRate: outputFormat.sampleRate
+    )
   }
 
   /// schedule a future play from the beginning of the file
@@ -458,8 +512,11 @@ public class SpinPlayer {
   public func schedulePlay(at scheduledDate: Date) {
     do {
       os_log(
-        "Scheduling play at %@", log: SpinPlayer.logger, type: .info,
-        ISO8601DateFormatter().string(from: scheduledDate))
+        "Scheduling play at %@",
+        log: SpinPlayer.logger,
+        type: .info,
+        ISO8601DateFormatter().string(from: scheduledDate)
+      )
 
       // Make sure audio session is configured before scheduling playback
       playolaMainMixer.configureAudioSession()
@@ -471,13 +528,19 @@ public class SpinPlayer {
       // If the file isn't loaded yet, we need to schedule it
       guard self.currentFile != nil else {
         let error = NSError(
-          domain: "fm.playola.PlayolaPlayer", code: 400,
+          domain: "fm.playola.PlayolaPlayer",
+          code: 400,
           userInfo: [
-            NSLocalizedDescriptionKey: "No audio file loaded when trying to schedule playback"
-          ])
+            NSLocalizedDescriptionKey:
+              "No audio file loaded when trying to schedule playback"
+          ]
+        )
         Task {
           await errorReporter.reportError(
-            error, context: "Missing audio file for scheduled playback", level: .error)
+            error,
+            context: "Missing audio file for scheduled playback",
+            level: .error
+          )
         }
         return
       }
@@ -500,7 +563,11 @@ public class SpinPlayer {
         os_log("⏰ Timer fired", log: SpinPlayer.logger, type: .info)
 
         guard let self = self else {
-          os_log("⚠️ Timer fired but SpinPlayer deallocated", log: SpinPlayer.logger, type: .default)
+          os_log(
+            "⚠️ Timer fired but SpinPlayer deallocated",
+            log: SpinPlayer.logger,
+            type: .default
+          )
           return
         }
 
@@ -511,11 +578,19 @@ public class SpinPlayer {
             let spin = self.spin,
             spin.id == scheduledSpinId
           else {
-            os_log("⚠️ Timer invalid or spin changed", log: SpinPlayer.logger, type: .default)
+            os_log(
+              "⚠️ Timer invalid or spin changed",
+              log: SpinPlayer.logger,
+              type: .default
+            )
             return
           }
 
-          os_log("✅ Timer fired successfully", log: SpinPlayer.logger, type: .info)
+          os_log(
+            "✅ Timer fired successfully",
+            log: SpinPlayer.logger,
+            type: .info
+          )
 
           // Clear the timer reference since it's now invalid
           self.startNotificationTimer = nil
@@ -531,12 +606,16 @@ public class SpinPlayer {
         log: SpinPlayer.logger,
         type: .debug,
         self.spin?.id ?? "nil",
-        ISO8601DateFormatter().string(from: scheduledDate))
+        ISO8601DateFormatter().string(from: scheduledDate)
+      )
 
     } catch {
       Task {
         await errorReporter.reportError(
-          error, context: "Failed to schedule playback", level: .error)
+          error,
+          context: "Failed to schedule playback",
+          level: .error
+        )
       }
     }
   }
@@ -549,7 +628,12 @@ public class SpinPlayer {
   }
 
   public func loadFile(with url: URL) async {
-    os_log("Loading audio file: %@", log: SpinPlayer.logger, type: .info, url.lastPathComponent)
+    os_log(
+      "Loading audio file: %@",
+      log: SpinPlayer.logger,
+      type: .info,
+      url.lastPathComponent
+    )
     do {
       // First check if the file exists and has a reasonable size
       let fileManager = FileManager.default
@@ -560,7 +644,8 @@ public class SpinPlayer {
           await errorReporter.reportError(
             error,
             context: "Audio file not found at path",
-            level: .error)
+            level: .error
+          )
         }
         self.state = .available
         return
@@ -572,12 +657,16 @@ public class SpinPlayer {
 
       // Consider files under 10KB as suspicious (adjust as needed)
       if fileSize < 10 * 1024 {
-        let error = FileDownloadError.downloadFailed("Audio file is too small: \(fileSize) bytes")
+        let error = FileDownloadError.downloadFailed(
+          "Audio file is too small: \(fileSize) bytes"
+        )
         Task {
           await errorReporter.reportError(
             error,
-            context: "Suspiciously small file detected: \(url.lastPathComponent)",
-            level: .error)
+            context:
+              "Suspiciously small file detected: \(url.lastPathComponent)",
+            level: .error
+          )
         }
         // Delete the invalid file
         try? fileManager.removeItem(at: url)
@@ -588,10 +677,15 @@ public class SpinPlayer {
       // Attempt to create the audio file object
       do {
         currentFile = try AVAudioFile(forReading: url)
-        normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
+        normalizationCalculator = await AudioNormalizationCalculator.create(
+          currentFile!
+        )
         os_log(
-          "Successfully loaded audio file: %@", log: SpinPlayer.logger, type: .info,
-          url.lastPathComponent)
+          "Successfully loaded audio file: %@",
+          log: SpinPlayer.logger,
+          type: .info,
+          url.lastPathComponent
+        )
       } catch let audioError as NSError {
         // More detailed context with file information
         let contextInfo =
@@ -604,19 +698,29 @@ public class SpinPlayer {
             Task {
               await errorReporter.reportError(
                 audioError,
-                context: "\(contextInfo) - Invalid audio format or corrupt file",
-                level: .error)
+                context:
+                  "\(contextInfo) - Invalid audio format or corrupt file",
+                level: .error
+              )
             }
             // Delete the corrupt file
             try? fileManager.removeItem(at: url)
           default:
             Task {
-              await errorReporter.reportError(audioError, context: contextInfo, level: .error)
+              await errorReporter.reportError(
+                audioError,
+                context: contextInfo,
+                level: .error
+              )
             }
           }
         } else {
           Task {
-            await errorReporter.reportError(audioError, context: contextInfo, level: .error)
+            await errorReporter.reportError(
+              audioError,
+              context: contextInfo,
+              level: .error
+            )
           }
         }
 
@@ -631,7 +735,11 @@ public class SpinPlayer {
         && !error.localizedDescription.contains("not found")
       {
         Task {
-          await errorReporter.reportError(error, context: "File validation failed", level: .error)
+          await errorReporter.reportError(
+            error,
+            context: "File validation failed",
+            level: .error
+          )
         }
       }
       // State is already set to .available in the inner catch blocks
@@ -664,19 +772,31 @@ public class SpinPlayer {
     activeFades.insert(fadeOperation)
 
     os_log(
-      "Scheduled fade: %.2f→%.2f over %.2fs", log: SpinPlayer.logger, type: .debug, startVolume,
-      endVolume, time)
+      "Scheduled fade: %.2f→%.2f over %.2fs",
+      log: SpinPlayer.logger,
+      type: .debug,
+      startVolume,
+      endVolume,
+      time
+    )
 
     #if os(iOS)
       if activeDisplayLink == nil {
-        activeDisplayLink = CADisplayLink(target: self, selector: #selector(updateFades))
+        activeDisplayLink = CADisplayLink(
+          target: self,
+          selector: #selector(updateFades)
+        )
         activeDisplayLink?.add(to: .current, forMode: .common)
       }
     #else
       if fadeUpdateTimer == nil {
         fadeUpdateTimer = Timer.scheduledTimer(
-          timeInterval: 1.0 / 60.0, target: self, selector: #selector(updateFades), userInfo: nil,
-          repeats: true)
+          timeInterval: 1.0 / 60.0,
+          target: self,
+          selector: #selector(updateFades),
+          userInfo: nil,
+          repeats: true
+        )
       }
     #endif
 
@@ -733,7 +853,9 @@ public class SpinPlayer {
 
   public func scheduleFades(_ spin: Spin) {
     for fade in spin.fades {
-      let fadeTime = spin.airtime.addingTimeInterval(TimeInterval(fade.atMS / 1000))
+      let fadeTime = spin.airtime.addingTimeInterval(
+        TimeInterval(fade.atMS / 1000)
+      )
       let timer = Timer(
         fire: fadeTime,
         interval: 0,
@@ -782,7 +904,8 @@ public class SpinPlayer {
           self.stopAudio()
           self.clear()
         }
-      })
+      }
+    )
     RunLoop.main.add(self.clearTimer!, forMode: .default)
   }
 }

@@ -35,7 +35,9 @@ protocol AudioSessionManaging {
 
       // First deactivate with appropriate options to reset state
       do {
-        print("🔊 Calling session.setActive(false, options: .notifyOthersOnDeactivation)")
+        print(
+          "🔊 Calling session.setActive(false, options: .notifyOthersOnDeactivation)"
+        )
         try session.setActive(false, options: .notifyOthersOnDeactivation)
         print("🔊 Successfully deactivated session")
       } catch {
@@ -43,7 +45,8 @@ protocol AudioSessionManaging {
         // This is not a critical error, just log it
         await errorReporter.reportError(
           error,
-          context: "Non-critical error deactivating audio session before configuration",
+          context:
+            "Non-critical error deactivating audio session before configuration",
           level: .warning
         )
       }
