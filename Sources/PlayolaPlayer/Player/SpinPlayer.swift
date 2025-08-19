@@ -400,80 +400,101 @@ public class SpinPlayer {
     self.spin = spin
 
     guard let audioFileUrl = spin.audioBlock.downloadUrl else {
-      let error = NSError(
-        domain: "fm.playola.PlayolaPlayer",
-        code: 400,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
-          "spinId": spin.id,
-          "audioBlockId": spin.audioBlock.id,
-          "audioBlockTitle": spin.audioBlock.title,
-        ]
-      )
-      Task {
-        await errorReporter.reportError(
-          error,
-          context: "Missing download URL",
-          level: .error
-        )
-      }
-      self.state = .available
-      return .failure(error)
+      return .failure(await handleMissingDownloadUrl(for: spin))
     }
 
-    // Cancel any existing download
-    if let activeDownloadId = activeDownloadId {
-      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
-      self.activeDownloadId = nil
-    }
+    cancelActiveDownload()
 
     return await withCheckedContinuation { continuation in
       self.activeDownloadId = fileDownloadManager.downloadFile(
         remoteUrl: audioFileUrl,
         progressHandler: onDownloadProgress ?? { _ in },
         completion: { [weak self] result in
-          guard let self = self else {
-            continuation.resume(
-              returning: .failure(FileDownloadError.downloadCancelled)
-            )
-            return
-          }
-
-          switch result {
-          case .success(let localUrl):
-            Task { @MainActor in
-              await self.loadFile(with: localUrl)
-
-              if spin.isPlaying {
-                let currentTimeInSeconds = Date().timeIntervalSince(
-                  spin.airtime
-                )
-                self.playNow(from: currentTimeInSeconds)
-                self.volume = 1.0
-              } else {
-                self.schedulePlay(at: spin.airtime)
-                self.volume = spin.startingVolume
-              }
-
-              self.scheduleFades(spin)
-              self.state = .loaded
-              continuation.resume(returning: .success(localUrl))
-            }
-
-          case .failure(let error):
-            Task { @MainActor in
-              await self.errorReporter.reportError(
-                error,
-                context: "Download failed",
-                level: .error
-              )
-            }
-            self.state = .available
-            continuation.resume(returning: .failure(error))
-          }
+          self?.handleDownloadCompletion(result: result, spin: spin, continuation: continuation)
         }
       )
     }
+  }
+
+  private func handleMissingDownloadUrl(for spin: Spin) async -> Error {
+    let error = NSError(
+      domain: "fm.playola.PlayolaPlayer",
+      code: 400,
+      userInfo: [
+        NSLocalizedDescriptionKey: "Invalid audio file URL in spin",
+        "spinId": spin.id,
+        "audioBlockId": spin.audioBlock.id,
+        "audioBlockTitle": spin.audioBlock.title,
+      ]
+    )
+    Task {
+      await errorReporter.reportError(
+        error,
+        context: "Missing download URL",
+        level: .error
+      )
+    }
+    self.state = .available
+    return error
+  }
+
+  private func cancelActiveDownload() {
+    if let activeDownloadId = activeDownloadId {
+      _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
+      self.activeDownloadId = nil
+    }
+  }
+
+  private func handleDownloadCompletion(
+    result: Result<URL, FileDownloadError>,
+    spin: Spin,
+    continuation: CheckedContinuation<Result<URL, Error>, Never>
+  ) {
+
+    switch result {
+    case .success(let localUrl):
+      handleSuccessfulDownload(localUrl: localUrl, spin: spin, continuation: continuation)
+    case .failure(let error):
+      handleFailedDownload(error: error, continuation: continuation)
+    }
+  }
+
+  private func handleSuccessfulDownload(
+    localUrl: URL,
+    spin: Spin,
+    continuation: CheckedContinuation<Result<URL, Error>, Never>
+  ) {
+    Task { @MainActor in
+      await self.loadFile(with: localUrl)
+
+      if spin.isPlaying {
+        let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
+        self.playNow(from: currentTimeInSeconds)
+        self.volume = 1.0
+      } else {
+        self.schedulePlay(at: spin.airtime)
+        self.volume = spin.startingVolume
+      }
+
+      self.scheduleFades(spin)
+      self.state = .loaded
+      continuation.resume(returning: .success(localUrl))
+    }
+  }
+
+  private func handleFailedDownload(
+    error: FileDownloadError,
+    continuation: CheckedContinuation<Result<URL, Error>, Never>
+  ) {
+    Task { @MainActor in
+      await self.errorReporter.reportError(
+        error,
+        context: "Download failed",
+        level: .error
+      )
+    }
+    self.state = .available
+    continuation.resume(returning: .failure(error))
   }
 
   private func avAudioTimeFromDate(date: Date) -> AVAudioTime {
@@ -511,112 +532,117 @@ public class SpinPlayer {
   /// Schedule playback to start at a specific time
   public func schedulePlay(at scheduledDate: Date) {
     do {
-      os_log(
-        "Scheduling play at %@",
-        log: SpinPlayer.logger,
-        type: .info,
-        ISO8601DateFormatter().string(from: scheduledDate)
-      )
+      try prepareAudioEngine(scheduledDate: scheduledDate)
+      try validateAudioFile()
 
-      // Make sure audio session is configured before scheduling playback
-      playolaMainMixer.configureAudioSession()
-      try engine.start()
-
-      // Convert the target date to AVAudioTime
       let avAudiotime = avAudioTimeFromDate(date: scheduledDate)
-
-      // If the file isn't loaded yet, we need to schedule it
-      guard self.currentFile != nil else {
-        let error = NSError(
-          domain: "fm.playola.PlayolaPlayer",
-          code: 400,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "No audio file loaded when trying to schedule playback"
-          ]
-        )
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "Missing audio file for scheduled playback",
-            level: .error
-          )
-        }
-        return
-      }
-
-      // For safety, capture the current spin ID to verify it later
       let scheduledSpinId = spin?.id
 
-      // Simply use play(at:) which is the most reliable method
       playerNode.play(at: avAudiotime)
+      setupNotificationTimer(scheduledDate: scheduledDate, scheduledSpinId: scheduledSpinId)
 
-      // Use timer for status notification with improved invalidation
-      self.startNotificationTimer = Timer(
-        fire: scheduledDate,
-        interval: 0,
-        repeats: false
-      ) { [weak self] timer in
-        // Always invalidate timer first to prevent double execution
-        timer.invalidate()
-
-        os_log("⏰ Timer fired", log: SpinPlayer.logger, type: .info)
-
-        guard let self = self else {
-          os_log(
-            "⚠️ Timer fired but SpinPlayer deallocated",
-            log: SpinPlayer.logger,
-            type: .default
-          )
-          return
-        }
-
-        // Ensure we're on main actor for state checks
-        Task { @MainActor in
-          // Validate timer is still active and spin hasn't changed
-          guard self.startNotificationTimer === timer,
-            let spin = self.spin,
-            spin.id == scheduledSpinId
-          else {
-            os_log(
-              "⚠️ Timer invalid or spin changed",
-              log: SpinPlayer.logger,
-              type: .default
-            )
-            return
-          }
-
-          os_log(
-            "✅ Timer fired successfully",
-            log: SpinPlayer.logger,
-            type: .info
-          )
-
-          // Clear the timer reference since it's now invalid
-          self.startNotificationTimer = nil
-
-          self.state = .playing
-          self.delegate?.player(self, startedPlaying: spin)
-        }
-      }
-
-      RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
-      os_log(
-        "Added timer to RunLoop for spin: %@ scheduled at %@",
-        log: SpinPlayer.logger,
-        type: .debug,
-        self.spin?.id ?? "nil",
-        ISO8601DateFormatter().string(from: scheduledDate)
-      )
-
+      logScheduleComplete(scheduledDate: scheduledDate)
     } catch {
+      reportScheduleError(error)
+    }
+  }
+
+  private func prepareAudioEngine(scheduledDate: Date) throws {
+    os_log(
+      "Scheduling play at %@",
+      log: SpinPlayer.logger,
+      type: .info,
+      ISO8601DateFormatter().string(from: scheduledDate)
+    )
+
+    playolaMainMixer.configureAudioSession()
+    try engine.start()
+  }
+
+  private func validateAudioFile() throws {
+    guard self.currentFile != nil else {
+      let error = NSError(
+        domain: "fm.playola.PlayolaPlayer",
+        code: 400,
+        userInfo: [
+          NSLocalizedDescriptionKey: "No audio file loaded when trying to schedule playback"
+        ]
+      )
       Task {
         await errorReporter.reportError(
           error,
-          context: "Failed to schedule playback",
+          context: "Missing audio file for scheduled playback",
           level: .error
         )
       }
+      throw error
+    }
+  }
+
+  private func setupNotificationTimer(scheduledDate: Date, scheduledSpinId: String?) {
+    self.startNotificationTimer = Timer(
+      fire: scheduledDate,
+      interval: 0,
+      repeats: false
+    ) { [weak self] timer in
+      timer.invalidate()
+      os_log("⏰ Timer fired", log: SpinPlayer.logger, type: .info)
+
+      guard let self = self else {
+        os_log(
+          "⚠️ Timer fired but SpinPlayer deallocated",
+          log: SpinPlayer.logger,
+          type: .default
+        )
+        return
+      }
+
+      Task { @MainActor in
+        self.handleTimerFired(timer: timer, scheduledSpinId: scheduledSpinId)
+      }
+    }
+
+    RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
+  }
+
+  @MainActor
+  private func handleTimerFired(timer: Timer, scheduledSpinId: String?) {
+    guard self.startNotificationTimer === timer,
+      let spin = self.spin,
+      spin.id == scheduledSpinId
+    else {
+      os_log("⚠️ Timer invalid or spin changed", log: SpinPlayer.logger, type: .default)
+      return
+    }
+
+    handleSuccessfulTimerFire(spin: spin)
+  }
+
+  private func handleSuccessfulTimerFire(spin: Spin) {
+    os_log("✅ Timer fired successfully", log: SpinPlayer.logger, type: .info)
+
+    self.startNotificationTimer = nil
+    self.state = .playing
+    self.delegate?.player(self, startedPlaying: spin)
+  }
+
+  private func logScheduleComplete(scheduledDate: Date) {
+    os_log(
+      "Added timer to RunLoop for spin: %@ scheduled at %@",
+      log: SpinPlayer.logger,
+      type: .debug,
+      self.spin?.id ?? "nil",
+      ISO8601DateFormatter().string(from: scheduledDate)
+    )
+  }
+
+  private func reportScheduleError(_ error: Error) {
+    Task {
+      await errorReporter.reportError(
+        error,
+        context: "Failed to schedule playback",
+        level: .error
+      )
     }
   }
 
@@ -634,117 +660,133 @@ public class SpinPlayer {
       type: .info,
       url.lastPathComponent
     )
+
     do {
-      // First check if the file exists and has a reasonable size
-      let fileManager = FileManager.default
-
-      guard fileManager.fileExists(atPath: url.path) else {
-        let error = FileDownloadError.fileNotFound(url.path)
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "Audio file not found at path",
-            level: .error
-          )
-        }
-        self.state = .available
-        return
-      }
-
-      // Validate file size
-      let attributes = try fileManager.attributesOfItem(atPath: url.path)
-      let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
-
-      // Consider files under 10KB as suspicious (adjust as needed)
-      if fileSize < 10 * 1024 {
-        let error = FileDownloadError.downloadFailed(
-          "Audio file is too small: \(fileSize) bytes"
-        )
-        Task {
-          await errorReporter.reportError(
-            error,
-            context:
-              "Suspiciously small file detected: \(url.lastPathComponent)",
-            level: .error
-          )
-        }
-        // Delete the invalid file
-        try? fileManager.removeItem(at: url)
-        self.state = .available
-        throw error
-      }
-
-      // Attempt to create the audio file object
-      do {
-        currentFile = try AVAudioFile(forReading: url)
-        normalizationCalculator = await AudioNormalizationCalculator.create(
-          currentFile!
-        )
-        os_log(
-          "Successfully loaded audio file: %@",
-          log: SpinPlayer.logger,
-          type: .info,
-          url.lastPathComponent
-        )
-      } catch let audioError as NSError {
-        // More detailed context with file information
-        let contextInfo =
-          "Failed to load audio file: \(url.lastPathComponent) (size: \(fileSize) bytes)"
-
-        // Handle specific audio format errors
-        if audioError.domain == "com.apple.coreaudio.avfaudio" {
-          switch audioError.code {
-          case 1_954_115_647:  // 'fmt?' in ASCII - format error
-            Task {
-              await errorReporter.reportError(
-                audioError,
-                context:
-                  "\(contextInfo) - Invalid audio format or corrupt file",
-                level: .error
-              )
-            }
-            // Delete the corrupt file
-            try? fileManager.removeItem(at: url)
-          default:
-            Task {
-              await errorReporter.reportError(
-                audioError,
-                context: contextInfo,
-                level: .error
-              )
-            }
-          }
-        } else {
-          Task {
-            await errorReporter.reportError(
-              audioError,
-              context: contextInfo,
-              level: .error
-            )
-          }
-        }
-
-        // State management after error
-        self.state = .available
-        throw audioError
-      }
+      let fileSize = try validateFileExistsAndGetSize(url)
+      try await createAudioFileFromValidatedURL(url, fileSize: fileSize)
     } catch {
-      // This catch block handles errors from the file validation steps
-      // The specific AVAudioFile errors are caught in the inner try-catch
-      if !error.localizedDescription.contains("too small")
-        && !error.localizedDescription.contains("not found")
-      {
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "File validation failed",
-            level: .error
-          )
-        }
-      }
-      // State is already set to .available in the inner catch blocks
-      self.state = .available
+      await handleFileLoadError(error)
     }
+  }
+
+  private func validateFileExistsAndGetSize(_ url: URL) throws -> Int {
+    let fileManager = FileManager.default
+
+    guard fileManager.fileExists(atPath: url.path) else {
+      let error = FileDownloadError.fileNotFound(url.path)
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Audio file not found at path",
+          level: .error
+        )
+      }
+      self.state = .available
+      throw error
+    }
+
+    let attributes = try fileManager.attributesOfItem(atPath: url.path)
+    let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
+
+    try validateFileSize(fileSize, url: url, fileManager: fileManager)
+    return fileSize
+  }
+
+  private func validateFileSize(_ fileSize: Int, url: URL, fileManager: FileManager) throws {
+    if fileSize < 10 * 1024 {
+      let error = FileDownloadError.downloadFailed(
+        "Audio file is too small: \(fileSize) bytes"
+      )
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Suspiciously small file detected: \(url.lastPathComponent)",
+          level: .error
+        )
+      }
+      try? fileManager.removeItem(at: url)
+      self.state = .available
+      throw error
+    }
+  }
+
+  private func createAudioFileFromValidatedURL(_ url: URL, fileSize: Int) async throws {
+    do {
+      currentFile = try AVAudioFile(forReading: url)
+      normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
+      logSuccessfulLoad(url)
+    } catch let audioError as NSError {
+      await handleAudioFileCreationError(audioError, url: url, fileSize: fileSize)
+      throw audioError
+    }
+  }
+
+  private func logSuccessfulLoad(_ url: URL) {
+    os_log(
+      "Successfully loaded audio file: %@",
+      log: SpinPlayer.logger,
+      type: .info,
+      url.lastPathComponent
+    )
+  }
+
+  private func handleAudioFileCreationError(_ audioError: NSError, url: URL, fileSize: Int) async {
+    let contextInfo =
+      "Failed to load audio file: \(url.lastPathComponent) (size: \(fileSize) bytes)"
+
+    if audioError.domain == "com.apple.coreaudio.avfaudio" {
+      await handleCoreAudioError(audioError, url: url, contextInfo: contextInfo)
+    } else {
+      await reportAudioError(audioError, contextInfo: contextInfo)
+    }
+
+    self.state = .available
+  }
+
+  private func handleCoreAudioError(_ audioError: NSError, url: URL, contextInfo: String) async {
+    let fileManager = FileManager.default
+
+    switch audioError.code {
+    case 1_954_115_647:  // 'fmt?' in ASCII - format error
+      Task {
+        await errorReporter.reportError(
+          audioError,
+          context: "\(contextInfo) - Invalid audio format or corrupt file",
+          level: .error
+        )
+      }
+      try? fileManager.removeItem(at: url)
+    default:
+      await reportAudioError(audioError, contextInfo: contextInfo)
+    }
+  }
+
+  private func reportAudioError(_ audioError: NSError, contextInfo: String) async {
+    Task {
+      await errorReporter.reportError(
+        audioError,
+        context: contextInfo,
+        level: .error
+      )
+    }
+  }
+
+  private func handleFileLoadError(_ error: Error) async {
+    let shouldReport =
+      !error.localizedDescription.contains("too small")
+      && !error.localizedDescription.contains("not found")
+
+    if shouldReport {
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "File validation failed",
+          level: .error
+        )
+      }
+    }
+
+    self.state = .available
   }
 
   fileprivate func fadePlayer(

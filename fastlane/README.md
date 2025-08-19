@@ -23,13 +23,29 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 Run tests
 
-### ios lint
+### ios lint_code
 
 ```sh
-[bundle exec] fastlane ios lint
+[bundle exec] fastlane ios lint_code
 ```
 
 Run SwiftLint
+
+### ios format_check
+
+```sh
+[bundle exec] fastlane ios format_check
+```
+
+Run swift-format lint check
+
+### ios format_code
+
+```sh
+[bundle exec] fastlane ios format_code
+```
+
+Format Swift code with swift-format
 
 ----
 
