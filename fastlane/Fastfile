@@ -29,4 +29,14 @@ platform :ios do
       executable: "swiftlint"
     )
   end
+
+  desc "Run swift-format lint check"
+  lane :format_check do
+    sh("find .. -name '*.swift' -not -path '../.build/*' | xargs xcrun swift-format lint")
+  end
+
+  desc "Format Swift code with swift-format"
+  lane :format_code do
+    sh("find .. -name '*.swift' -not -path '../.build/*' | xargs xcrun swift-format format -i")
+  end
 end

@@ -31,6 +31,22 @@ Run tests
 
 Run SwiftLint
 
+### ios format_check
+
+```sh
+[bundle exec] fastlane ios format_check
+```
+
+Run swift-format lint check
+
+### ios format_code
+
+```sh
+[bundle exec] fastlane ios format_code
+```
+
+Format Swift code with swift-format
+
 ----
 
 This README.md is auto-generated and will be re-generated every time [_fastlane_](https://fastlane.tools) is run.
