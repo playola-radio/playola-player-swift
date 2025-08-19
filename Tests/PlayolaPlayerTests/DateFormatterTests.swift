@@ -139,7 +139,11 @@ struct DateFormatterTests {
       {
           "date": "2023-01-15T10:30:45.123+0000"
       }
-      """.data(using: .utf8)!
+      """
+    guard let jsonData = jsonData.data(using: .utf8) else {
+      XCTFail("Failed to create JSON data")
+      return
+    }
 
     // Use our JSONDecoderWithIsoFull to decode
     let decoder = JSONDecoderWithIsoFull()

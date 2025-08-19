@@ -25,6 +25,9 @@ identifier_name:
   excluded:
     - "to"  # Common parameter name in Mail.swift
     - "fm"  # Enum case in RadioStation.swift
+    - "i"   # Common loop index
+    - "j"   # Common loop index
+    - "k"   # Common loop index
   allowed_symbols:
     - "_"  # Common in variable names
 

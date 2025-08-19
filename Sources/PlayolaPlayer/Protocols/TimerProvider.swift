@@ -1,5 +1,11 @@
 import Foundation
 
+public struct ScheduledTimer {
+  let deadline: Date
+  let timer: Timer
+  let block: () -> Void
+}
+
 public protocol TimerProvider: Sendable {
   func schedule(deadline: Date, repeating: TimeInterval, block: @escaping () -> Void) -> Timer
 }
@@ -27,7 +33,7 @@ final public class LiveTimerProvider: TimerProvider {
 
 // Unchecked because it's mutable, but only used in tests.
 final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
-  public var scheduledTimers: [(deadline: Date, timer: Timer, block: () -> Void)] = []
+  public var scheduledTimers: [ScheduledTimer] = []
 
   public func schedule(deadline: Date, repeating: TimeInterval, block: @escaping () -> Void)
     -> Timer
@@ -35,7 +41,7 @@ final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
     let timer = Timer(fire: deadline, interval: repeating, repeats: false) { _ in
       block()
     }
-    scheduledTimers.append((deadline: deadline, timer: timer, block: block))
+    scheduledTimers.append(ScheduledTimer(deadline: deadline, timer: timer, block: block))
     return timer
   }
 
