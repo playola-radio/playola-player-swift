@@ -358,85 +358,120 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
-    let url = baseUrl.appending(path: "/stations/\(stationId)/schedule")
-      .appending(queryItems: [URLQueryItem(name: "includeRelatedTexts", value: "true")])
+    let url = createScheduleURL(for: stationId)
+
     do {
       let (data, response) = try await URLSession.shared.data(from: url)
+      let httpResponse = try validateHTTPResponse(response, url: url)
+      try await validateStatusCode(httpResponse, data: data, stationId: stationId)
 
-      guard let httpResponse = response as? HTTPURLResponse else {
-        let error = StationPlayerError.networkError("Invalid response type")
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "Non-HTTP response received from schedule endpoint: \(url.absoluteString)",
-            level: .error)
-        }
-        throw error
-      }
-
-      guard (200...299).contains(httpResponse.statusCode) else {
-        let responseText = String(data: data, encoding: .utf8) ?? "Unable to decode response"
-        let error = StationPlayerError.networkError("HTTP error: \(httpResponse.statusCode)")
-
-        if httpResponse.statusCode == 404 {
-          Task {
-            await errorReporter.reportError(
-              error,
-              context: "Station not found: \(stationId) | Response: \(responseText.prefix(100))",
-              level: .error)
-          }
-        } else {
-          Task {
-            await errorReporter.reportError(
-              error,
-              context:
-                "HTTP \(httpResponse.statusCode) error getting schedule for station: \(stationId) | "
-                + "Response: \(responseText.prefix(100))",
-              level: .error)
-          }
-        }
-        throw error
-      }
-
-      let decoder = JSONDecoderWithIsoFull()
-
-      do {
-        let spins = try decoder.decode([Spin].self, from: data)
-        guard !spins.isEmpty else {
-          let error = StationPlayerError.scheduleError(
-            "No spins returned in schedule for station ID: \(stationId)")
-          Task {
-            await errorReporter.reportError(error, level: .error)
-          }
-          throw error
-        }
-        return Schedule(stationId: spins[0].stationId, spins: spins)
-      } catch let decodingError as DecodingError {
-        // Specific handling for different types of decoding errors
-        var context: String
-        switch decodingError {
-        case .dataCorrupted(let reportedContext):
-          context = "Corrupted data: \(reportedContext.debugDescription)"
-        case .keyNotFound(let key, _):
-          context = "Missing key: \(key)"
-        case .typeMismatch(let type, _):
-          context = "Type mismatch for: \(type)"
-        default:
-          context = "Unknown decoding error"
-        }
-
-        Task {
-          await errorReporter.reportError(
-            decodingError, context: "Failed to decode schedule: \(context)", level: .error)
-        }
-        throw StationPlayerError.scheduleError("Invalid schedule data: \(context)")
-      }
+      return try await decodeSchedule(from: data, stationId: stationId)
     } catch {
+      await reportScheduleFetchError(error, stationId: stationId)
+      throw error
+    }
+  }
+
+  private func createScheduleURL(for stationId: String) -> URL {
+    return baseUrl.appending(path: "/stations/\(stationId)/schedule")
+      .appending(queryItems: [URLQueryItem(name: "includeRelatedTexts", value: "true")])
+  }
+
+  private func validateHTTPResponse(_ response: URLResponse, url: URL) throws -> HTTPURLResponse {
+    guard let httpResponse = response as? HTTPURLResponse else {
+      let error = StationPlayerError.networkError("Invalid response type")
       Task {
         await errorReporter.reportError(
-          error, context: "Failed to fetch schedule for station: \(stationId)", level: .error)
+          error,
+          context: "Non-HTTP response received from schedule endpoint: \(url.absoluteString)",
+          level: .error)
       }
       throw error
+    }
+    return httpResponse
+  }
+
+  private func validateStatusCode(_ httpResponse: HTTPURLResponse, data: Data, stationId: String)
+    async throws
+  {
+    guard (200...299).contains(httpResponse.statusCode) else {
+      let responseText = String(data: data, encoding: .utf8) ?? "Unable to decode response"
+      let error = StationPlayerError.networkError("HTTP error: \(httpResponse.statusCode)")
+
+      await reportHTTPError(
+        error, statusCode: httpResponse.statusCode, stationId: stationId, responseText: responseText
+      )
+      throw error
+    }
+  }
+
+  private func reportHTTPError(
+    _ error: StationPlayerError, statusCode: Int, stationId: String, responseText: String
+  ) async {
+    if statusCode == 404 {
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Station not found: \(stationId) | Response: \(responseText.prefix(100))",
+          level: .error)
+      }
+    } else {
+      Task {
+        await errorReporter.reportError(
+          error,
+          context:
+            "HTTP \(statusCode) error getting schedule for station: \(stationId) | "
+            + "Response: \(responseText.prefix(100))",
+          level: .error)
+      }
+    }
+  }
+
+  private func decodeSchedule(from data: Data, stationId: String) async throws -> Schedule {
+    let decoder = JSONDecoderWithIsoFull()
+
+    do {
+      let spins = try decoder.decode([Spin].self, from: data)
+      guard !spins.isEmpty else {
+        let error = StationPlayerError.scheduleError(
+          "No spins returned in schedule for station ID: \(stationId)")
+        Task {
+          await errorReporter.reportError(error, level: .error)
+        }
+        throw error
+      }
+      return Schedule(stationId: spins[0].stationId, spins: spins)
+    } catch let decodingError as DecodingError {
+      let context = await reportDecodingError(decodingError)
+      throw StationPlayerError.scheduleError("Invalid schedule data: \(context)")
+    }
+  }
+
+  private func reportDecodingError(_ decodingError: DecodingError) async -> String {
+    let context: String
+    switch decodingError {
+    case .dataCorrupted(let reportedContext):
+      context = "Corrupted data: \(reportedContext.debugDescription)"
+    case .keyNotFound(let key, _):
+      context = "Missing key: \(key)"
+    case .typeMismatch(let type, _):
+      context = "Type mismatch for: \(type)"
+    default:
+      context = "Unknown decoding error"
+    }
+
+    Task {
+      await errorReporter.reportError(
+        decodingError, context: "Failed to decode schedule: \(context)", level: .error)
+    }
+
+    return context
+  }
+
+  private func reportScheduleFetchError(_ error: Error, stationId: String) async {
+    Task {
+      await errorReporter.reportError(
+        error, context: "Failed to fetch schedule for station: \(stationId)", level: .error)
     }
   }
 

@@ -532,112 +532,117 @@ public class SpinPlayer {
   /// Schedule playback to start at a specific time
   public func schedulePlay(at scheduledDate: Date) {
     do {
-      os_log(
-        "Scheduling play at %@",
-        log: SpinPlayer.logger,
-        type: .info,
-        ISO8601DateFormatter().string(from: scheduledDate)
-      )
+      try prepareAudioEngine(scheduledDate: scheduledDate)
+      try validateAudioFile()
 
-      // Make sure audio session is configured before scheduling playback
-      playolaMainMixer.configureAudioSession()
-      try engine.start()
-
-      // Convert the target date to AVAudioTime
       let avAudiotime = avAudioTimeFromDate(date: scheduledDate)
-
-      // If the file isn't loaded yet, we need to schedule it
-      guard self.currentFile != nil else {
-        let error = NSError(
-          domain: "fm.playola.PlayolaPlayer",
-          code: 400,
-          userInfo: [
-            NSLocalizedDescriptionKey:
-              "No audio file loaded when trying to schedule playback"
-          ]
-        )
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "Missing audio file for scheduled playback",
-            level: .error
-          )
-        }
-        return
-      }
-
-      // For safety, capture the current spin ID to verify it later
       let scheduledSpinId = spin?.id
 
-      // Simply use play(at:) which is the most reliable method
       playerNode.play(at: avAudiotime)
+      setupNotificationTimer(scheduledDate: scheduledDate, scheduledSpinId: scheduledSpinId)
 
-      // Use timer for status notification with improved invalidation
-      self.startNotificationTimer = Timer(
-        fire: scheduledDate,
-        interval: 0,
-        repeats: false
-      ) { [weak self] timer in
-        // Always invalidate timer first to prevent double execution
-        timer.invalidate()
-
-        os_log("⏰ Timer fired", log: SpinPlayer.logger, type: .info)
-
-        guard let self = self else {
-          os_log(
-            "⚠️ Timer fired but SpinPlayer deallocated",
-            log: SpinPlayer.logger,
-            type: .default
-          )
-          return
-        }
-
-        // Ensure we're on main actor for state checks
-        Task { @MainActor in
-          // Validate timer is still active and spin hasn't changed
-          guard self.startNotificationTimer === timer,
-            let spin = self.spin,
-            spin.id == scheduledSpinId
-          else {
-            os_log(
-              "⚠️ Timer invalid or spin changed",
-              log: SpinPlayer.logger,
-              type: .default
-            )
-            return
-          }
-
-          os_log(
-            "✅ Timer fired successfully",
-            log: SpinPlayer.logger,
-            type: .info
-          )
-
-          // Clear the timer reference since it's now invalid
-          self.startNotificationTimer = nil
-
-          self.state = .playing
-          self.delegate?.player(self, startedPlaying: spin)
-        }
-      }
-
-      RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
-      os_log(
-        "Added timer to RunLoop for spin: %@ scheduled at %@",
-        log: SpinPlayer.logger,
-        type: .debug,
-        self.spin?.id ?? "nil",
-        ISO8601DateFormatter().string(from: scheduledDate)
-      )
-
+      logScheduleComplete(scheduledDate: scheduledDate)
     } catch {
+      reportScheduleError(error)
+    }
+  }
+
+  private func prepareAudioEngine(scheduledDate: Date) throws {
+    os_log(
+      "Scheduling play at %@",
+      log: SpinPlayer.logger,
+      type: .info,
+      ISO8601DateFormatter().string(from: scheduledDate)
+    )
+
+    playolaMainMixer.configureAudioSession()
+    try engine.start()
+  }
+
+  private func validateAudioFile() throws {
+    guard self.currentFile != nil else {
+      let error = NSError(
+        domain: "fm.playola.PlayolaPlayer",
+        code: 400,
+        userInfo: [
+          NSLocalizedDescriptionKey: "No audio file loaded when trying to schedule playback"
+        ]
+      )
       Task {
         await errorReporter.reportError(
           error,
-          context: "Failed to schedule playback",
+          context: "Missing audio file for scheduled playback",
           level: .error
         )
       }
+      throw error
+    }
+  }
+
+  private func setupNotificationTimer(scheduledDate: Date, scheduledSpinId: String?) {
+    self.startNotificationTimer = Timer(
+      fire: scheduledDate,
+      interval: 0,
+      repeats: false
+    ) { [weak self] timer in
+      timer.invalidate()
+      os_log("⏰ Timer fired", log: SpinPlayer.logger, type: .info)
+
+      guard let self = self else {
+        os_log(
+          "⚠️ Timer fired but SpinPlayer deallocated",
+          log: SpinPlayer.logger,
+          type: .default
+        )
+        return
+      }
+
+      Task { @MainActor in
+        self.handleTimerFired(timer: timer, scheduledSpinId: scheduledSpinId)
+      }
+    }
+
+    RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
+  }
+
+  @MainActor
+  private func handleTimerFired(timer: Timer, scheduledSpinId: String?) {
+    guard self.startNotificationTimer === timer,
+      let spin = self.spin,
+      spin.id == scheduledSpinId
+    else {
+      os_log("⚠️ Timer invalid or spin changed", log: SpinPlayer.logger, type: .default)
+      return
+    }
+
+    handleSuccessfulTimerFire(spin: spin)
+  }
+
+  private func handleSuccessfulTimerFire(spin: Spin) {
+    os_log("✅ Timer fired successfully", log: SpinPlayer.logger, type: .info)
+
+    self.startNotificationTimer = nil
+    self.state = .playing
+    self.delegate?.player(self, startedPlaying: spin)
+  }
+
+  private func logScheduleComplete(scheduledDate: Date) {
+    os_log(
+      "Added timer to RunLoop for spin: %@ scheduled at %@",
+      log: SpinPlayer.logger,
+      type: .debug,
+      self.spin?.id ?? "nil",
+      ISO8601DateFormatter().string(from: scheduledDate)
+    )
+  }
+
+  private func reportScheduleError(_ error: Error) {
+    Task {
+      await errorReporter.reportError(
+        error,
+        context: "Failed to schedule playback",
+        level: .error
+      )
     }
   }
 
