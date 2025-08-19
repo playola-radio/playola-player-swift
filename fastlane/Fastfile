@@ -10,14 +10,7 @@ platform :ios do
 
   desc "Run tests"
   lane :tests do
-    scan(
-      package_path: ".",
-      scheme: "PlayolaPlayer",
-      devices: ["iPhone 14"],
-      prelaunch_simulator: true,
-      result_bundle: true,
-      xcargs: "-skipMacroValidation -skipPackagePluginValidation",
-    )
+    sh("swift test")
   end
 
   desc "Run SwiftLint"
