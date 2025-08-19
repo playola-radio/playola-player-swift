@@ -37,7 +37,8 @@ struct AudioNormalizationCalculator {
           await PlayolaErrorReporter.shared.reportError(
             error,
             context:
-              "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description) | Length: \(file.length)",
+              "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | "
+              + "Format: \(file.processingFormat.description) | Length: \(file.length)",
             level: .warning)
         }
         continuation.resume(returning: calculator)
@@ -57,7 +58,8 @@ struct AudioNormalizationCalculator {
         await PlayolaErrorReporter.shared.reportError(
           error,
           context:
-            "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description) | Length: \(file.length)",
+            "Failed to get audio samples for normalization | File: \(file.url.lastPathComponent) | "
+            + "Format: \(file.processingFormat.description) | Length: \(file.length)",
           level: .warning)
       }
     }
@@ -86,7 +88,8 @@ struct AudioNormalizationCalculator {
         await PlayolaErrorReporter.shared.reportError(
           detailedError,
           context:
-            "Failed to create PCM buffer | File format: \(file.processingFormat.description) | Frame capacity: \(file.length)",
+            "Failed to create PCM buffer | File format: \(file.processingFormat.description) | "
+            + "Frame capacity: \(file.length)",
           level: .error)
       }
       throw detailedError
@@ -100,7 +103,8 @@ struct AudioNormalizationCalculator {
         await PlayolaErrorReporter.shared.reportError(
           error,
           context:
-            "Failed to read audio file into buffer | File: \(file.url.lastPathComponent) | Format: \(file.processingFormat.description)",
+            "Failed to read audio file into buffer | File: \(file.url.lastPathComponent) | "
+            + "Format: \(file.processingFormat.description)",
           level: .error)
       }
       throw error

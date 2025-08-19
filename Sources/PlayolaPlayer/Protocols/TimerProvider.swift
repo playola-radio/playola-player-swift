@@ -55,7 +55,8 @@ final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
 
 // Exploration of possible better mocking for later.
 // struct TimerProviderStruct: Sendable {
-//  var schedule: @Sendable (_ deadline: Date, _ repeating: TimeInterval, _ block: @Sendable @escaping () -> Void) -> Timer
+//  var schedule: @Sendable (_ deadline: Date, _ repeating: TimeInterval,
+//                         _ block: @Sendable @escaping () -> Void) -> Timer
 // }
 // extension TimerProviderStruct {
 //  static var liveValue: Self {

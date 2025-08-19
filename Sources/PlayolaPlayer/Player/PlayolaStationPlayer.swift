@@ -390,7 +390,8 @@ final public class PlayolaStationPlayer: ObservableObject {
             await errorReporter.reportError(
               error,
               context:
-                "HTTP \(httpResponse.statusCode) error getting schedule for station: \(stationId) | Response: \(responseText.prefix(100))",
+                "HTTP \(httpResponse.statusCode) error getting schedule for station: \(stationId) | "
+                + "Response: \(responseText.prefix(100))",
               level: .error)
           }
         }
@@ -474,7 +475,8 @@ final public class PlayolaStationPlayer: ObservableObject {
         await errorReporter.reportError(
           error,
           context:
-            "Schedule for station \(stationId) contains no current spins | Total spins: \(currentSchedule?.spins.count ?? 0)",
+            "Schedule for station \(stationId) contains no current spins | "
+            + "Total spins: \(currentSchedule?.spins.count ?? 0)",
           level: .error)
       }
       throw error

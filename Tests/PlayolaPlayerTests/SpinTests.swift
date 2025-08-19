@@ -315,11 +315,13 @@ struct SpinTests {
           "relatedTexts": [
               {
                   "title": "Why I chose this song",
-                  "body": "When I was in middle school I found this song and I was absolutely mesmerized by it so here it is.  This is take me to church by Hozier"
+                  "body": "When I was in middle school I found this song and I was absolutely mesmerized by it so here "
+                           + "it is.  This is take me to church by Hozier"
               },
               {
                   "title": "Why I chose this song",
-                  "body": "Hozier is an absolute undeniable talent and I think that you need to hear it. So here is a Hozier song"
+                  "body": "Hozier is an absolute undeniable talent and I think that you need to hear it. So here is a "
+                           + "Hozier song"
               }
           ]
       }
@@ -361,7 +363,8 @@ struct SpinTests {
     #expect(firstRelatedText?.title == "Why I chose this song")
     #expect(
       firstRelatedText?.body
-        == "When I was in middle school I found this song and I was absolutely mesmerized by it so here it is.  This is take me to church by Hozier"
+        == "When I was in middle school I found this song and I was absolutely mesmerized by it so here it is.  "
+        + "This is take me to church by Hozier"
     )
 
     let secondRelatedText = spin.relatedTexts?[1]

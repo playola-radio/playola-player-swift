@@ -6,6 +6,12 @@ disabled_rules:
   - closure_parameter_position
   - todo
 
+excluded:
+  - Carthage
+  - Pods
+  - .build
+  - DerivedData
+
 # General configuration
 line_length:
   warning: 120
