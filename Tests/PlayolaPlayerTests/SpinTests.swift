@@ -15,6 +15,7 @@ struct SpinTests {
   let dateProviderMock = DateProviderMock()
 
   // Static JSON fixture for testing spin decoding with related texts
+  // swiftlint:disable line_length
   private static let spinWithRelatedTextsJSON = """
     {
         "id": "948fb1e9-6f86-473b-ab04-725b4de63dc4",
@@ -81,6 +82,7 @@ struct SpinTests {
         ]
     }
     """
+  // swiftlint:enable line_length
 
   init() {
     spin.dateProvider = dateProviderMock

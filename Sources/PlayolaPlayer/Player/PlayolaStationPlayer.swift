@@ -219,9 +219,9 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
-  private func loadSpinWithProgress(_ spin: Spin, _ spinPlayer: SpinPlayer, _ showProgress: Bool)
-    async -> Result<URL, Error>
-  {
+  private func loadSpinWithProgress(
+    _ spin: Spin, _ spinPlayer: SpinPlayer, _ showProgress: Bool
+  ) async -> Result<URL, Error> {
     return await spinPlayer.load(
       spin,
       onDownloadProgress: { [weak self] progress in
@@ -232,7 +232,8 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   private func handleLoadResult(
-    _ result: Result<URL, Error>, spin: Spin, showProgress: Bool, retryCount: Int
+    _ result: Result<URL, Error>, spin: Spin, showProgress: Bool,
+    retryCount: Int
   ) async throws {
     switch result {
     case .success:
