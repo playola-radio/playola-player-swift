@@ -660,117 +660,133 @@ public class SpinPlayer {
       type: .info,
       url.lastPathComponent
     )
+
     do {
-      // First check if the file exists and has a reasonable size
-      let fileManager = FileManager.default
-
-      guard fileManager.fileExists(atPath: url.path) else {
-        let error = FileDownloadError.fileNotFound(url.path)
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "Audio file not found at path",
-            level: .error
-          )
-        }
-        self.state = .available
-        return
-      }
-
-      // Validate file size
-      let attributes = try fileManager.attributesOfItem(atPath: url.path)
-      let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
-
-      // Consider files under 10KB as suspicious (adjust as needed)
-      if fileSize < 10 * 1024 {
-        let error = FileDownloadError.downloadFailed(
-          "Audio file is too small: \(fileSize) bytes"
-        )
-        Task {
-          await errorReporter.reportError(
-            error,
-            context:
-              "Suspiciously small file detected: \(url.lastPathComponent)",
-            level: .error
-          )
-        }
-        // Delete the invalid file
-        try? fileManager.removeItem(at: url)
-        self.state = .available
-        throw error
-      }
-
-      // Attempt to create the audio file object
-      do {
-        currentFile = try AVAudioFile(forReading: url)
-        normalizationCalculator = await AudioNormalizationCalculator.create(
-          currentFile!
-        )
-        os_log(
-          "Successfully loaded audio file: %@",
-          log: SpinPlayer.logger,
-          type: .info,
-          url.lastPathComponent
-        )
-      } catch let audioError as NSError {
-        // More detailed context with file information
-        let contextInfo =
-          "Failed to load audio file: \(url.lastPathComponent) (size: \(fileSize) bytes)"
-
-        // Handle specific audio format errors
-        if audioError.domain == "com.apple.coreaudio.avfaudio" {
-          switch audioError.code {
-          case 1_954_115_647:  // 'fmt?' in ASCII - format error
-            Task {
-              await errorReporter.reportError(
-                audioError,
-                context:
-                  "\(contextInfo) - Invalid audio format or corrupt file",
-                level: .error
-              )
-            }
-            // Delete the corrupt file
-            try? fileManager.removeItem(at: url)
-          default:
-            Task {
-              await errorReporter.reportError(
-                audioError,
-                context: contextInfo,
-                level: .error
-              )
-            }
-          }
-        } else {
-          Task {
-            await errorReporter.reportError(
-              audioError,
-              context: contextInfo,
-              level: .error
-            )
-          }
-        }
-
-        // State management after error
-        self.state = .available
-        throw audioError
-      }
+      let fileSize = try validateFileExistsAndGetSize(url)
+      try await createAudioFileFromValidatedURL(url, fileSize: fileSize)
     } catch {
-      // This catch block handles errors from the file validation steps
-      // The specific AVAudioFile errors are caught in the inner try-catch
-      if !error.localizedDescription.contains("too small")
-        && !error.localizedDescription.contains("not found")
-      {
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "File validation failed",
-            level: .error
-          )
-        }
-      }
-      // State is already set to .available in the inner catch blocks
-      self.state = .available
+      await handleFileLoadError(error)
     }
+  }
+
+  private func validateFileExistsAndGetSize(_ url: URL) throws -> Int {
+    let fileManager = FileManager.default
+
+    guard fileManager.fileExists(atPath: url.path) else {
+      let error = FileDownloadError.fileNotFound(url.path)
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Audio file not found at path",
+          level: .error
+        )
+      }
+      self.state = .available
+      throw error
+    }
+
+    let attributes = try fileManager.attributesOfItem(atPath: url.path)
+    let fileSize = (attributes[.size] as? NSNumber)?.intValue ?? 0
+
+    try validateFileSize(fileSize, url: url, fileManager: fileManager)
+    return fileSize
+  }
+
+  private func validateFileSize(_ fileSize: Int, url: URL, fileManager: FileManager) throws {
+    if fileSize < 10 * 1024 {
+      let error = FileDownloadError.downloadFailed(
+        "Audio file is too small: \(fileSize) bytes"
+      )
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Suspiciously small file detected: \(url.lastPathComponent)",
+          level: .error
+        )
+      }
+      try? fileManager.removeItem(at: url)
+      self.state = .available
+      throw error
+    }
+  }
+
+  private func createAudioFileFromValidatedURL(_ url: URL, fileSize: Int) async throws {
+    do {
+      currentFile = try AVAudioFile(forReading: url)
+      normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
+      logSuccessfulLoad(url)
+    } catch let audioError as NSError {
+      await handleAudioFileCreationError(audioError, url: url, fileSize: fileSize)
+      throw audioError
+    }
+  }
+
+  private func logSuccessfulLoad(_ url: URL) {
+    os_log(
+      "Successfully loaded audio file: %@",
+      log: SpinPlayer.logger,
+      type: .info,
+      url.lastPathComponent
+    )
+  }
+
+  private func handleAudioFileCreationError(_ audioError: NSError, url: URL, fileSize: Int) async {
+    let contextInfo =
+      "Failed to load audio file: \(url.lastPathComponent) (size: \(fileSize) bytes)"
+
+    if audioError.domain == "com.apple.coreaudio.avfaudio" {
+      await handleCoreAudioError(audioError, url: url, contextInfo: contextInfo)
+    } else {
+      await reportAudioError(audioError, contextInfo: contextInfo)
+    }
+
+    self.state = .available
+  }
+
+  private func handleCoreAudioError(_ audioError: NSError, url: URL, contextInfo: String) async {
+    let fileManager = FileManager.default
+
+    switch audioError.code {
+    case 1_954_115_647:  // 'fmt?' in ASCII - format error
+      Task {
+        await errorReporter.reportError(
+          audioError,
+          context: "\(contextInfo) - Invalid audio format or corrupt file",
+          level: .error
+        )
+      }
+      try? fileManager.removeItem(at: url)
+    default:
+      await reportAudioError(audioError, contextInfo: contextInfo)
+    }
+  }
+
+  private func reportAudioError(_ audioError: NSError, contextInfo: String) async {
+    Task {
+      await errorReporter.reportError(
+        audioError,
+        context: contextInfo,
+        level: .error
+      )
+    }
+  }
+
+  private func handleFileLoadError(_ error: Error) async {
+    let shouldReport =
+      !error.localizedDescription.contains("too small")
+      && !error.localizedDescription.contains("not found")
+
+    if shouldReport {
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "File validation failed",
+          level: .error
+        )
+      }
+    }
+
+    self.state = .available
   }
 
   fileprivate func fadePlayer(

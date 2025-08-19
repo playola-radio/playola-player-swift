@@ -174,19 +174,24 @@ final public class PlayolaStationPlayer: ObservableObject {
       "📅 Scheduling spin: %@ - Retry: %d", log: PlayolaStationPlayer.logger, type: .info, spin.id,
       retryCount)
 
+    try validateSpinForScheduling(spin)
     let spinPlayer = getAvailableSpinPlayer()
+    cancelExistingDownload(for: spin.id)
 
-    os_log("Using SpinPlayer for spin: %@", log: PlayolaStationPlayer.logger, type: .debug, spin.id)
+    do {
+      let result = await loadSpinWithProgress(spin, spinPlayer, showProgress)
+      try await handleLoadResult(
+        result, spin: spin, showProgress: showProgress, retryCount: retryCount)
+    } catch {
+      try await handleSchedulingError(
+        error, spin: spin, showProgress: showProgress, retryCount: retryCount)
+    }
+  }
 
+  private func validateSpinForScheduling(_ spin: Spin) throws {
     guard spin.audioBlock.downloadUrl != nil else {
-      let spinDetails = """
-            Spin ID: \(spin.id)
-            Audio Block ID: \(spin.audioBlock.id)
-            Audio Block Title: \(spin.audioBlock.title)
-            Audio Block Artist: \(spin.audioBlock.artist)
-            Download URL: \(spin.audioBlock.downloadUrl?.absoluteString ?? "nil")
-        """
       let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
+      let spinDetails = createSpinDetailsString(spin)
       Task {
         await errorReporter.reportError(
           error,
@@ -195,93 +200,114 @@ final public class PlayolaStationPlayer: ObservableObject {
       }
       throw error
     }
+  }
 
-    // Maximum retry attempts
-    let maxRetries = 3
+  private func createSpinDetailsString(_ spin: Spin) -> String {
+    return """
+        Spin ID: \(spin.id)
+        Audio Block ID: \(spin.audioBlock.id)
+        Audio Block Title: \(spin.audioBlock.title)
+        Audio Block Artist: \(spin.audioBlock.artist)
+        Download URL: \(spin.audioBlock.downloadUrl?.absoluteString ?? "nil")
+      """
+  }
 
-    // Cancel any existing download for this spin
-    if let existingDownloadId = activeDownloadIds[spin.id] {
+  private func cancelExistingDownload(for spinId: String) {
+    if let existingDownloadId = activeDownloadIds[spinId] {
       _ = fileDownloadManager.cancelDownload(id: existingDownloadId)
-      activeDownloadIds.removeValue(forKey: spin.id)
+      activeDownloadIds.removeValue(forKey: spinId)
+    }
+  }
+
+  private func loadSpinWithProgress(_ spin: Spin, _ spinPlayer: SpinPlayer, _ showProgress: Bool)
+    async -> Result<URL, Error>
+  {
+    return await spinPlayer.load(
+      spin,
+      onDownloadProgress: { [weak self] progress in
+        guard let self = self, showProgress else { return }
+        self.state = .loading(progress)
+      }
+    )
+  }
+
+  private func handleLoadResult(
+    _ result: Result<URL, Error>, spin: Spin, showProgress: Bool, retryCount: Int
+  ) async throws {
+    switch result {
+    case .success:
+      if showProgress {
+        self.state = .playing(spin)
+      }
+    case .failure(let error):
+      try await handleLoadFailure(
+        error, spin: spin, showProgress: showProgress, retryCount: retryCount)
+    }
+  }
+
+  private func handleLoadFailure(_ error: Error, spin: Spin, showProgress: Bool, retryCount: Int)
+    async throws
+  {
+    if shouldSkipRetry(for: error) {
+      throw error
     }
 
-    do {
-      // Use new async API
-      let result = await spinPlayer.load(
-        spin,
-        onDownloadProgress: { [weak self] progress in
-          guard let self = self, showProgress else { return }
-          self.state = .loading(progress)
-        }
-      )
+    let stationError = convertToStationError(error)
+    Task {
+      await self.errorReporter.reportError(stationError, level: .error)
+    }
 
-      switch result {
-      case .success:
-        if showProgress {
-          self.state = .playing(spin)
-        }
-        return
-      case .failure(let error):
-        // Check if this is a cancellation error - don't retry those
-        if let urlError = error as? URLError, urlError.code == .cancelled {
-          throw error
-        }
+    try await retryIfPossible(
+      spin: spin, showProgress: showProgress, retryCount: retryCount, fallbackError: error)
+  }
 
-        if let fileDownloadError = error as? FileDownloadError,
-          case .downloadCancelled = fileDownloadError
-        {
-          throw error
-        }
+  private func handleSchedulingError(
+    _ error: Error, spin: Spin, showProgress: Bool, retryCount: Int
+  ) async throws {
+    if shouldSkipRetry(for: error) {
+      throw error
+    }
 
-        // Handle file loading failure
-        let stationError =
-          error is FileDownloadError
-          ? error
-          : StationPlayerError.fileDownloadError(error.localizedDescription)
+    try await retryIfPossible(
+      spin: spin, showProgress: showProgress, retryCount: retryCount, fallbackError: error)
+  }
 
-        Task {
-          await self.errorReporter.reportError(stationError, level: .error)
-        }
+  private func shouldSkipRetry(for error: Error) -> Bool {
+    if let urlError = error as? URLError, urlError.code == .cancelled {
+      return true
+    }
+    if let fileDownloadError = error as? FileDownloadError,
+      case .downloadCancelled = fileDownloadError
+    {
+      return true
+    }
+    return false
+  }
 
-        // If we haven't exceeded retry attempts, try again
-        if retryCount < maxRetries {
-          // Add a small delay before retrying (exponential backoff)
-          let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
-          try await Task.sleep(for: .seconds(delay))
-          try await self.scheduleSpin(
-            spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
-        } else {
-          throw error
-        }
+  private func convertToStationError(_ error: Error) -> Error {
+    return error is FileDownloadError
+      ? error
+      : StationPlayerError.fileDownloadError(error.localizedDescription)
+  }
+
+  private func retryIfPossible(
+    spin: Spin, showProgress: Bool, retryCount: Int, fallbackError: Error
+  ) async throws {
+    let maxRetries = 3
+    if retryCount < maxRetries {
+      let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
+      try await Task.sleep(for: .seconds(delay))
+      try await self.scheduleSpin(
+        spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
+    } else {
+      let finalError =
+        fallbackError is StationPlayerError
+        ? fallbackError
+        : StationPlayerError.fileDownloadError(fallbackError.localizedDescription)
+      Task {
+        await errorReporter.reportError(finalError, level: .error)
       }
-    } catch {
-      // Check if this is a cancellation error - don't retry those
-      if let urlError = error as? URLError, urlError.code == .cancelled {
-        throw error
-      }
-
-      if let fileDownloadError = error as? FileDownloadError,
-        case .downloadCancelled = fileDownloadError
-      {
-        throw error
-      }
-
-      // If we haven't exceeded retry attempts, try again with exponential backoff
-      if retryCount < maxRetries {
-        let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
-        try await Task.sleep(for: .seconds(delay))
-        try await self.scheduleSpin(
-          spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
-      } else {
-        let stationError =
-          error is StationPlayerError
-          ? error
-          : StationPlayerError.fileDownloadError(error.localizedDescription)
-        Task {
-          await errorReporter.reportError(stationError, level: .error)
-        }
-        throw error
-      }
+      throw fallbackError
     }
   }
 
