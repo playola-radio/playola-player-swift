@@ -21,11 +21,12 @@ platform :ios do
   end
 
   desc "Run SwiftLint"
-  lane :lint do
+  lane :lint_code do
     swiftlint(
       mode: :lint,
+      strict: true, # Fails on warnings
       config_file: ".swiftlint.yml",
-      strict: true
+      executable: "swiftlint"
     )
   end
 end

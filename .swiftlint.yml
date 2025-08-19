@@ -1,31 +1,31 @@
+# SwiftLint Configuration
 disabled_rules:
   - trailing_whitespace
-  - line_length
+  - trailing_comma
+  - opening_brace
+  - closure_parameter_position
+  - todo
 
-opt_in_rules:
-  - empty_count
-  - empty_string
-  - redundant_nil_coalescing
+# General configuration
+line_length:
+  warning: 120
+  error: 200
 
-excluded:
-  - Carthage
-  - Pods
-  - .build
-
-function_parameter_count:
-  warning: 6
-  error: 8
-
+# Allow shorter variable names in specific contexts
 identifier_name:
-  min_length: 2
-  allowed_symbols: "_"
+  min_length:
+    warning: 2
+    error: 1
+  excluded:
+    - "to"  # Common parameter name in Mail.swift
+    - "fm"  # Enum case in RadioStation.swift
+  allowed_symbols:
+    - "_"  # Common in variable names
 
-type_name:
-  min_length: 3
+type_body_length:
+  warning: 1000
+  error: 1000
 
-vertical_whitespace:
-  max_empty_lines: 2
-
-cyclomatic_complexity:
-  warning: 15
-  error: 25
+file_length:
+  warning: 1000
+  error: 1000

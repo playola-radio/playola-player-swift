@@ -23,10 +23,10 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 Run tests
 
-### ios lint
+### ios lint_code
 
 ```sh
-[bundle exec] fastlane ios lint
+[bundle exec] fastlane ios lint_code
 ```
 
 Run SwiftLint
