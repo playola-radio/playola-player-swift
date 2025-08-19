@@ -1,5 +1,11 @@
 import Foundation
 
+public struct ScheduledTimer {
+  let deadline: Date
+  let timer: Timer
+  let block: () -> Void
+}
+
 public protocol TimerProvider: Sendable {
   func schedule(deadline: Date, repeating: TimeInterval, block: @escaping () -> Void) -> Timer
 }
@@ -27,7 +33,7 @@ final public class LiveTimerProvider: TimerProvider {
 
 // Unchecked because it's mutable, but only used in tests.
 final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
-  public var scheduledTimers: [(deadline: Date, timer: Timer, block: () -> Void)] = []
+  public var scheduledTimers: [ScheduledTimer] = []
 
   public func schedule(deadline: Date, repeating: TimeInterval, block: @escaping () -> Void)
     -> Timer
@@ -35,7 +41,7 @@ final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
     let timer = Timer(fire: deadline, interval: repeating, repeats: false) { _ in
       block()
     }
-    scheduledTimers.append((deadline: deadline, timer: timer, block: block))
+    scheduledTimers.append(ScheduledTimer(deadline: deadline, timer: timer, block: block))
     return timer
   }
 
@@ -54,10 +60,11 @@ final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
 }
 
 // Exploration of possible better mocking for later.
-//struct TimerProviderStruct: Sendable {
-//  var schedule: @Sendable (_ deadline: Date, _ repeating: TimeInterval, _ block: @Sendable @escaping () -> Void) -> Timer
-//}
-//extension TimerProviderStruct {
+// struct TimerProviderStruct: Sendable {
+//  var schedule: @Sendable (_ deadline: Date, _ repeating: TimeInterval,
+//                         _ block: @Sendable @escaping () -> Void) -> Timer
+// }
+// extension TimerProviderStruct {
 //  static var liveValue: Self {
 //    return Self { deadline, repeating, block in
 //      let timer = Timer(fire: deadline, interval: repeating, repeats: false) { _ in
@@ -67,4 +74,4 @@ final public class TestTimerProvider: TimerProvider, @unchecked Sendable {
 //      return timer
 //    }
 //  }
-//}
+// }

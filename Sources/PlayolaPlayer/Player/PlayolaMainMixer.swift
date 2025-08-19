@@ -13,7 +13,7 @@ import os.log
   import UIKit
 #endif
 
-public protocol PlayolaMainMixerDelegate {
+public protocol PlayolaMainMixerDelegate: AnyObject {
   func player(_ mainMixer: PlayolaMainMixer, didPlayBuffer: AVAudioPCMBuffer)
 }
 

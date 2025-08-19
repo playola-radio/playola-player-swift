@@ -26,14 +26,14 @@ let package = Package(
       name: "PlayolaPlayer",
       resources: [.copy("MockData")],
       plugins: [
-        //              .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
+        .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
       ]
     ),
     .testTarget(
       name: "PlayolaPlayerTests",
       dependencies: ["PlayolaPlayer"],
       plugins: [
-        //              .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
+        .plugin(name: "SwiftLintBuildToolPlugin", package: "SwiftLintPlugins")
       ]
     ),
   ]

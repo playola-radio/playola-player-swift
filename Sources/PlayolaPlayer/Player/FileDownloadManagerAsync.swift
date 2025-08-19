@@ -8,6 +8,12 @@
 import Foundation
 import os.log
 
+private struct FileInfo {
+  let url: URL
+  let size: Int64
+  let date: Date
+}
+
 /// Errors specific to file downloading and caching
 public enum FileDownloadError: Error, LocalizedError {
   case directoryCreationFailed(String)
@@ -304,13 +310,13 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
         options: [.skipsHiddenFiles])
 
       var totalSize: Int64 = 0
-      var fileInfos: [(url: URL, size: Int64, date: Date)] = []
+      var fileInfos: [FileInfo] = []
 
       for fileURL in contents {
         let attributes = try fileURL.resourceValues(forKeys: [.fileSizeKey, .creationDateKey])
         if let size = attributes.fileSize, let date = attributes.creationDate {
           totalSize += Int64(size)
-          fileInfos.append((url: fileURL, size: Int64(size), date: date))
+          fileInfos.append(FileInfo(url: fileURL, size: Int64(size), date: date))
         }
       }
 

@@ -4,6 +4,27 @@ orbs:
   ruby: circleci/ruby@2.0.0
 
 jobs:
+  swiftlint_check:
+    macos:
+      xcode: 16.2.0
+    steps:
+      - checkout
+      - run:
+          name: Install Bundler
+          command: gem install bundler
+      - run:
+          name: Install Fastlane
+          command: bundle install
+      - run:
+          name: Install SwiftLint (Homebrew)
+          command: brew install swiftlint
+      - run:
+          name: Run SwiftLint via Fastlane
+          command: bundle exec fastlane lint_code
+      - run:
+          name: Run swift-format lint check
+          command: bundle exec fastlane format_check
+
   test:
     macos:
       xcode: 16.2.0
@@ -27,6 +48,10 @@ jobs:
 
 workflows:
   version: 2
+  lint-codebase:
+    jobs:
+      - swiftlint_check
+  
   build-test:
     jobs:
       - test

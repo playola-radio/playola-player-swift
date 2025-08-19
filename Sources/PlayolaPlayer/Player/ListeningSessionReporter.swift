@@ -43,7 +43,7 @@ public class ListeningSessionReporter {
   public struct ListeningSessionRequest: Codable {
     let deviceId: String
     let stationId: String?
-    var stationUrl: String? = nil
+    var stationUrl: String?
   }
 
   var deviceId: String? {
@@ -192,7 +192,7 @@ public class ListeningSessionReporter {
   private func startPeriodicNotifications() {
     self.timer = Timer.scheduledTimer(
       withTimeInterval: 10.0, repeats: true,
-      block: { [weak self] timer in
+      block: { [weak self] _ in
         guard let self else { return }
         guard let stationId = self.stationPlayer?.stationId else {
           let error = ListeningSessionError.invalidResponse(
