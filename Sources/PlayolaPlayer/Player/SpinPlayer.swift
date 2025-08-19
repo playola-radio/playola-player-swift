@@ -181,8 +181,21 @@ public class SpinPlayer {
   // MARK: Playback
 
   public func stop() {
+    os_log(
+      "🛑 SpinPlayer.stop() called - ID: %@, spin: %@",
+      log: SpinPlayer.logger,
+      type: .info,
+      self.id.uuidString,
+      self.spin?.id ?? "nil")
+
     // Cancel any active download
     if let activeDownloadId = activeDownloadId {
+      os_log(
+        "Cancelling download ID: %@ for spin: %@",
+        log: SpinPlayer.logger,
+        type: .info,
+        activeDownloadId.uuidString,
+        self.spin?.id ?? "nil")
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
       self.activeDownloadId = nil
     }
@@ -209,6 +222,12 @@ public class SpinPlayer {
   }
 
   private func clear() {
+    os_log(
+      "Clearing SpinPlayer - ID: %@",
+      log: SpinPlayer.logger,
+      type: .debug,
+      self.id.uuidString)
+
     stopAudio()
     clearTimers()
     clearFades()
@@ -220,20 +239,39 @@ public class SpinPlayer {
   }
 
   func clearTimers() {
+    os_log(
+      "Clearing timers for SpinPlayer - ID: %@",
+      log: SpinPlayer.logger,
+      type: .debug,
+      self.id.uuidString)
+
     // Invalidate and clear start notification timer atomically
     if let timer = startNotificationTimer {
+      os_log(
+        "Invalidating start notification timer",
+        log: SpinPlayer.logger,
+        type: .debug)
       timer.invalidate()
       startNotificationTimer = nil
     }
 
     // Invalidate and clear clear timer atomically
     if let timer = clearTimer {
+      os_log(
+        "Invalidating clear timer",
+        log: SpinPlayer.logger,
+        type: .debug)
       timer.invalidate()
       clearTimer = nil
     }
 
     // Invalidate and clear all fade timers atomically
     if !fadeTimers.isEmpty {
+      os_log(
+        "Invalidating %d fade timers",
+        log: SpinPlayer.logger,
+        type: .debug,
+        fadeTimers.count)
       let timersToInvalidate = fadeTimers
       fadeTimers.removeAll()
       timersToInvalidate.forEach { $0.invalidate() }
@@ -266,12 +304,17 @@ public class SpinPlayer {
   /// If this method is called on a spin that is not loaded, playback will not start.
   public func playNow(from: Double, to: Double? = nil) {
     do {
+      os_log("Starting playback from position %f", log: SpinPlayer.logger, type: .info, from)
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
       try engine.start()
 
       // Check if file is still available (not cleared by stop())
       guard let audioFile = currentFile else {
+        os_log(
+          "Cannot play - audio file was cleared (likely by stop())",
+          log: SpinPlayer.logger,
+          type: .info)
         self.state = .available
         return
       }
@@ -293,6 +336,7 @@ public class SpinPlayer {
       if let spin {
         delegate?.player(self, startedPlaying: spin)
       }
+      os_log("Successfully started playback", log: SpinPlayer.logger, type: .info)
     } catch {
       Task {
         await errorReporter.reportError(
@@ -318,6 +362,8 @@ public class SpinPlayer {
   public func load(_ spin: Spin, onDownloadProgress: ((Float) -> Void)? = nil) async -> Result<
     URL, Error
   > {
+    os_log("Loading spin: %@", log: SpinPlayer.logger, type: .info, spin.id)
+
     self.state = .loading
     self.spin = spin
 
@@ -411,6 +457,10 @@ public class SpinPlayer {
   /// Schedule playback to start at a specific time
   public func schedulePlay(at scheduledDate: Date) {
     do {
+      os_log(
+        "Scheduling play at %@", log: SpinPlayer.logger, type: .info,
+        ISO8601DateFormatter().string(from: scheduledDate))
+
       // Make sure audio session is configured before scheduling playback
       playolaMainMixer.configureAudioSession()
       try engine.start()
@@ -447,7 +497,12 @@ public class SpinPlayer {
         // Always invalidate timer first to prevent double execution
         timer.invalidate()
 
-        guard let self = self else { return }
+        os_log("⏰ Timer fired", log: SpinPlayer.logger, type: .info)
+
+        guard let self = self else {
+          os_log("⚠️ Timer fired but SpinPlayer deallocated", log: SpinPlayer.logger, type: .default)
+          return
+        }
 
         // Ensure we're on main actor for state checks
         Task { @MainActor in
@@ -456,8 +511,11 @@ public class SpinPlayer {
             let spin = self.spin,
             spin.id == scheduledSpinId
           else {
+            os_log("⚠️ Timer invalid or spin changed", log: SpinPlayer.logger, type: .default)
             return
           }
+
+          os_log("✅ Timer fired successfully", log: SpinPlayer.logger, type: .info)
 
           // Clear the timer reference since it's now invalid
           self.startNotificationTimer = nil
@@ -468,6 +526,12 @@ public class SpinPlayer {
       }
 
       RunLoop.main.add(self.startNotificationTimer!, forMode: .default)
+      os_log(
+        "Added timer to RunLoop for spin: %@ scheduled at %@",
+        log: SpinPlayer.logger,
+        type: .debug,
+        self.spin?.id ?? "nil",
+        ISO8601DateFormatter().string(from: scheduledDate))
 
     } catch {
       Task {
@@ -485,6 +549,7 @@ public class SpinPlayer {
   }
 
   public func loadFile(with url: URL) async {
+    os_log("Loading audio file: %@", log: SpinPlayer.logger, type: .info, url.lastPathComponent)
     do {
       // First check if the file exists and has a reasonable size
       let fileManager = FileManager.default
@@ -524,6 +589,9 @@ public class SpinPlayer {
       do {
         currentFile = try AVAudioFile(forReading: url)
         normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
+        os_log(
+          "Successfully loaded audio file: %@", log: SpinPlayer.logger, type: .info,
+          url.lastPathComponent)
       } catch let audioError as NSError {
         // More detailed context with file information
         let contextInfo =
@@ -595,6 +663,10 @@ public class SpinPlayer {
     // Add to active fades
     activeFades.insert(fadeOperation)
 
+    os_log(
+      "Scheduled fade: %.2f→%.2f over %.2fs", log: SpinPlayer.logger, type: .debug, startVolume,
+      endVolume, time)
+
     #if os(iOS)
       if activeDisplayLink == nil {
         activeDisplayLink = CADisplayLink(target: self, selector: #selector(updateFades))
@@ -655,6 +727,7 @@ public class SpinPlayer {
         fadeUpdateTimer = nil
       #endif
 
+      os_log("All fades completed", log: SpinPlayer.logger, type: .debug)
     }
   }
 
