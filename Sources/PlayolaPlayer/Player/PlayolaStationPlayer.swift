@@ -64,7 +64,7 @@ final public class PlayolaStationPlayer: ObservableObject {
   private var interruptedStationId: String?
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManaging
-  var listeningSessionReporter: ListeningSessionReporter? = nil
+  var listeningSessionReporter: ListeningSessionReporter?
   private let errorReporter = PlayolaErrorReporter.shared
   private var authProvider: PlayolaAuthenticationProvider?
 
@@ -126,7 +126,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   public var isPlaying: Bool {
     switch state {
-    case .playing(_):
+    case .playing:
       return true
     default:
       return false
@@ -216,7 +216,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       )
 
       switch result {
-      case .success(_):
+      case .success:
         if showProgress {
           self.state = .playing(spin)
         }
