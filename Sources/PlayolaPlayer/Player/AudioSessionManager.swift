@@ -19,10 +19,12 @@ protocol AudioSessionManaging {
 #if os(iOS)
   /// iOS implementation using AVAudioSession
   class AudioSessionManager: AudioSessionManaging {
-    private var _isConfigured = false
     private let errorReporter: PlayolaErrorReporter
 
-    var isConfigured: Bool { _isConfigured }
+    var isConfigured: Bool {
+      let session = AVAudioSession.sharedInstance()
+      return session.category == .playback
+    }
 
     init(errorReporter: PlayolaErrorReporter = .shared) {
       self.errorReporter = errorReporter
@@ -33,12 +35,18 @@ protocol AudioSessionManaging {
 
       // First deactivate with appropriate options to reset state
       do {
+        print(
+          "🔊 Calling session.setActive(false, options: .notifyOthersOnDeactivation)"
+        )
         try session.setActive(false, options: .notifyOthersOnDeactivation)
+        print("🔊 Successfully deactivated session")
       } catch {
+        print("🔊 Error deactivating session: \(error)")
         // This is not a critical error, just log it
         await errorReporter.reportError(
           error,
-          context: "Non-critical error deactivating audio session before configuration",
+          context:
+            "Non-critical error deactivating audio session before configuration",
           level: .warning
         )
       }
@@ -49,12 +57,10 @@ protocol AudioSessionManaging {
         mode: .default,
         options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay]
       )
-
-      _isConfigured = true
     }
 
     func activate() async throws {
-      if !_isConfigured {
+      if !isConfigured {
         try await configureForPlayback()
       }
 
@@ -63,11 +69,10 @@ protocol AudioSessionManaging {
     }
 
     func deactivate() async throws {
-      guard _isConfigured else { return }
+      guard isConfigured else { return }
 
       let session = AVAudioSession.sharedInstance()
       try session.setActive(false, options: .notifyOthersOnDeactivation)
-      _isConfigured = false
     }
   }
 #endif
@@ -75,9 +80,7 @@ protocol AudioSessionManaging {
 #if os(macOS)
   /// macOS implementation - audio session management is handled automatically
   class AudioSessionManager: AudioSessionManaging {
-    private var _isConfigured = false
-
-    var isConfigured: Bool { _isConfigured }
+    var isConfigured: Bool { true }  // Always configured on macOS
 
     init(errorReporter: PlayolaErrorReporter = .shared) {
       // errorReporter not needed on macOS but kept for API compatibility
@@ -86,17 +89,14 @@ protocol AudioSessionManaging {
     func configureForPlayback() async throws {
       // On macOS, audio configuration is handled automatically by the system
       // No explicit session configuration needed
-      _isConfigured = true
     }
 
     func activate() async throws {
       // On macOS, audio activation is handled automatically
-      _isConfigured = true
     }
 
     func deactivate() async throws {
       // On macOS, audio deactivation is handled automatically
-      _isConfigured = false
     }
   }
 #endif
