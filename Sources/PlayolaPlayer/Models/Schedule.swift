@@ -57,10 +57,14 @@ public struct Schedule: Sendable {
 
 extension Schedule {
   public static let mock: Schedule = {
-    let url = Bundle.module.url(
-      forResource: "MockSchedule", withExtension: "json", subdirectory: "MockData")!
-    let data = try! Data(contentsOf: url, options: .dataReadingMapped)
-    let spins = try! JSONDecoderWithIsoFull().decode([Spin].self, from: data)
+    guard
+      let url = Bundle.module.url(
+        forResource: "MockSchedule", withExtension: "json", subdirectory: "MockData"),
+      let data = try? Data(contentsOf: url, options: .dataReadingMapped),
+      let spins = try? JSONDecoderWithIsoFull().decode([Spin].self, from: data)
+    else {
+      fatalError("Failed to load mock schedule data")
+    }
     return Schedule(stationId: spins[0].stationId, spins: spins)
   }()
 }

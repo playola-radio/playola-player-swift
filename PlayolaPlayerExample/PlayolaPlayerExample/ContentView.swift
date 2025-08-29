@@ -180,11 +180,13 @@ struct ContentView: View {
           // Main playback controls
           HStack(spacing: 40) {
             // Station picker
-            Button(action: { showingStationPicker.toggle() }) {
-              Image(systemName: "list.bullet")
-                .font(.title2)
-                .foregroundColor(.white.opacity(0.8))
-            }
+            Button(
+              action: { showingStationPicker.toggle() },
+              label: {
+                Image(systemName: "list.bullet")
+                  .font(.title2)
+                  .foregroundColor(.white.opacity(0.8))
+              })
 
             // Play/Stop button (current time)
             Button(action: playOrPause) {
@@ -293,23 +295,25 @@ struct StationPickerView: View {
   var body: some View {
     NavigationView {
       List(stations, id: \.0) { station in
-        Button(action: {
-          Task {
-            do {
-              try await PlayolaStationPlayer.shared.play(stationId: station.0)
-            } catch {
-              print("Failed to start playback: \(error)")
+        Button(
+          action: {
+            Task {
+              do {
+                try await PlayolaStationPlayer.shared.play(stationId: station.0)
+              } catch {
+                print("Failed to start playback: \(error)")
+              }
             }
-          }
-          dismiss()
-        }) {
-          HStack {
-            Image(systemName: "radio")
-              .foregroundColor(.blue)
-            Text(station.1)
-            Spacer()
-          }
-        }
+            dismiss()
+          },
+          label: {
+            HStack {
+              Image(systemName: "radio")
+                .foregroundColor(.blue)
+              Text(station.1)
+              Spacer()
+            }
+          })
       }
       .navigationTitle("Select Station")
       .navigationBarItems(trailing: Button("Done") { dismiss() })

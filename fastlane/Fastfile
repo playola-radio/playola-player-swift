@@ -10,22 +10,26 @@ platform :ios do
 
   desc "Run tests"
   lane :tests do
-    scan(
-      package_path: ".",
-      scheme: "PlayolaPlayer",
-      devices: ["iPhone 14"],
-      prelaunch_simulator: true,
-      result_bundle: true,
-      xcargs: "-skipMacroValidation -skipPackagePluginValidation",
-    )
+    sh("swift test")
   end
 
   desc "Run SwiftLint"
-  lane :lint do
+  lane :lint_code do
     swiftlint(
       mode: :lint,
+      strict: true, # Fails on warnings
       config_file: ".swiftlint.yml",
-      strict: true
+      executable: "swiftlint"
     )
+  end
+
+  desc "Run swift-format lint check"
+  lane :format_check do
+    sh("find .. -name '*.swift' -not -path '../.build/*' | xargs xcrun swift-format lint")
+  end
+
+  desc "Format Swift code with swift-format"
+  lane :format_code do
+    sh("find .. -name '*.swift' -not -path '../.build/*' | xargs xcrun swift-format format -i")
   end
 end
