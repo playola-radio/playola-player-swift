@@ -538,8 +538,8 @@ PlayolaPlayer makes separate audio files sound like a continuous radio stream by
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    PlayolaStationPlayer                        │
-│                   (Main Coordinator)                           │
+│                    PlayolaStationPlayer                         │
+│                   (Main Coordinator)                            │
 ├─────────────────────────────────────────────────────────────────┤
 │ ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────────┐ │
 │ │   SpinPlayer    │ │   SpinPlayer    │ │   SpinPlayer        │ │
@@ -548,7 +548,7 @@ PlayolaPlayer makes separate audio files sound like a continuous radio stream by
 ├─────────────────────────────────────────────────────────────────┤
 │ ┌─────────────────────────────────────────────────────────────┐ │
 │ │              PlayolaMainMixer                               │ │
-│ │            (AVAudioEngine Coordinator)                     │ │
+│ │            (AVAudioEngine Coordinator)                      │ │
 │ └─────────────────────────────────────────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────────┤
 │ ┌───────────────┐ ┌───────────────┐ ┌─────────────────────────┐ │
