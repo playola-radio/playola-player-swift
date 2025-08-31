@@ -52,6 +52,7 @@ public struct AudioBlock: Codable, Sendable {
   public let youTubeId: Int?
   public let isrc: String?
   public let spotifyId: String?
+  public let appleId: String?
   public let imageUrl: URL?
 
   /// Transcription of the audio content (when available)
@@ -61,7 +62,7 @@ public struct AudioBlock: Codable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case id, title, artist, durationMS, endOfMessageMS, beginningOfOutroMS, endOfIntroMS
     case lengthOfOutroMS, s3Key, s3BucketName, type, createdAt, updatedAt
-    case album, popularity, youTubeId, isrc, spotifyId, transcription
+    case album, popularity, youTubeId, isrc, spotifyId, appleId, transcription
     case imageUrlString = "imageUrl"
     case downloadUrlString = "downloadUrl"
   }
@@ -87,6 +88,7 @@ public struct AudioBlock: Codable, Sendable {
     youTubeId = try container.decodeIfPresent(Int.self, forKey: .youTubeId)
     isrc = try container.decodeIfPresent(String.self, forKey: .isrc)
     spotifyId = try container.decodeIfPresent(String.self, forKey: .spotifyId)
+    appleId = try container.decodeIfPresent(String.self, forKey: .appleId)
     transcription = try container.decodeIfPresent(String.self, forKey: .transcription)
 
     // Convert imageUrl string to URL
@@ -126,6 +128,7 @@ public struct AudioBlock: Codable, Sendable {
     try container.encodeIfPresent(youTubeId, forKey: .youTubeId)
     try container.encodeIfPresent(isrc, forKey: .isrc)
     try container.encodeIfPresent(spotifyId, forKey: .spotifyId)
+    try container.encodeIfPresent(appleId, forKey: .appleId)
     try container.encodeIfPresent(transcription, forKey: .transcription)
 
     // Convert URL back to string for encoding
@@ -138,6 +141,7 @@ public struct AudioBlock: Codable, Sendable {
     beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?,
     s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date,
     album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?,
+    appleId: String? = nil,
     imageUrl: String?, transcription: String? = nil
   ) {
     self.id = id
@@ -159,6 +163,7 @@ public struct AudioBlock: Codable, Sendable {
     self.youTubeId = youTubeId
     self.isrc = isrc
     self.spotifyId = spotifyId
+    self.appleId = appleId
     self.imageUrl = imageUrl != nil ? URL(string: imageUrl!) : nil
     self.transcription = transcription
   }
@@ -169,6 +174,7 @@ public struct AudioBlock: Codable, Sendable {
     beginningOfOutroMS: Int, endOfIntroMS: Int, lengthOfOutroMS: Int, downloadUrl: URL?,
     s3Key: String, s3BucketName: String, type: String, createdAt: Date, updatedAt: Date,
     album: String?, popularity: Int?, youTubeId: Int?, isrc: String?, spotifyId: String?,
+    appleId: String? = nil,
     imageUrl: URL?, transcription: String? = nil
   ) {
     self.id = id
@@ -190,6 +196,7 @@ public struct AudioBlock: Codable, Sendable {
     self.youTubeId = youTubeId
     self.isrc = isrc
     self.spotifyId = spotifyId
+    self.appleId = appleId
     self.imageUrl = imageUrl
     self.transcription = transcription
   }
@@ -270,6 +277,7 @@ extension AudioBlock {
       youTubeId: mockBlock.youTubeId,
       isrc: mockBlock.isrc,
       spotifyId: mockBlock.spotifyId,
+      appleId: mockBlock.appleId,
       imageUrl: imageUrl ?? mockBlock.imageUrl,
       transcription: transcription ?? mockBlock.transcription
     )
