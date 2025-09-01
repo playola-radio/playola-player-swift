@@ -250,6 +250,7 @@ extension AudioBlock {
     popularity: Int? = nil,
     imageUrl: URL? = nil,
     transcription: String? = nil,
+    spotifyId: String? = nil,
     createdAt: Date? = nil,
     updatedAt: Date? = nil
   ) -> AudioBlock {
@@ -276,7 +277,7 @@ extension AudioBlock {
       popularity: popularity ?? mockBlock.popularity,
       youTubeId: mockBlock.youTubeId,
       isrc: mockBlock.isrc,
-      spotifyId: mockBlock.spotifyId,
+      spotifyId: spotifyId ?? mockBlock.spotifyId,
       appleId: mockBlock.appleId,
       imageUrl: imageUrl ?? mockBlock.imageUrl,
       transcription: transcription ?? mockBlock.transcription
