@@ -4,7 +4,7 @@
 //
 //  Created by Brian D Keane on 9/2/25.
 //
-
+// swiftlint:disable file_length
 import PlayolaPlayer
 import SwiftUI
 
@@ -1002,3 +1002,5 @@ struct DetailSpinVisualization: View {
 #Preview {
   ScheduleViewer(selectedStationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
 }
+
+// swiftlint:enable file_length
