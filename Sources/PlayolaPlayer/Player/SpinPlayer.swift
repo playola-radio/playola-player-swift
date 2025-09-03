@@ -4,7 +4,7 @@
 //
 //  Created by Brian D Keane on 1/6/25.
 //
-
+// swiftlint:disable file_length
 import AVFoundation
 import AudioToolbox
 import Foundation
@@ -78,6 +78,16 @@ public class SpinPlayer {
 
   /// The node responsible for playing the audio file
   private let playerNode = AVAudioPlayerNode()
+
+  // Insert a per-player track mixer so we can automate volume on the audio thread
+  private let trackMixer = AVAudioMixerNode()
+  /// Cached rampable volume parameter for fades/automation
+  private var volumeParam: AUParameter?
+  /// Captured mixer start sample (from the first non-silent tap callback)
+  private var scheduledStartSample: AUEventSampleTime?
+  /// One-shot tap guards
+  private var startTapInstalled = false
+  private var didCaptureStart = false
 
   private var normalizationCalculator: AudioNormalizationCalculator?
 
@@ -166,11 +176,19 @@ public class SpinPlayer {
 
     /// Make connections
     engine.attach(playerNode)
+    engine.attach(trackMixer)
+    // connect player -> per-track mixer -> shared main mixer
     engine.connect(
       playerNode,
+      to: trackMixer,
+      format: TapProperties.default.format
+    )
+    engine.connect(
+      trackMixer,
       to: playolaMainMixer.mixerNode,
       format: TapProperties.default.format
     )
+    trackMixer.outputVolume = 1.0
     engine.prepare()
   }
 
@@ -495,6 +513,108 @@ public class SpinPlayer {
     }
     self.state = .available
     continuation.resume(returning: .failure(error))
+  }
+
+  /// Resolve and cache the rampable volume parameter we'll use for automation on `trackMixer`.
+  private func resolveVolumeParam() -> AUParameter? {
+    if let p = volumeParam { return p }
+    guard let tree = trackMixer.auAudioUnit.parameterTree else { return nil }
+    // Prefer output.0 volume, else input.0.0, else any rampable "volume"/"0", else first rampable.
+    let params = tree.allParameters.filter { $0.flags.contains(.flag_CanRamp) }
+    if let byOutput = params.first(where: { $0.keyPath.lowercased().contains("output.0") }) {
+      volumeParam = byOutput
+      return byOutput
+    }
+    if let byInput0 = params.first(where: { $0.keyPath.lowercased().contains("input.0.0") }) {
+      volumeParam = byInput0
+      return byInput0
+    }
+    if let byName = params.first(where: { $0.identifier.lowercased() == "volume" }) {
+      volumeParam = byName
+      return byName
+    }
+    if let byZero = params.first(where: { $0.identifier == "0" }) {
+      volumeParam = byZero
+      return byZero
+    }
+    if let any = params.first {
+      volumeParam = any
+      return any
+    }
+    return nil
+  }
+
+  /// Install a one-shot tap to capture the first non-silent render on `trackMixer`,
+  /// establishing `scheduledStartSample` so fades can be scheduled in the audio sample domain.
+  private func installStartTapIfNeeded(pendingFades: [(offset: Double, to: Float)]) {
+    guard !startTapInstalled else { return }
+    startTapInstalled = true
+    didCaptureStart = false
+
+    trackMixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, time in
+      guard let self = self else { return }
+      if self.didCaptureStart { return }
+
+      // Require some energy to avoid preroll silence
+      var hasEnergy = false
+      if let ch = buffer.floatChannelData?.pointee {
+        let n = Int(buffer.frameLength)
+        var acc: Float = 0
+        if n > 0 {
+          for i in 0..<n { acc += ch[i] * ch[i] }
+          let rms = sqrt(acc / Float(n))
+          hasEnergy = rms > 1e-6
+        }
+      }
+      if !hasEnergy { return }
+
+      self.didCaptureStart = true
+      self.scheduledStartSample = AUEventSampleTime(time.sampleTime)
+
+      // Remove the tap immediately (one-shot)
+      self.trackMixer.removeTap(onBus: 0)
+      self.startTapInstalled = false
+
+      // Ensure a known baseline on the exact host time of first render
+      if let p = self.resolveVolumeParam() {
+        p.setValue(1.0, originator: nil, atHostTime: time.hostTime)
+      }
+
+      // Schedule any fades that were waiting for start capture
+      self.scheduleFadesAtStartIfNeeded(pendingFades)
+    }
+  }
+
+  /// Queue stepwise fades in the audio render thread using the AU's scheduleParameterBlock.
+  private func scheduleFadesAtStartIfNeeded(_ fades: [(offset: Double, to: Float)]) {
+    guard let start = scheduledStartSample,
+      let param = resolveVolumeParam()
+    else { return }
+    let sr = trackMixer.auAudioUnit.outputBusses[0].format.sampleRate
+    let schedule = trackMixer.auAudioUnit.scheduleParameterBlock
+
+    for (offset, target) in fades {
+      var when = start + AUEventSampleTime(offset * sr)
+      // Safety: avoid scheduling in the past
+      if let rt = trackMixer.lastRenderTime {
+        let nowSample = AUEventSampleTime(rt.sampleTime)
+        let guardFrames = AUEventSampleTime(sr * 0.010)  // 10ms
+        if when <= nowSample + guardFrames { when = nowSample + guardFrames }
+      }
+
+      // 2s fade using 48 steps (≈41.7ms per step); keep minimal and audible.
+      let duration: Double = 1.5  // preserve existing feel; adjust as needed
+      let steps = 48
+      let totalFrames = AUEventSampleTime(duration * sr)
+      let framesPerStep = max<AUEventSampleTime>(1, totalFrames / AUEventSampleTime(steps))
+      let v0 = param.value
+      let v1 = AUValue(target)
+      for i in 0...steps {
+        let t = Double(i) / Double(steps)
+        let v = v0 + (v1 - v0) * AUValue(t)
+        schedule(when + AUEventSampleTime(i) * framesPerStep, 0, param.address, v)
+      }
+    }
   }
 
   private func avAudioTimeFromDate(date: Date) -> AVAudioTime {
@@ -894,29 +1014,19 @@ public class SpinPlayer {
   }
 
   public func scheduleFades(_ spin: Spin) {
-    for fade in spin.fades {
-      let fadeTime = spin.airtime.addingTimeInterval(
-        TimeInterval(fade.atMS / 1000)
-      )
-      let timer = Timer(
-        fire: fadeTime,
-        interval: 0,
-        repeats: false
-      ) { [weak self, fade] timer in
-        // Always invalidate timer first
-        timer.invalidate()
-
-        guard let self = self else { return }
-
-        Task { @MainActor in
-          // Remove timer from the set (it's already invalidated)
-          self.fadeTimers.remove(timer)
-          self.fadePlayer(toVolume: fade.toVolume, overTime: 1.5)
-        }
-      }
-      RunLoop.main.add(timer, forMode: .default)
-      fadeTimers.insert(timer)
+    // Convert Spin fades to offsets (seconds) relative to song start
+    let fades: [(offset: Double, to: Float)] = spin.fades.map {
+      (Double($0.atMS) / 1000.0, $0.toVolume)
     }
+
+    // If we already captured the mixer start, schedule immediately.
+    if scheduledStartSample != nil {
+      scheduleFadesAtStartIfNeeded(fades)
+      return
+    }
+
+    // Otherwise, install a one-shot tap to capture the true start and then schedule.
+    installStartTapIfNeeded(pendingFades: fades)
   }
 
   private func setClearTimer(_ spin: Spin?) {
@@ -951,3 +1061,5 @@ public class SpinPlayer {
     RunLoop.main.add(self.clearTimer!, forMode: .default)
   }
 }
+
+// swiftlint:enable file_length
