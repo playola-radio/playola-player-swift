@@ -8,6 +8,10 @@
 import PlayolaPlayer
 import SwiftUI
 
+#if os(iOS)
+  import UIKit
+#endif
+
 // Preference key to track scroll position
 struct ScrollOffsetPreferenceKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
@@ -40,6 +44,7 @@ struct DetailSpinInfo: Identifiable {
 struct ScheduleViewer: View {
   @ObservedObject var player = PlayolaStationPlayer.shared
   @Environment(\.dismiss) var dismiss
+  let selectedStationId: String
   @State private var schedule: Schedule?
   @State private var isLoading = true
   @State private var selectedSpin: Spin?
@@ -167,38 +172,42 @@ struct ScheduleViewer: View {
                 HStack {
                   // Zoom controls
                   HStack(spacing: 12) {
-                    Button(action: {
-                      withAnimation(.easeInOut(duration: 0.2)) {
-                        // Use variable zoom steps - smaller steps at higher zoom
-                        let step = zoomScale > 5.0 ? 1.0 : (zoomScale > 2.0 ? 0.5 : 0.25)
-                        zoomScale = max(zoomScale - step, 0.1)
-                        // Clear detail info when zoom changes
-                        detailSpinInfo.removeAll()
-                      }
-                    }, label: {
-                      Image(systemName: "minus.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                    }
+                    Button(
+                      action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                          // Use variable zoom steps - smaller steps at higher zoom
+                          let step = zoomScale > 5.0 ? 1.0 : (zoomScale > 2.0 ? 0.5 : 0.25)
+                          zoomScale = max(zoomScale - step, 0.1)
+                          // Clear detail info when zoom changes
+                          detailSpinInfo.removeAll()
+                        }
+                      },
+                      label: {
+                        Image(systemName: "minus.circle.fill")
+                          .font(.title2)
+                          .foregroundColor(.white)
+                      })
 
                     Text(formatZoomPercentage(zoomScale))
                       .font(.system(size: 14, weight: .medium))
                       .foregroundColor(.white)
                       .frame(width: 60)
 
-                    Button(action: {
-                      withAnimation(.easeInOut(duration: 0.2)) {
-                        // Use variable zoom steps - smaller steps at higher zoom
-                        let step = zoomScale > 5.0 ? 1.0 : (zoomScale > 2.0 ? 0.5 : 0.25)
-                        zoomScale = min(zoomScale + step, 20.0)
-                        // Clear detail info when zoom changes
-                        detailSpinInfo.removeAll()
-                      }
-                    }, label: {
-                      Image(systemName: "plus.circle.fill")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                    }
+                    Button(
+                      action: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                          // Use variable zoom steps - smaller steps at higher zoom
+                          let step = zoomScale > 5.0 ? 1.0 : (zoomScale > 2.0 ? 0.5 : 0.25)
+                          zoomScale = min(zoomScale + step, 20.0)
+                          // Clear detail info when zoom changes
+                          detailSpinInfo.removeAll()
+                        }
+                      },
+                      label: {
+                        Image(systemName: "plus.circle.fill")
+                          .font(.title2)
+                          .foregroundColor(.white)
+                      })
                   }
                   .padding(.horizontal, 12)
                   .padding(.vertical, 6)
@@ -295,30 +304,40 @@ struct ScheduleViewer: View {
                     Text(formatTime(selected.airtime))
                       .font(.caption)
                       .foregroundColor(.gray)
+
+                    // Volume and fade information
+                    VStack(alignment: .leading, spacing: 2) {
+                      Text("Start volume: \(selected.startingVolume, specifier: "%.1f")")
+                        .font(.caption)
+                        .foregroundColor(.gray)
+
+                      if !selected.fades.isEmpty {
+                        Text("Fades:")
+                          .font(.caption)
+                          .foregroundColor(.gray)
+
+                        ForEach(Array(selected.fades.enumerated()), id: \.offset) { _, fade in
+                          Text(
+                            "  • to \(fade.toVolume, specifier: "%.1f") at \(formatFadeTime(fade.atMS))"
+                          )
+                          .font(.caption)
+                          .foregroundColor(.gray)
+                        }
+                      }
+                    }
+                    .padding(.top, 4)
                   }
 
                   Spacer()
 
-                  //                  if singleSpinPlayer != nil {
-                  //                    Button("Stop") {
-                  //                      singleSpinPlayer?.stop()
-                  //                      singleSpinPlayer = nil
-                  //                    }
-                  //                    .padding(.horizontal, 16)
-                  //                    .padding(.vertical, 8)
-                  //                    .background(Color.red)
-                  //                    .foregroundColor(.white)
-                  //                    .cornerRadius(8)
-                  //                  } else {
-                  //                    Button("Play Spin") {
-                  //                      playSingleSpin(selected)
-                  //                    }
-                  //                    .padding(.horizontal, 16)
-                  //                    .padding(.vertical, 8)
-                  //                    .background(Color.blue)
-                  //                    .foregroundColor(.white)
-                  //                    .cornerRadius(8)
-                  //                  }
+                  Button("Copy JSON") {
+                    copyScheduleSnippet(for: selected)
+                  }
+                  .padding(.horizontal, 12)
+                  .padding(.vertical, 8)
+                  .background(Color.blue.opacity(0.8))
+                  .foregroundColor(.white)
+                  .cornerRadius(8)
 
                   Button("×") {
                     selectedSpin = nil
@@ -349,9 +368,11 @@ struct ScheduleViewer: View {
       .toolbar {
         ToolbarItem(placement: .principal) {
           VStack(spacing: 2) {
-            Text(player.stationId != nil ? "Schedule" : "Schedule (Default Station)")
-              .font(.headline)
-              .foregroundColor(.white)
+            Text(
+              player.stationId == selectedStationId ? "Schedule" : "Schedule (Different Station)"
+            )
+            .font(.headline)
+            .foregroundColor(.white)
 
             if case .playing(let nowPlaying) = player.state {
               Text("♪ \(nowPlaying.audioBlock.title)")
@@ -368,16 +389,19 @@ struct ScheduleViewer: View {
 
         ToolbarItem(placement: .navigationBarLeading) {
           if player.isPlaying {
-            Button(action: {
-              Task {
-                await player.stop()
+            Button(
+              action: {
+                Task {
+                  await player.stop()
+                }
+              },
+              label: {
+                HStack {
+                  Image(systemName: "stop.fill")
+                  Text("Stop")
+                }
               }
-            }, label: {
-              HStack {
-                Image(systemName: "stop.fill")
-                Text("Stop")
-              }
-            }
+            )
             .foregroundColor(.red)
           } else {
             Button("Close") {
@@ -411,8 +435,8 @@ struct ScheduleViewer: View {
   private func loadSchedule() {
     Task {
       do {
-        // Get the current station ID from the player, or use default
-        let stationId = player.stationId ?? "9d79fd38-1940-4312-8fe8-3b9b50d49c6c"
+        // Use the selected station ID
+        let stationId = selectedStationId
 
         print("Loading schedule for station: \(stationId)")
 
@@ -557,6 +581,10 @@ struct ScheduleViewer: View {
     return String(format: "%d:%02d", minutes, remainingSeconds)
   }
 
+  private func formatFadeTime(_ milliseconds: Int) -> String {
+    return String(format: "%.1f secs", Double(milliseconds) / 1000.0)
+  }
+
   private func updateTimeBasedOnVisibleSpins() {
     guard let schedule = schedule else { return }
 
@@ -586,10 +614,8 @@ struct ScheduleViewer: View {
   }
 
   private func playFromIndicator() {
-    guard let stationId = player.stationId ?? schedule?.stationId else {
-      print("No station ID available")
-      return
-    }
+    // Always use the selectedStationId which is the station for this schedule
+    let stationId = selectedStationId
 
     // Calculate the offset from current time to the indicator time
     let now = Date()
@@ -645,8 +671,6 @@ struct ScheduleViewer: View {
       // Debug logging
       let formatter = DateFormatter()
       formatter.dateFormat = "h:mm:ss a"
-      // print("Playback position: \(formatter.string(from: playbackPosition!)),
-      //       Now playing: \(nowPlaying.audioBlock.title)")
     } else {
       // If no specific now playing, just use current time
       playbackPosition = Date()
@@ -668,27 +692,55 @@ struct ScheduleViewer: View {
         let spinDuration = Double(spin.audioBlock.endOfMessageMS) / 1000.0
         let positionInSpin = timeIntoSpin / spinDuration
         let xPosition = accumulatedWidth + (spinWidth * CGFloat(positionInSpin))
-
-        // print("Found spin for time \(formatter.string(from: time)): \(spin.audioBlock.title)")
-        // print("  Spin airtime: \(formatter.string(from: spin.airtime)),
-        //        endtime: \(formatter.string(from: spin.endtime))")
-        // print("  Time into spin: \(timeIntoSpin)s, position: \(positionInSpin), X: \(xPosition)")
-
         return xPosition
       }
 
       accumulatedWidth += spinWidth
     }
 
-    // If time is before first spin
+    // If time is before first spin, return start position
     if let firstSpin = schedule.spins.first, time < firstSpin.airtime {
-      print("Time \(formatter.string(from: time)) is before first spin")
       return 16
     }
-
-    // If time is after all spins, return position at end
-    print("Time \(formatter.string(from: time)) is after all spins, X: \(accumulatedWidth)")
+    // If time is after all spins, return end position
     return accumulatedWidth
+  }
+
+  private func copyScheduleSnippet(for selectedSpin: Spin) {
+    guard let schedule = schedule else { return }
+
+    // Find the index of the selected spin
+    guard let selectedIndex = schedule.spins.firstIndex(where: { $0.id == selectedSpin.id }) else {
+      return
+    }
+
+    // Get the spin before, selected spin, and spin after
+    var spinsToExport: [Spin] = []
+    if selectedIndex > 0 { spinsToExport.append(schedule.spins[selectedIndex - 1]) }
+    spinsToExport.append(selectedSpin)
+    if selectedIndex < schedule.spins.count - 1 {
+      spinsToExport.append(schedule.spins[selectedIndex + 1])
+    }
+
+    // Create encoder with iso8601Full date format
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .formatted(.iso8601Full)
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+    do {
+      let jsonData = try encoder.encode(spinsToExport)
+      if let jsonString = String(data: jsonData, encoding: .utf8) {
+        #if os(iOS)
+          UIPasteboard.general.string = jsonString
+          print("Copied \(spinsToExport.count) spins to clipboard")
+        #else
+          print("Clipboard not available on this platform")
+          print(jsonString)
+        #endif
+      }
+    } catch {
+      print("Error encoding spins: \(error)")
+    }
   }
 }
 
@@ -948,5 +1000,5 @@ struct DetailSpinVisualization: View {
 }
 
 #Preview {
-  ScheduleViewer()
+  ScheduleViewer(selectedStationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
 }

@@ -47,6 +47,7 @@ struct ContentView: View {
   @StateObject private var threadMonitor = MainThreadMonitor()
   @State private var showingStationPicker = false
   @State private var showingScheduleViewer = false
+  @State private var selectedStationId: String = "9d79fd38-1940-4312-8fe8-3b9b50d49c6c"
 
   var body: some View {
     ZStack {
@@ -190,18 +191,20 @@ struct ContentView: View {
               })
 
             // Play/Stop button (current time)
-            Button(action: playOrPause) {
-              ZStack {
-                Circle()
-                  .fill(buttonColor(for: player.state))
-                  .frame(width: 80, height: 80)
+            Button(
+              action: { playOrPause() },
+              label: {
+                ZStack {
+                  Circle()
+                    .fill(buttonColor(for: player.state))
+                    .frame(width: 80, height: 80)
 
-                Image(systemName: buttonIcon(for: player.state))
-                  .font(.title)
-                  .foregroundColor(.white)
-                  .offset(x: shouldOffsetIcon(for: player.state) ? 3 : 0)  // Center play icon
-              }
-            }
+                  Image(systemName: buttonIcon(for: player.state))
+                    .font(.title)
+                    .foregroundColor(.white)
+                    .offset(x: shouldOffsetIcon(for: player.state) ? 3 : 0)  // Center play icon
+                }
+              })
 
             // Schedule viewer
             Button(
@@ -218,10 +221,51 @@ struct ContentView: View {
       }
     }
     .sheet(isPresented: $showingStationPicker) {
-      StationPickerView()
+      StationPickerView(selectedStationId: $selectedStationId)
     }
     .sheet(isPresented: $showingScheduleViewer) {
-      ScheduleViewer()
+      ScheduleViewer(selectedStationId: selectedStationId)
+    }
+  }
+
+  func playOrPause() {
+    Task {
+      switch await player.state {
+      case .loading:
+        // Cancel loading
+        await player.stop()
+      case .playing:
+        // Stop playing
+        await player.stop()
+      case .idle:
+        // Start playing
+        do {
+          try await player.play(stationId: selectedStationId)
+        } catch {
+          // Handle errors gracefully (including cancellation during loading)
+          print("Failed to start playback: \(error)")
+        }
+      }
+    }
+  }
+
+  func playWithOffset(_ offsetSeconds: TimeInterval) {
+    Task {
+      // Always stop current playback first
+      await player.stop()
+
+      // Calculate the target date
+      let atDate = Date().addingTimeInterval(offsetSeconds)
+
+      do {
+        try await player.play(
+          stationId: selectedStationId,
+          atDate: atDate
+        )
+        print("Started playback with offset: \(offsetSeconds) seconds (at: \(atDate))")
+      } catch {
+        print("Failed to start offset playback: \(error)")
+      }
     }
   }
 }
@@ -291,40 +335,145 @@ struct ThreadResponsivenessIndicator: View {
   }
 }
 
+// API Models
+struct StationListsResponse: Codable {
+  let stationLists: [StationList]
+}
+
+struct StationList: Codable {
+  let id: String
+  let title: String
+  let hidden: Bool?
+  let stations: [StationInfo]
+}
+
+struct StationInfo: Codable, Identifiable {
+  let id: String
+  let name: String
+  let playolaID: String?
+  let imageURL: String?
+  let desc: String?
+  let longDesc: String?
+  let type: String
+}
+
 // Station picker sheet
 struct StationPickerView: View {
   @Environment(\.dismiss) var dismiss
-
-  let stations = [
-    ("9d79fd38-1940-4312-8fe8-3b9b50d49c6c", "Default Station")
-    // Add more stations here
-  ]
+  @Binding var selectedStationId: String
+  @State private var stations: [StationInfo] = []
+  @State private var isLoading = true
+  @State private var errorMessage: String?
 
   var body: some View {
     NavigationView {
-      List(stations, id: \.0) { station in
-        Button(
-          action: {
-            Task {
-              do {
-                try await PlayolaStationPlayer.shared.play(stationId: station.0)
-              } catch {
-                print("Failed to start playback: \(error)")
-              }
+      ZStack {
+        if isLoading {
+          ProgressView("Loading stations...")
+            .padding()
+        } else if let error = errorMessage {
+          VStack(spacing: 16) {
+            Text("Failed to load stations")
+              .font(.headline)
+            Text(error)
+              .font(.caption)
+              .foregroundColor(.secondary)
+            Button("Retry") {
+              Task { await loadStations() }
             }
-            dismiss()
-          },
-          label: {
-            HStack {
-              Image(systemName: "radio")
-                .foregroundColor(.blue)
-              Text(station.1)
-              Spacer()
-            }
-          })
+          }
+          .padding()
+        } else {
+          List(stations) { station in
+            Button(
+              action: {
+                Task {
+                  do {
+                    // Use playolaID for playola stations
+                    let stationId = station.playolaID ?? station.id
+                    selectedStationId = stationId
+                    try await PlayolaStationPlayer.shared.play(stationId: stationId)
+                  } catch {
+                    print("Failed to start playback: \(error)")
+                  }
+                }
+                dismiss()
+              },
+              label: {
+                HStack {
+                  // Show image if available
+                  if let imageURL = station.imageURL, let url = URL(string: imageURL) {
+                    AsyncImage(url: url) { image in
+                      image
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                    } placeholder: {
+                      Image(systemName: "radio")
+                        .foregroundColor(.blue)
+                    }
+                    .frame(width: 40, height: 40)
+                    .cornerRadius(8)
+                  } else {
+                    Image(systemName: "radio")
+                      .foregroundColor(.blue)
+                      .frame(width: 40, height: 40)
+                  }
+
+                  VStack(alignment: .leading, spacing: 4) {
+                    Text(station.name)
+                      .font(.headline)
+                    if let desc = station.desc {
+                      Text(desc)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    }
+                  }
+
+                  Spacer()
+                }
+                .padding(.vertical, 4)
+              })
+          }
+        }
       }
       .navigationTitle("Select Station")
       .navigationBarItems(trailing: Button("Done") { dismiss() })
+      .task {
+        await loadStations()
+      }
+    }
+  }
+
+  private func loadStations() async {
+    isLoading = true
+    errorMessage = nil
+
+    do {
+      let url = URL(string: "https://admin-api.playola.fm/v1/developer/station-lists")!
+      let (data, _) = try await URLSession.shared.data(from: url)
+
+      let response = try JSONDecoder().decode(StationListsResponse.self, from: data)
+
+      // Get stations from in_development_list and artist_list
+      var allStations: [StationInfo] = []
+
+      for list in response.stationLists {
+        if list.id == "in_development_list" || list.id == "artist_list" {
+          // Filter to only include playola type stations
+          let playolaStations = list.stations.filter { $0.type == "playola" }
+          allStations.append(contentsOf: playolaStations)
+        }
+      }
+
+      await MainActor.run {
+        self.stations = allStations
+        self.isLoading = false
+      }
+    } catch {
+      await MainActor.run {
+        self.errorMessage = error.localizedDescription
+        self.isLoading = false
+      }
     }
   }
 }
@@ -363,48 +512,6 @@ func shouldOffsetIcon(for state: PlayolaStationPlayer.State) -> Bool {
     return true
   }
   return false
-}
-
-func playOrPause() {
-  Task {
-    switch await PlayolaStationPlayer.shared.state {
-    case .loading:
-      // Cancel loading
-      await PlayolaStationPlayer.shared.stop()
-    case .playing:
-      // Stop playing
-      await PlayolaStationPlayer.shared.stop()
-    case .idle:
-      // Start playing
-      do {
-        try await PlayolaStationPlayer.shared.play(
-          stationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
-      } catch {
-        // Handle errors gracefully (including cancellation during loading)
-        print("Failed to start playback: \(error)")
-      }
-    }
-  }
-}
-
-func playWithOffset(_ offsetSeconds: TimeInterval) {
-  Task {
-    // Always stop current playback first
-    await PlayolaStationPlayer.shared.stop()
-
-    // Calculate the target date
-    let atDate = Date().addingTimeInterval(offsetSeconds)
-
-    do {
-      try await PlayolaStationPlayer.shared.play(
-        stationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c",
-        atDate: atDate
-      )
-      print("Started playback with offset: \(offsetSeconds) seconds (at: \(atDate))")
-    } catch {
-      print("Failed to start offset playback: \(error)")
-    }
-  }
 }
 
 // Custom button style for offset buttons
