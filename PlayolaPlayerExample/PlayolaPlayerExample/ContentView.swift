@@ -46,6 +46,7 @@ struct ContentView: View {
   @ObservedObject var player = PlayolaStationPlayer.shared
   @StateObject private var threadMonitor = MainThreadMonitor()
   @State private var showingStationPicker = false
+  @State private var showingScheduleViewer = false
 
   var body: some View {
     ZStack {
@@ -202,10 +203,14 @@ struct ContentView: View {
               }
             }
 
-            // Placeholder for future control
-            Image(systemName: "speaker.wave.2")
-              .font(.title2)
-              .foregroundColor(.white.opacity(0.3))
+            // Schedule viewer
+            Button(
+              action: { showingScheduleViewer.toggle() },
+              label: {
+                Image(systemName: "calendar")
+                  .font(.title2)
+                  .foregroundColor(.white.opacity(0.8))
+              })
           }
         }
 
@@ -214,6 +219,9 @@ struct ContentView: View {
     }
     .sheet(isPresented: $showingStationPicker) {
       StationPickerView()
+    }
+    .sheet(isPresented: $showingScheduleViewer) {
+      ScheduleViewer()
     }
   }
 }
