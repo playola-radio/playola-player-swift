@@ -175,7 +175,7 @@ struct ScheduleViewer: View {
                         // Clear detail info when zoom changes
                         detailSpinInfo.removeAll()
                       }
-                    }) {
+                    }, label: {
                       Image(systemName: "minus.circle.fill")
                         .font(.title2)
                         .foregroundColor(.white)
@@ -194,7 +194,7 @@ struct ScheduleViewer: View {
                         // Clear detail info when zoom changes
                         detailSpinInfo.removeAll()
                       }
-                    }) {
+                    }, label: {
                       Image(systemName: "plus.circle.fill")
                         .font(.title2)
                         .foregroundColor(.white)
@@ -240,7 +240,7 @@ struct ScheduleViewer: View {
                   }
                 )
                 .background(
-                  GeometryReader { centerGeo in
+                  GeometryReader { _ in
                     Color.clear
                       .onAppear {
                         updateTimeBasedOnVisibleSpins()
@@ -372,7 +372,7 @@ struct ScheduleViewer: View {
               Task {
                 await player.stop()
               }
-            }) {
+            }, label: {
               HStack {
                 Image(systemName: "stop.fill")
                 Text("Stop")
@@ -645,7 +645,8 @@ struct ScheduleViewer: View {
       // Debug logging
       let formatter = DateFormatter()
       formatter.dateFormat = "h:mm:ss a"
-      //            print("Playback position: \(formatter.string(from: playbackPosition!)), Now playing: \(nowPlaying.audioBlock.title)")
+      // print("Playback position: \(formatter.string(from: playbackPosition!)),
+      //       Now playing: \(nowPlaying.audioBlock.title)")
     } else {
       // If no specific now playing, just use current time
       playbackPosition = Date()
@@ -668,9 +669,10 @@ struct ScheduleViewer: View {
         let positionInSpin = timeIntoSpin / spinDuration
         let xPosition = accumulatedWidth + (spinWidth * CGFloat(positionInSpin))
 
-        //                print("Found spin for time \(formatter.string(from: time)): \(spin.audioBlock.title)")
-        //                print("  Spin airtime: \(formatter.string(from: spin.airtime)), endtime: \(formatter.string(from: spin.endtime))")
-        //                print("  Time into spin: \(timeIntoSpin)s, position: \(positionInSpin), X: \(xPosition)")
+        // print("Found spin for time \(formatter.string(from: time)): \(spin.audioBlock.title)")
+        // print("  Spin airtime: \(formatter.string(from: spin.airtime)),
+        //        endtime: \(formatter.string(from: spin.endtime))")
+        // print("  Time into spin: \(timeIntoSpin)s, position: \(positionInSpin), X: \(xPosition)")
 
         return xPosition
       }
@@ -733,7 +735,7 @@ struct SpinVisualization: View {
           )
 
         // Fade markers
-        ForEach(Array(spin.fades.enumerated()), id: \.offset) { index, fade in
+        ForEach(Array(spin.fades.enumerated()), id: \.offset) { _, fade in
           Rectangle()
             .fill(Color.yellow.opacity(0.8))
             .frame(width: 2, height: 80)
