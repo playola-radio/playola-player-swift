@@ -214,7 +214,7 @@ extension Spin {
   }
 }
 
-extension Spin: Equatable, Hashable {
+extension Spin: Equatable, Hashable, Identifiable {
   public func hash(into hasher: inout Hasher) {
     hasher.combine(id)
     hasher.combine(audioBlock)
