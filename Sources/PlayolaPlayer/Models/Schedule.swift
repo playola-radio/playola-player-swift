@@ -8,7 +8,7 @@
 import Combine
 import Foundation
 
-public struct Schedule: Sendable {
+public struct Schedule: Sendable, Codable {
   public let id = UUID()
   public let stationId: String
   public let spins: [Spin]
@@ -76,5 +76,27 @@ extension Schedule: Hashable {
 
   public static func == (lhs: Schedule, rhs: Schedule) -> Bool {
     return lhs.id == rhs.id
+  }
+}
+
+// MARK: - Codable
+extension Schedule {
+  enum CodingKeys: String, CodingKey {
+    case stationId
+    case spins
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let stationId = try container.decode(String.self, forKey: .stationId)
+    let spins = try container.decode([Spin].self, forKey: .spins)
+
+    self.init(stationId: stationId, spins: spins)
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(stationId, forKey: .stationId)
+    try container.encode(spins, forKey: .spins)
   }
 }

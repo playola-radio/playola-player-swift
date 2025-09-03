@@ -25,7 +25,7 @@ public struct Fade: Codable, Sendable, Equatable {
 ///
 /// Spins are typically retrieved as part of a station's schedule and managed
 /// by the PlayolaStationPlayer.
-public struct Spin: Codable, Sendable {
+public struct Spin: Codable, Sendable, Identifiable {
   /// Unique identifier for this spin
   public let id: String
 
