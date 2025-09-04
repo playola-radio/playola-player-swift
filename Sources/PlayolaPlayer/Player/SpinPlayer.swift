@@ -57,14 +57,6 @@ public class SpinPlayer {
 
   public var startNotificationTimer: Timer?
   public var clearTimer: Timer?
-  public var fadeTimers = Set<Timer>()
-
-  #if os(iOS)
-    private var activeDisplayLink: CADisplayLink?
-  #else
-    private var fadeUpdateTimer: Timer?
-  #endif
-  private var activeFades: Set<FadeOperation> = []
 
   public var localUrl: URL? { return currentFile?.url }
 
@@ -148,52 +140,6 @@ public class SpinPlayer {
           "⚠️ mixer volume set failed (no rampable param)", log: SpinPlayer.logger, type: .error)
         print("⚠️ Volume set failed (no rampable param), attempted user=\(newValue)")
       }
-    }
-  }
-
-  static let shared = SpinPlayer()
-
-  // Class to represent a fade operation
-  private class FadeOperation: Hashable {
-    let id = UUID()  // Unique identifier for Set operations
-    let startVolume: Float
-    let endVolume: Float
-    let startTime: CFTimeInterval
-    let endTime: CFTimeInterval
-    let completionBlock: (() -> Void)?
-
-    init(
-      startVolume: Float,
-      endVolume: Float,
-      startTime: CFTimeInterval,
-      endTime: CFTimeInterval,
-      completionBlock: (() -> Void)?
-    ) {
-      self.startVolume = startVolume
-      self.endVolume = endVolume
-      self.startTime = startTime
-      self.endTime = endTime
-      self.completionBlock = completionBlock
-    }
-
-    // Required for Hashable conformance
-    static func == (lhs: FadeOperation, rhs: FadeOperation) -> Bool {
-      return lhs.id == rhs.id
-    }
-
-    func hash(into hasher: inout Hasher) {
-      hasher.combine(id)
-    }
-
-    // Calculate current volume based on elapsed time
-    func currentVolume(at currentTime: CFTimeInterval) -> Float {
-      let progress = min(1.0, (currentTime - startTime) / (endTime - startTime))
-      return startVolume + (endVolume - startVolume) * Float(progress)
-    }
-
-    // Check if fade is complete
-    func isComplete(at currentTime: CFTimeInterval) -> Bool {
-      return currentTime >= endTime
     }
   }
 
@@ -323,7 +269,6 @@ public class SpinPlayer {
 
     stopAudio()
     clearTimers()
-    clearFades()
     resetRenderAnchors()
 
     self.spin = nil
@@ -363,29 +308,6 @@ public class SpinPlayer {
       clearTimer = nil
     }
 
-    // Invalidate and clear all fade timers atomically
-    if !fadeTimers.isEmpty {
-      os_log(
-        "Invalidating %d fade timers",
-        log: SpinPlayer.logger,
-        type: .debug,
-        fadeTimers.count
-      )
-      let timersToInvalidate = fadeTimers
-      fadeTimers.removeAll()
-      timersToInvalidate.forEach { $0.invalidate() }
-    }
-  }
-
-  func clearFades() {
-    #if os(iOS)
-      activeDisplayLink?.invalidate()
-      activeDisplayLink = nil
-    #else
-      fadeUpdateTimer?.invalidate()
-      fadeUpdateTimer = nil
-    #endif
-    activeFades.removeAll()
   }
 
   /// Plays the loaded spin immediately from the specified position.
@@ -898,7 +820,6 @@ public class SpinPlayer {
       os_log("⚠️ Timer invalid or spin changed", log: SpinPlayer.logger, type: .default)
       return
     }
-
     handleSuccessfulTimerFire(spin: spin)
   }
 
@@ -1079,112 +1000,7 @@ public class SpinPlayer {
         )
       }
     }
-
     self.state = .available
-  }
-
-  fileprivate func fadePlayer(
-    toVolume endVolume: Float,
-    overTime time: Float,
-    completionBlock: (() -> Void)? = nil
-  ) {
-    // Current volume (properly normalized via getter)
-    let startVolume = self.volume
-
-    // Current time and end time
-    let startTime = CACurrentMediaTime()
-    let endTime = startTime + Double(time)
-
-    // Create a new fade operation
-    let fadeOperation = FadeOperation(
-      startVolume: startVolume,
-      endVolume: endVolume,
-      startTime: startTime,
-      endTime: endTime,
-      completionBlock: completionBlock
-    )
-
-    // Add to active fades
-    activeFades.insert(fadeOperation)
-
-    os_log(
-      "Scheduled fade: %.2f→%.2f over %.2fs",
-      log: SpinPlayer.logger,
-      type: .debug,
-      startVolume,
-      endVolume,
-      time
-    )
-
-    #if os(iOS)
-      if activeDisplayLink == nil {
-        activeDisplayLink = CADisplayLink(
-          target: self,
-          selector: #selector(updateFades)
-        )
-        activeDisplayLink?.add(to: .current, forMode: .common)
-      }
-    #else
-      if fadeUpdateTimer == nil {
-        fadeUpdateTimer = Timer.scheduledTimer(
-          timeInterval: 1.0 / 60.0,
-          target: self,
-          selector: #selector(updateFades),
-          userInfo: nil,
-          repeats: true
-        )
-      }
-    #endif
-
-  }
-
-  @objc private func updateFades(_ sender: Any) {
-    // Current time
-    let currentTime = CACurrentMediaTime()
-
-    // Set containing completed fades to remove
-    var completedFades: Set<FadeOperation> = []
-
-    // Track latest volume (for fades that might overlap)
-    var latestVolume: Float?
-
-    // Sort the fades by end time (latest fade takes precedence)
-    let sortedFades = activeFades.sorted { $0.endTime < $1.endTime }
-
-    // Process each fade
-    for fade in sortedFades {
-      // If fade is complete, mark for removal and call completion block
-      if fade.isComplete(at: currentTime) {
-        completedFades.insert(fade)
-        fade.completionBlock?()
-
-        // Latest volume is the target volume of the completed fade
-        latestVolume = fade.endVolume
-      } else {
-        // Calculate current volume for this fade
-        latestVolume = fade.currentVolume(at: currentTime)
-      }
-    }
-
-    // Apply the latest calculated volume if any
-    if let volume = latestVolume {
-      self.volume = volume
-    }
-
-    // Remove completed fades
-    activeFades.subtract(completedFades)
-
-    if activeFades.isEmpty {
-      #if os(iOS)
-        activeDisplayLink?.invalidate()
-        activeDisplayLink = nil
-      #else
-        fadeUpdateTimer?.invalidate()
-        fadeUpdateTimer = nil
-      #endif
-
-      os_log("All fades completed", log: SpinPlayer.logger, type: .debug)
-    }
   }
 
   public func scheduleFades(_ spin: Spin) {
