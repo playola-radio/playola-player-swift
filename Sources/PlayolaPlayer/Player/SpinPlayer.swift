@@ -30,6 +30,21 @@ public class SpinPlayer {
     case loaded
     case loading
   }
+
+  /// Constants used throughout the SpinPlayer
+  private enum Constants {
+    /// Duration in seconds for volume fade transitions
+    static let fadeDuration: Double = 1.5
+    /// Number of steps in a fade operation
+    static let fadeSteps: Int = 48
+    /// Guard time in seconds before scheduling fades
+    static let fadeGuardTime: Double = 0.010
+    /// Minimum energy threshold for detecting audio
+    static let minimumEnergyThreshold: Float = 1e-6
+    /// Tap buffer size for start detection
+    static let tapBufferSize: AVAudioFrameCount = 1024
+  }
+
   private static let logger = OSLog(
     subsystem: "fm.playola.playolaCore",
     category: "Player"
@@ -625,63 +640,77 @@ public class SpinPlayer {
   private func installStartTapIfNeeded(pendingFades: [(offset: Double, to: Float)]) {
     guard !startTapInstalled else { return }
     startTapInstalled = true
-    // Ensure engine is running before installing the tap (some devices are picky)
-    if !engine.isRunning {
-      do {
-        playolaMainMixer.configureAudioSession()
-        try engine.start()
-      } catch {
-        os_log(
-          "⚠️ Could not start engine before installing tap: %{public}@",
-          log: SpinPlayer.logger, type: .error, String(describing: error))
-      }
-    }
+    ensureEngineRunning()
     didCaptureStart = false
 
-    trackMixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, time in
-      guard let self = self else { return }
-      if self.didCaptureStart { return }
-
-      // Require some energy to avoid preroll silence
-      var hasEnergy = false
-      if let ch = buffer.floatChannelData?.pointee {
-        let frameCount = Int(buffer.frameLength)
-        var acc: Float = 0
-        if frameCount > 0 {
-          for i in 0..<frameCount { acc += ch[i] * ch[i] }
-          let rms = sqrt(acc / Float(frameCount))
-          hasEnergy = rms > 1e-6
-        }
-      }
-      if !hasEnergy { return }
-
-      self.didCaptureStart = true
-      self.scheduledStartSample = AUEventSampleTime(time.sampleTime)
-
-      // Remove the tap immediately (one-shot)
-      self.trackMixer.removeTap(onBus: 0)
-      self.startTapInstalled = false
-
-      // Ensure a known baseline on the exact host time of first render (user-space only)
-      if let param = self.resolveVolumeParam() {
-        let userInitial: Float
-        if let spin = self.spin {
-          let ms = Int((self.playbackStartOffset * 1000.0).rounded())
-          userInitial = spin.volumeAt(ms)
-        } else {
-          userInitial = self.currentVolume
-        }
-        let paramInitial = userInitial
-        param.setValue(AUValue(paramInitial), originator: nil, atHostTime: time.hostTime)
-        os_log(
-          "🔧 Baseline mixer volume at start → user=%.3f (param=%.3f) addr=%llu host=%llu",
-          log: SpinPlayer.logger, type: .info,
-          userInitial, paramInitial, param.address, time.hostTime)
-      }
-
-      // Schedule any fades that were waiting for start capture
-      self.scheduleFadesAtStartIfNeeded(pendingFades)
+    trackMixer.installTap(onBus: 0, bufferSize: Constants.tapBufferSize, format: nil) {
+      [weak self] buffer, time in
+      self?.handleTapBuffer(buffer: buffer, time: time, pendingFades: pendingFades)
     }
+  }
+
+  private func ensureEngineRunning() {
+    guard !engine.isRunning else { return }
+    do {
+      playolaMainMixer.configureAudioSession()
+      try engine.start()
+    } catch {
+      os_log(
+        "⚠️ Could not start engine before installing tap: %{public}@",
+        log: SpinPlayer.logger, type: .error, String(describing: error))
+    }
+  }
+
+  private func handleTapBuffer(
+    buffer: AVAudioPCMBuffer, time: AVAudioTime, pendingFades: [(offset: Double, to: Float)]
+  ) {
+    guard !didCaptureStart else { return }
+
+    // Require some energy to avoid preroll silence
+    guard bufferHasEnergy(buffer) else { return }
+
+    didCaptureStart = true
+    scheduledStartSample = AUEventSampleTime(time.sampleTime)
+
+    // Remove the tap immediately (one-shot)
+    trackMixer.removeTap(onBus: 0)
+    startTapInstalled = false
+
+    // Ensure a known baseline on the exact host time of first render (user-space only)
+    setInitialVolume(at: time.hostTime)
+
+    // Schedule any fades that were waiting for start capture
+    scheduleFadesAtStartIfNeeded(pendingFades)
+  }
+
+  private func bufferHasEnergy(_ buffer: AVAudioPCMBuffer) -> Bool {
+    guard let ch = buffer.floatChannelData?.pointee else { return false }
+    let frameCount = Int(buffer.frameLength)
+    guard frameCount > 0 else { return false }
+
+    var acc: Float = 0
+    for i in 0..<frameCount { acc += ch[i] * ch[i] }
+    let rms = sqrt(acc / Float(frameCount))
+    return rms > Constants.minimumEnergyThreshold
+  }
+
+  private func setInitialVolume(at hostTime: UInt64) {
+    guard let param = resolveVolumeParam() else { return }
+
+    let userInitial: Float
+    if let spin = self.spin {
+      let ms = Int((self.playbackStartOffset * 1000.0).rounded())
+      userInitial = spin.volumeAt(ms)
+    } else {
+      userInitial = self.currentVolume
+    }
+
+    let paramInitial = userInitial
+    param.setValue(AUValue(paramInitial), originator: nil, atHostTime: hostTime)
+    os_log(
+      "🔧 Baseline mixer volume at start → user=%.3f (param=%.3f) addr=%llu host=%llu",
+      log: SpinPlayer.logger, type: .info,
+      userInitial, paramInitial, param.address, hostTime)
   }
 
   /// Queue stepwise fades in the audio render thread using the AU's scheduleParameterBlock.
@@ -695,9 +724,9 @@ public class SpinPlayer {
 
     // Establish the intended starting value in PARAM domain (now == user space)
     let userStart: Float = {
-      if let s = spin {
+      if let currentSpin = spin {
         let ms = Int((playbackStartOffset * 1000.0).rounded())
-        return s.volumeAt(ms)
+        return currentSpin.volumeAt(ms)
       } else {
         return currentVolume
       }
@@ -709,14 +738,14 @@ public class SpinPlayer {
       var when = start + AUEventSampleTime(offset * sr)
       if let rt = trackMixer.lastRenderTime {
         let nowSample = AUEventSampleTime(rt.sampleTime)
-        let guardFrames = AUEventSampleTime(sr * 0.010)
+        let guardFrames = AUEventSampleTime(sr * Constants.fadeGuardTime)
         if when <= nowSample + guardFrames { when = nowSample + guardFrames }
       }
 
-      let duration: Double = 1.5
-      let steps = 48
+      let duration: Double = Constants.fadeDuration
+      let steps = Constants.fadeSteps
       let totalFrames = AUEventSampleTime(duration * sr)
-      let framesPerStep = max<AUEventSampleTime>(1, totalFrames / AUEventSampleTime(steps))
+      let framesPerStep = max(AUEventSampleTime(1), totalFrames / AUEventSampleTime(steps))
 
       // build steps from the *previous target* to this target (both in PARAM domain)
       for i in 0...steps {

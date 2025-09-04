@@ -152,7 +152,7 @@ public struct Spin: Codable, Sendable {
 
     // Current volume at this instant (no look‑ahead)
     var currentVolume = startingVolume
-    var nextFade: Fade? = nil
+    var nextFade: Fade?
 
     for fade in fades {  // fades are sorted in init
       if fade.atMS <= milliseconds {
