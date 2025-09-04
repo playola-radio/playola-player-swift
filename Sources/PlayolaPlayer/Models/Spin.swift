@@ -75,7 +75,7 @@ public struct Spin: Codable, Sendable {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.audioBlock = audioBlock
-    self.fades = fades
+    self.fades = fades.sorted { $0.atMS < $1.atMS }
     self.relatedTexts = relatedTexts
     self.dateProvider = dateProvider ?? DateProvider()
   }
@@ -88,6 +88,74 @@ public struct Spin: Codable, Sendable {
   /// Whether this spin is currently playing, based on current time compared to airtime and endtime
   public var isPlaying: Bool {
     return airtime <= dateProvider.now() && dateProvider.now() <= endtime
+  }
+
+  /// Represents the playback state of a spin relative to the current time
+  public enum PlaybackTiming {
+    case future  // Spin hasn't started yet
+    case playing  // Spin is currently playing
+    case tooLateToStart  // Spin has passed but still has time worth playing (>= 2 seconds)
+    case past  // Spin has finished or has less than 2 seconds remaining
+  }
+
+  /// Minimum duration (in seconds) required to make playing a spin worthwhile
+  private static let minimumPlayableDuration: TimeInterval = 2.0
+
+  /// Determines the playback timing state of the spin
+  public var playbackTiming: PlaybackTiming {
+    let now = dateProvider.now()
+
+    if now < airtime {
+      return .future
+    } else if now <= endtime {
+      // Check if there's enough time left to make playing worthwhile
+      let remainingTime = endtime.timeIntervalSince(now)
+      if remainingTime < Self.minimumPlayableDuration {
+        return .past
+      } else {
+        return .playing
+      }
+    } else {
+      // We're past the endtime
+      return .past
+    }
+  }
+
+  /// Calculates the volume that should be applied at a given millisecond offset into the spin
+  /// - Parameter milliseconds: The number of milliseconds since the start of the spin
+  /// - Returns: The volume level (0.0 to 1.0) that should be applied at this point
+  public func volumeAtMS(_ milliseconds: Int) -> Float {
+    // Start with the initial volume
+    var currentVolume = startingVolume
+
+    // Apply all fades that should have occurred by this point
+    // Fades are already sorted by atMS in the initializer
+    for fade in fades {
+      if fade.atMS <= milliseconds {
+        currentVolume = fade.toVolume
+      } else {
+        // Since fades are sorted, we can break early
+        break
+      }
+    }
+
+    return currentVolume
+  }
+
+  /// Calculates the volume that should be applied at a given date
+  /// - Parameter date: The date to calculate volume for
+  /// - Returns: The volume level (0.0 to 1.0) that should be applied at this date
+  public func volumeAtDate(_ date: Date) -> Float {
+    // If the date is before the spin starts, return starting volume
+    if date < airtime {
+      return startingVolume
+    }
+
+    // Calculate milliseconds since spin start
+    let timeInterval = date.timeIntervalSince(airtime)
+    let milliseconds = Int(timeInterval * 1000)
+
+    return volumeAtMS(milliseconds)
   }
 
   /// Creates a new Spin with the airtime adjusted by the given offset.
@@ -130,7 +198,8 @@ public struct Spin: Codable, Sendable {
     createdAt = try container.decode(Date.self, forKey: .createdAt)
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     audioBlock = try container.decode(AudioBlock.self, forKey: .audioBlock)
-    fades = try container.decode([Fade].self, forKey: .fades)
+    let decodedFades = try container.decode([Fade].self, forKey: .fades)
+    fades = decodedFades.sorted { $0.atMS < $1.atMS }
     relatedTexts = try container.decodeIfPresent([RelatedText].self, forKey: .relatedTexts)
 
     // Initialize dateProvider with default value
