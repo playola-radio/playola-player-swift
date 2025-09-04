@@ -957,18 +957,14 @@ public class SpinPlayer {
     do {
       currentFile = try AVAudioFile(forReading: url)
       normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
-      // Derive a per-file gain in dB from the calculator's mapping at unity (1.0)
-      // If adjustedVolume(1.0) = k, then gain(dB) = 20 * log10(k)
-      let k = Double(self.normalizationCalculator?.adjustedVolume(1.0) ?? 1.0)
-      var gainDb = 20.0 * log10(max(1e-6, k))
-      // Clamp to AVAudioUnitEQ globalGain limits (−96…+24 dB), we use a tighter practical range
-      if gainDb > 24.0 { gainDb = 24.0 }
-      if gainDb < -24.0 { gainDb = -24.0 }
+      // Use calculator's dB helper; clamp to a practical range for safety
+      let rawDb = Double(self.normalizationCalculator?.requiredDbOffsetDb ?? 0)
+      let gainDb = min(24.0, max(-24.0, rawDb))
       self.normalizationEQ.globalGain = Float(gainDb)
       os_log(
-        "🎚️ Set normalizationEQ.globalGain = %.2f dB (scalar k=%.3f) for %@",
+        "🎚️ Set normalizationEQ.globalGain = %.2f dB for %@",
         log: SpinPlayer.logger, type: .info,
-        gainDb, k, url.lastPathComponent
+        gainDb, url.lastPathComponent
       )
       logSuccessfulLoad(url)
     } catch let audioError as NSError {

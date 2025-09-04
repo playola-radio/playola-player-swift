@@ -15,11 +15,6 @@ struct AudioNormalizationCalculator {
   let file: AVAudioFile
   var amplitude: Float?
 
-  public func adjustedVolume(_ playerVolume: Float) -> Float {
-    guard let amplitude else { return 1.0 }
-    return playerVolume / amplitude
-  }
-
   public func playerVolume(_ adjustedVolume: Float) -> Float {
     return (amplitude ?? 1.0) * adjustedVolume
   }
