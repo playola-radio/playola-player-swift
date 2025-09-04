@@ -17,6 +17,19 @@ protocol AudioFileReadable {
   var processingFormat: AVAudioFormat { get }
   var url: URL { get }
   func read(into buffer: AVAudioPCMBuffer) throws
+  @Test("requiredDbOffsetDb returns +6.02 dB for amplitude 0.5")
+  func testRequiredDbOffsetDbHalf() throws {
+    let db = AudioNormalizationCalculator.requiredDbOffsetDb(forAmplitude: 0.5)
+    #expect(abs(Double(db) - 6.0206) < 0.01)
+  }
+
+  @Test("requiredDbOffsetDb returns 0 dB for nil/zero amplitude")
+  func testRequiredDbOffsetDbZeroOrNil() throws {
+    let dbNil = AudioNormalizationCalculator.requiredDbOffsetDb(forAmplitude: nil)
+    let dbZero = AudioNormalizationCalculator.requiredDbOffsetDb(forAmplitude: 0.0)
+    #expect(dbNil == 0)
+    #expect(dbZero == 0)
+  }
 }
 
 // Make AVAudioFile conform to our protocol

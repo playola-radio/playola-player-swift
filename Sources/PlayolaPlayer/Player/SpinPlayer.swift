@@ -1,5 +1,5 @@
 //
-//  AudioPlayer.swift
+//  SpinPlayer.swift
 //  PlayolaPlayer
 //
 //  Created by Brian D Keane on 1/6/25.
@@ -84,6 +84,10 @@ public class SpinPlayer {
   /// The node responsible for playing the audio file
   private let playerNode = AVAudioPlayerNode()
 
+  /// Per-file loudness normalization stage. We use an EQ solely for its `globalGain` which
+  /// supports boosts up to +24 dB (unlike AVAudioMixerNode which tops out at 1.0 and cannot boost).
+  private let normalizationEQ = AVAudioUnitEQ(numberOfBands: 0)  // use only globalGain
+
   // Insert a per-player track mixer so we can automate volume on the audio thread
   private let trackMixer = AVAudioMixerNode()
   /// Cached rampable volume parameter for fades/automation
@@ -116,8 +120,7 @@ public class SpinPlayer {
       // Always keep the player node at unity; all gain happens on the per-track mixer
       if playerNode.volume != 1.0 { playerNode.volume = 1.0 }
 
-      // Apply normalization (user level -> parameter level)
-      let target = normalizationCalculator?.adjustedVolume(newValue) ?? newValue
+      let target = newValue
 
       if let param = resolveVolumeParam() {
         param.setValue(AUValue(target), originator: nil, atHostTime: mach_absolute_time())
@@ -193,10 +196,17 @@ public class SpinPlayer {
 
     /// Make connections
     engine.attach(playerNode)
+    engine.attach(normalizationEQ)
     engine.attach(trackMixer)
-    // connect player -> per-track mixer -> shared main mixer
+
+    // Graph: playerNode -> normalizationEQ (globalGain) -> per-track mixer -> main mixer
     engine.connect(
       playerNode,
+      to: normalizationEQ,
+      format: TapProperties.default.format
+    )
+    engine.connect(
+      normalizationEQ,
       to: trackMixer,
       format: TapProperties.default.format
     )
@@ -205,6 +215,9 @@ public class SpinPlayer {
       to: playolaMainMixer.mixerNode,
       format: TapProperties.default.format
     )
+
+    // Baselines
+    normalizationEQ.globalGain = 0.0  // dB; set per-file on load when normalization is applied
     trackMixer.outputVolume = 1.0
     // Always keep the player node at unity gain
     playerNode.volume = 1.0
@@ -649,10 +662,10 @@ public class SpinPlayer {
       self.trackMixer.removeTap(onBus: 0)
       self.startTapInstalled = false
 
-      // Ensure a known baseline on the exact host time of first render
+      // Ensure a known baseline on the exact host time of first render (user-space only)
       if let param = self.resolveVolumeParam() {
         let userInitial = self.spin?.startingVolume ?? self.currentVolume
-        let paramInitial = self.normalizationCalculator?.adjustedVolume(userInitial) ?? userInitial
+        let paramInitial = userInitial
         param.setValue(AUValue(paramInitial), originator: nil, atHostTime: time.hostTime)
         os_log(
           "🔧 Baseline mixer volume at start → user=%.3f (param=%.3f) addr=%llu host=%llu",
@@ -674,12 +687,12 @@ public class SpinPlayer {
     let sr = trackMixer.auAudioUnit.outputBusses[0].format.sampleRate
     let schedule = trackMixer.auAudioUnit.scheduleParameterBlock
 
-    // Establish the intended starting value in PARAM domain
+    // Establish the intended starting value in PARAM domain (now == user space)
     let userStart = spin?.startingVolume ?? currentVolume
-    var fromParam = normalizationCalculator?.adjustedVolume(userStart) ?? userStart
+    var fromParam = userStart
 
     for (offset, targetUser) in fades {
-      let toParam = normalizationCalculator?.adjustedVolume(targetUser) ?? targetUser
+      let toParam = targetUser
       var when = start + AUEventSampleTime(offset * sr)
       if let rt = trackMixer.lastRenderTime {
         let nowSample = AUEventSampleTime(rt.sampleTime)
@@ -944,6 +957,19 @@ public class SpinPlayer {
     do {
       currentFile = try AVAudioFile(forReading: url)
       normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
+      // Derive a per-file gain in dB from the calculator's mapping at unity (1.0)
+      // If adjustedVolume(1.0) = k, then gain(dB) = 20 * log10(k)
+      let k = Double(self.normalizationCalculator?.adjustedVolume(1.0) ?? 1.0)
+      var gainDb = 20.0 * log10(max(1e-6, k))
+      // Clamp to AVAudioUnitEQ globalGain limits (−96…+24 dB), we use a tighter practical range
+      if gainDb > 24.0 { gainDb = 24.0 }
+      if gainDb < -24.0 { gainDb = -24.0 }
+      self.normalizationEQ.globalGain = Float(gainDb)
+      os_log(
+        "🎚️ Set normalizationEQ.globalGain = %.2f dB (scalar k=%.3f) for %@",
+        log: SpinPlayer.logger, type: .info,
+        gainDb, k, url.lastPathComponent
+      )
       logSuccessfulLoad(url)
     } catch let audioError as NSError {
       await handleAudioFileCreationError(audioError, url: url, fileSize: fileSize)
