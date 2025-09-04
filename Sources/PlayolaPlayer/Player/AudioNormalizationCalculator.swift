@@ -15,11 +15,6 @@ struct AudioNormalizationCalculator {
   let file: AVAudioFile
   var amplitude: Float?
 
-  public func adjustedVolume(_ playerVolume: Float) -> Float {
-    guard let amplitude else { return 1.0 }
-    return playerVolume / amplitude
-  }
-
   public func playerVolume(_ adjustedVolume: Float) -> Float {
     return (amplitude ?? 1.0) * adjustedVolume
   }
@@ -129,5 +124,21 @@ struct AudioNormalizationCalculator {
   func getAmplitude(_ samples: [Float]) -> Float? {
     let absArray = samples.map { abs($0) }
     return absArray.max()
+  }
+}
+
+// MARK: - Loudness helpers
+extension AudioNormalizationCalculator {
+  /// Compute the dB offset required to reach target loudness from a given peak amplitude.
+  /// If `amplitude` is nil or non‑positive, returns 0 dB.
+  /// Formula: gain(dB) = -20 * log10(amplitude)
+  static func requiredDbOffsetDb(forAmplitude amplitude: Float?) -> Float {
+    guard let amplitude, amplitude > 0 else { return 0 }
+    return Float(-20.0 * log10(Double(amplitude)))
+  }
+
+  /// Instance convenience accessor that uses the calculator's measured amplitude.
+  var requiredDbOffsetDb: Float {
+    Self.requiredDbOffsetDb(forAmplitude: amplitude)
   }
 }

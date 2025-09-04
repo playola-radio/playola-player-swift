@@ -1,10 +1,10 @@
 //
-//  AudioPlayer.swift
+//  SpinPlayer.swift
 //  PlayolaPlayer
 //
 //  Created by Brian D Keane on 1/6/25.
 //
-
+// swiftlint:disable file_length
 import AVFoundation
 import AudioToolbox
 import Foundation
@@ -30,57 +30,90 @@ public class SpinPlayer {
     case loaded
     case loading
   }
+
+  /// Constants used throughout the SpinPlayer
+  private enum Constants {
+    /// Duration in seconds for volume fade transitions
+    static let fadeDuration: Double = 1.5
+    /// Number of steps in a fade operation
+    static let fadeSteps: Int = 48
+    /// Guard time in seconds before scheduling fades
+    static let fadeGuardTime: Double = 0.010
+    /// Minimum energy threshold for detecting audio
+    static let minimumEnergyThreshold: Float = 1e-6
+    /// Tap buffer size for start detection
+    static let tapBufferSize: AVAudioFrameCount = 1024
+    /// Standard audio sample rate used for duration calculations
+    static let standardSampleRate: Double = 44100
+    /// Minimum valid audio file size in bytes (10KB)
+    static let minimumFileSize: Int = 10 * 1024
+    /// Buffer time in seconds after spin end before cleanup
+    static let cleanupBufferTime: TimeInterval = 1.0
+  }
+
   private static let logger = OSLog(
     subsystem: "fm.playola.playolaCore",
     category: "Player"
   )
 
+  // MARK: - Public Properties
   public var id: UUID = UUID()
   public var spin: Spin? {
     didSet { setClearTimer(spin) }
   }
-
-  public var startNotificationTimer: Timer?
-  public var clearTimer: Timer?
-  public var fadeTimers = Set<Timer>()
-
-  #if os(iOS)
-    private var activeDisplayLink: CADisplayLink?
-  #else
-    private var fadeUpdateTimer: Timer?
-  #endif
-  private var activeFades: Set<FadeOperation> = []
-
+  public weak var delegate: SpinPlayerDelegate?
   public var localUrl: URL? { return currentFile?.url }
 
-  // dependencies
+  // MARK: - Timer Management
+  public var startNotificationTimer: Timer?
+  public var clearTimer: Timer?
+
+  // MARK: - Dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
   private var fileDownloadManager: FileDownloadManaging
   private let errorReporter = PlayolaErrorReporter.shared
 
-  // Track active download ID
+  // MARK: - Download State
   private var activeDownloadId: UUID?
 
-  public weak var delegate: SpinPlayerDelegate?
+  // MARK: - Playback State
+  private var currentVolume: Float = 1.0
+  /// Seconds offset into the file where playback started (e.g., when using playNow(from:)).
+  private var playbackStartOffset: Double = 0
 
   public var duration: Double {
     guard let currentFile else { return 0 }
     let audioNodeFileLength = AVAudioFrameCount(currentFile.length)
-    return Double(Double(audioNodeFileLength) / 44100)
+    return Double(Double(audioNodeFileLength) / Constants.standardSampleRate)
   }
 
   public var state: SpinPlayer.State = .available {
     didSet { delegate?.player(self, didChangeState: state) }
   }
 
+  // MARK: - Audio Engine Components
   /// An internal instance of AVAudioEngine
   private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine
-
   /// The node responsible for playing the audio file
   private let playerNode = AVAudioPlayerNode()
+  /// Per-file loudness normalization stage. We use an EQ solely for its `globalGain` which
+  /// supports boosts up to +24 dB (unlike AVAudioMixerNode which tops out at 1.0 and cannot boost).
+  private let normalizationEQ = AVAudioUnitEQ(numberOfBands: 0)  // use only globalGain
+  /// Insert a per-player track mixer so we can automate volume on the audio thread
+  private let trackMixer = AVAudioMixerNode()
 
+  // MARK: - Audio Parameter Management
+  /// Cached rampable volume parameter for fades/automation
+  private var volumeParam: AUParameter?
+  private var paramObserverToken: AUParameterObserverToken?
+  /// Captured mixer start sample (from the first non-silent tap callback)
+  private var scheduledStartSample: AUEventSampleTime?
+  /// One-shot tap guards
+  private var startTapInstalled = false
+  private var didCaptureStart = false
+
+  // MARK: - File Management
   private var normalizationCalculator: AudioNormalizationCalculator?
-
   /// The currently playing audio file
   private var currentFile: AVAudioFile? {
     didSet {
@@ -93,66 +126,18 @@ public class SpinPlayer {
   public var isPlaying: Bool { return playerNode.isPlaying }
 
   public var volume: Float {
-    get {
-      guard let normalizationCalculator else { return playerNode.volume }
-      return normalizationCalculator.playerVolume(playerNode.volume)
-    }
+    get { currentVolume }
     set {
-      guard let normalizationCalculator else {
-        playerNode.volume = newValue
-        return
-      }
-      playerNode.volume = normalizationCalculator.adjustedVolume(newValue)
+      currentVolume = newValue
+
+      // Always keep the player node at unity; all gain happens on the per-track mixer
+      if playerNode.volume != 1.0 { playerNode.volume = 1.0 }
+
+      applyVolumeToAudioParameter(newValue)
     }
   }
 
-  static let shared = SpinPlayer()
-
-  // Class to represent a fade operation
-  private class FadeOperation: Hashable {
-    let id = UUID()  // Unique identifier for Set operations
-    let startVolume: Float
-    let endVolume: Float
-    let startTime: CFTimeInterval
-    let endTime: CFTimeInterval
-    let completionBlock: (() -> Void)?
-
-    init(
-      startVolume: Float,
-      endVolume: Float,
-      startTime: CFTimeInterval,
-      endTime: CFTimeInterval,
-      completionBlock: (() -> Void)?
-    ) {
-      self.startVolume = startVolume
-      self.endVolume = endVolume
-      self.startTime = startTime
-      self.endTime = endTime
-      self.completionBlock = completionBlock
-    }
-
-    // Required for Hashable conformance
-    static func == (lhs: FadeOperation, rhs: FadeOperation) -> Bool {
-      return lhs.id == rhs.id
-    }
-
-    func hash(into hasher: inout Hasher) {
-      hasher.combine(id)
-    }
-
-    // Calculate current volume based on elapsed time
-    func currentVolume(at currentTime: CFTimeInterval) -> Float {
-      let progress = min(1.0, (currentTime - startTime) / (endTime - startTime))
-      return startVolume + (endVolume - startVolume) * Float(progress)
-    }
-
-    // Check if fade is complete
-    func isComplete(at currentTime: CFTimeInterval) -> Bool {
-      return currentTime >= endTime
-    }
-  }
-
-  // MARK: Lifecycle
+  // MARK: - Lifecycle
   init(
     delegate: SpinPlayerDelegate? = nil,
     fileDownloadManager: FileDownloadManaging? = nil
@@ -166,12 +151,33 @@ public class SpinPlayer {
 
     /// Make connections
     engine.attach(playerNode)
+    engine.attach(normalizationEQ)
+    engine.attach(trackMixer)
+
+    // Graph: playerNode -> normalizationEQ (globalGain) -> per-track mixer -> main mixer
     engine.connect(
       playerNode,
+      to: normalizationEQ,
+      format: TapProperties.default.format
+    )
+    engine.connect(
+      normalizationEQ,
+      to: trackMixer,
+      format: TapProperties.default.format
+    )
+    engine.connect(
+      trackMixer,
       to: playolaMainMixer.mixerNode,
       format: TapProperties.default.format
     )
+
+    // Baselines
+    normalizationEQ.globalGain = 0.0  // dB; set per-file on load when normalization is applied
+    trackMixer.outputVolume = 1.0
+    // Always keep the player node at unity gain
+    playerNode.volume = 1.0
     engine.prepare()
+    installParamObserverIfNeeded()
   }
 
   deinit {
@@ -179,9 +185,27 @@ public class SpinPlayer {
     if let activeDownloadId = activeDownloadId {
       _ = fileDownloadManager.cancelDownload(id: activeDownloadId)
     }
+    if let token = paramObserverToken, let tree = trackMixer.auAudioUnit.parameterTree {
+      tree.removeParameterObserver(token)
+      paramObserverToken = nil
+    }
   }
 
-  // MARK: Playback
+  /// Reset render anchors so each new spin gets a fresh start capture
+  private func resetRenderAnchors() {
+    // If a previous start tap was left installed (e.g., we never saw non‑silent audio),
+    // remove it now to avoid "CreateRecordingTap" crash on re-install.
+    if startTapInstalled {
+      trackMixer.removeTap(onBus: 0)
+      os_log("🧹 Removed lingering start tap", log: SpinPlayer.logger, type: .info)
+    }
+    scheduledStartSample = nil
+    didCaptureStart = false
+    startTapInstalled = false
+    os_log("🔄 Reset render anchors for new spin", log: SpinPlayer.logger, type: .info)
+  }
+
+  // MARK: - Playback Control
 
   public func stop() {
     os_log(
@@ -239,12 +263,13 @@ public class SpinPlayer {
 
     stopAudio()
     clearTimers()
-    clearFades()
+    resetRenderAnchors()
 
     self.spin = nil
     self.currentFile = nil
     self.state = .available
     self.volume = 1.0
+    self.playbackStartOffset = 0
   }
 
   func clearTimers() {
@@ -277,29 +302,6 @@ public class SpinPlayer {
       clearTimer = nil
     }
 
-    // Invalidate and clear all fade timers atomically
-    if !fadeTimers.isEmpty {
-      os_log(
-        "Invalidating %d fade timers",
-        log: SpinPlayer.logger,
-        type: .debug,
-        fadeTimers.count
-      )
-      let timersToInvalidate = fadeTimers
-      fadeTimers.removeAll()
-      timersToInvalidate.forEach { $0.invalidate() }
-    }
-  }
-
-  func clearFades() {
-    #if os(iOS)
-      activeDisplayLink?.invalidate()
-      activeDisplayLink = nil
-    #else
-      fadeUpdateTimer?.invalidate()
-      fadeUpdateTimer = nil
-    #endif
-    activeFades.removeAll()
   }
 
   /// Plays the loaded spin immediately from the specified position.
@@ -323,37 +325,14 @@ public class SpinPlayer {
         type: .info,
         from
       )
+      // Record that we're starting mid-file so fades can be shifted appropriately
+      self.playbackStartOffset = from
       // Make sure audio session is configured before playback
       playolaMainMixer.configureAudioSession()
       try engine.start()
 
-      // Check if file is still available (not cleared by stop())
-      guard let audioFile = currentFile else {
-        os_log(
-          "Cannot play - audio file was cleared (likely by stop())",
-          log: SpinPlayer.logger,
-          type: .info
-        )
-        self.state = .available
-        return
-      }
-
-      // calculate segment info
-      let sampleRate = playerNode.outputFormat(forBus: 0).sampleRate
-      let newSampleTime = AVAudioFramePosition(sampleRate * from)
-      let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
-
-      // stop the player, schedule the segment, restart the player
-      self.volume = spin?.startingVolume ?? 1.0
-      playerNode.stop()
-      playerNode.scheduleSegment(
-        audioFile,
-        startingFrame: newSampleTime,
-        frameCount: framesToPlay,
-        at: nil,
-        completionHandler: nil
-      )
-      playerNode.play()
+      guard let audioFile = validateAndGetCurrentFile() else { return }
+      scheduleAndPlaySegment(audioFile: audioFile, from: from)
 
       self.state = .playing
       if let spin {
@@ -375,6 +354,40 @@ public class SpinPlayer {
       self.state = .available
     }
   }
+
+  private func validateAndGetCurrentFile() -> AVAudioFile? {
+    guard let currentFile = currentFile else {
+      os_log(
+        "Cannot play - audio file was cleared (likely by stop())",
+        log: SpinPlayer.logger,
+        type: .info
+      )
+      self.state = .available
+      return nil
+    }
+    return currentFile
+  }
+
+  private func scheduleAndPlaySegment(audioFile: AVAudioFile, from: Double) {
+    // calculate segment info
+    let sampleRate = playerNode.outputFormat(forBus: 0).sampleRate
+    let newSampleTime = AVAudioFramePosition(sampleRate * from)
+    let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
+
+    // stop the player, schedule the segment, restart the player
+    // Volume is already set before playNow is called
+    playerNode.stop()
+    playerNode.scheduleSegment(
+      audioFile,
+      startingFrame: newSampleTime,
+      frameCount: framesToPlay,
+      at: nil,
+      completionHandler: nil
+    )
+    playerNode.play()
+  }
+
+  // MARK: - Loading and Download Management
 
   /// Loads a spin into the player and prepares it for playback.
   ///
@@ -467,13 +480,34 @@ public class SpinPlayer {
     Task { @MainActor in
       await self.loadFile(with: localUrl)
 
-      if spin.isPlaying {
-        let currentTimeInSeconds = Date().timeIntervalSince(spin.airtime)
-        self.playNow(from: currentTimeInSeconds)
-        self.volume = 1.0
-      } else {
-        self.schedulePlay(at: spin.airtime)
+      // Determine what to do based on the spin's timing state
+      switch spin.playbackTiming {
+      case .future:
+        // Spin is in the future - schedule it
         self.volume = spin.startingVolume
+        self.schedulePlay(at: spin.airtime)
+
+      case .playing:
+        // Spin should be currently playing - start from current position
+        let currentDate = spin.dateProvider.now()
+        self.volume = spin.volumeAtDate(currentDate)
+
+        let currentTimeInSeconds = currentDate.timeIntervalSince(spin.airtime)
+        self.playNow(from: currentTimeInSeconds)
+
+      case .tooLateToStart, .past:
+        // Spin has already finished or has too little time left - skip it entirely
+        os_log(
+          "Spin %@ download completed too late (timing: %@) - skipping",
+          log: SpinPlayer.logger,
+          type: .info,
+          spin.id,
+          String(describing: spin.playbackTiming)
+        )
+        // Clean up everything since we're not going to play this spin
+        self.clear()
+        continuation.resume(returning: .success(localUrl))
+        return
       }
 
       self.scheduleFades(spin)
@@ -495,6 +529,209 @@ public class SpinPlayer {
     }
     self.state = .available
     continuation.resume(returning: .failure(error))
+  }
+
+  // MARK: - Volume and Audio Parameter Management
+
+  /// Resolve and cache the rampable volume parameter we'll use for automation on `trackMixer`.
+  private func resolveVolumeParam() -> AUParameter? {
+    if let param = volumeParam { return param }
+    guard let tree = trackMixer.auAudioUnit.parameterTree else { return nil }
+    // Prefer output.0 volume, else input.0.0, else any rampable "volume"/"0", else first rampable.
+    let params = tree.allParameters.filter { $0.flags.contains(.flag_CanRamp) }
+    if let byOutput = params.first(where: { $0.keyPath.lowercased().contains("output.0") }) {
+      volumeParam = byOutput
+      return byOutput
+    }
+    if let byInput0 = params.first(where: { $0.keyPath.lowercased().contains("input.0.0") }) {
+      volumeParam = byInput0
+      return byInput0
+    }
+    if let byName = params.first(where: { $0.identifier.lowercased() == "volume" }) {
+      volumeParam = byName
+      return byName
+    }
+    if let byZero = params.first(where: { $0.identifier == "0" }) {
+      volumeParam = byZero
+      return byZero
+    }
+    if let any = params.first {
+      volumeParam = any
+      return any
+    }
+    return nil
+  }
+
+  private func applyVolumeToAudioParameter(_ newValue: Float) {
+    let target = newValue
+
+    if let param = resolveVolumeParam() {
+      param.setValue(AUValue(target), originator: nil, atHostTime: mach_absolute_time())
+      logVolumeSuccess(userVolume: newValue, paramVolume: target, paramAddress: param.address)
+    } else {
+      logVolumeFailure(attemptedVolume: newValue)
+    }
+  }
+
+  private func logVolumeSuccess(
+    userVolume: Float, paramVolume: Float, paramAddress: AUParameterAddress
+  ) {
+    os_log(
+      "🔊 mixer volume set → user=%.3f (param=%.3f) addr=%llu",
+      log: SpinPlayer.logger, type: .info, userVolume, paramVolume, paramAddress)
+    print("🔊 Volume set to user=\(userVolume), param=\(paramVolume)")
+  }
+
+  private func logVolumeFailure(attemptedVolume: Float) {
+    os_log(
+      "⚠️ mixer volume set failed (no rampable param)",
+      log: SpinPlayer.logger, type: .error)
+    print("⚠️ Volume set failed (no rampable param), attempted user=\(attemptedVolume)")
+  }
+
+  // MARK: - Fade Management
+
+  /// Install a one-shot tap to capture the first non-silent render on `trackMixer`,
+  /// establishing `scheduledStartSample` so fades can be scheduled in the audio sample domain.
+  private func installStartTapIfNeeded(pendingFades: [(offset: Double, to: Float)]) {
+    guard !startTapInstalled else { return }
+    startTapInstalled = true
+    ensureEngineRunning()
+    didCaptureStart = false
+
+    trackMixer.installTap(onBus: 0, bufferSize: Constants.tapBufferSize, format: nil) {
+      [weak self] buffer, time in
+      self?.handleTapBuffer(buffer: buffer, time: time, pendingFades: pendingFades)
+    }
+  }
+
+  private func ensureEngineRunning() {
+    guard !engine.isRunning else { return }
+    do {
+      playolaMainMixer.configureAudioSession()
+      try engine.start()
+    } catch {
+      os_log(
+        "⚠️ Could not start engine before installing tap: %{public}@",
+        log: SpinPlayer.logger, type: .error, String(describing: error))
+    }
+  }
+
+  private func handleTapBuffer(
+    buffer: AVAudioPCMBuffer, time: AVAudioTime, pendingFades: [(offset: Double, to: Float)]
+  ) {
+    guard !didCaptureStart else { return }
+
+    // Require some energy to avoid preroll silence
+    guard bufferHasEnergy(buffer) else { return }
+
+    didCaptureStart = true
+    scheduledStartSample = AUEventSampleTime(time.sampleTime)
+
+    // Remove the tap immediately (one-shot)
+    trackMixer.removeTap(onBus: 0)
+    startTapInstalled = false
+
+    // Ensure a known baseline on the exact host time of first render (user-space only)
+    setInitialVolume(at: time.hostTime)
+
+    // Schedule any fades that were waiting for start capture
+    scheduleFadesAtStartIfNeeded(pendingFades)
+  }
+
+  private func bufferHasEnergy(_ buffer: AVAudioPCMBuffer) -> Bool {
+    guard let ch = buffer.floatChannelData?.pointee else { return false }
+    let frameCount = Int(buffer.frameLength)
+    guard frameCount > 0 else { return false }
+
+    var acc: Float = 0
+    for i in 0..<frameCount { acc += ch[i] * ch[i] }
+    let rms = sqrt(acc / Float(frameCount))
+    return rms > Constants.minimumEnergyThreshold
+  }
+
+  private func setInitialVolume(at hostTime: UInt64) {
+    guard let param = resolveVolumeParam() else { return }
+
+    let userInitial: Float
+    if let spin = self.spin {
+      let ms = Int((self.playbackStartOffset * 1000.0).rounded())
+      userInitial = spin.volumeAt(ms)
+    } else {
+      userInitial = self.currentVolume
+    }
+
+    let paramInitial = userInitial
+    param.setValue(AUValue(paramInitial), originator: nil, atHostTime: hostTime)
+    os_log(
+      "🔧 Baseline mixer volume at start → user=%.3f (param=%.3f) addr=%llu host=%llu",
+      log: SpinPlayer.logger, type: .info,
+      userInitial, paramInitial, param.address, hostTime)
+  }
+
+  /// Queue stepwise fades in the audio render thread using the AU's scheduleParameterBlock.
+  private func scheduleFadesAtStartIfNeeded(_ fades: [(offset: Double, to: Float)]) {
+    installParamObserverIfNeeded()
+    guard let start = scheduledStartSample,
+      let param = resolveVolumeParam()
+    else { return }
+    let sr = trackMixer.auAudioUnit.outputBusses[0].format.sampleRate
+    let schedule = trackMixer.auAudioUnit.scheduleParameterBlock
+
+    // Establish the intended starting value in PARAM domain (now == user space)
+    let userStart: Float = {
+      if let currentSpin = spin {
+        let ms = Int((playbackStartOffset * 1000.0).rounded())
+        return currentSpin.volumeAt(ms)
+      } else {
+        return currentVolume
+      }
+    }()
+    var fromParam = userStart
+
+    for (offset, targetUser) in fades {
+      let toParam = targetUser
+      var when = start + AUEventSampleTime(offset * sr)
+      if let rt = trackMixer.lastRenderTime {
+        let nowSample = AUEventSampleTime(rt.sampleTime)
+        let guardFrames = AUEventSampleTime(sr * Constants.fadeGuardTime)
+        if when <= nowSample + guardFrames { when = nowSample + guardFrames }
+      }
+
+      let duration: Double = Constants.fadeDuration
+      let steps = Constants.fadeSteps
+      let totalFrames = AUEventSampleTime(duration * sr)
+      let framesPerStep = max(AUEventSampleTime(1), totalFrames / AUEventSampleTime(steps))
+
+      // build steps from the *previous target* to this target (both in PARAM domain)
+      for i in 0...steps {
+        let progress = Double(i) / Double(steps)
+        let value = AUValue(fromParam + Float(progress) * (toParam - fromParam))
+        schedule(when + AUEventSampleTime(i) * framesPerStep, 0, param.address, value)
+      }
+
+      fromParam = toParam  // next fade starts where this one ends
+    }
+  }
+
+  /// Install a render-thread parameter observer for `trackMixer` so we can log every step that the AU applies.
+  private func installParamObserverIfNeeded() {
+    guard paramObserverToken == nil, let tree = trackMixer.auAudioUnit.parameterTree else { return }
+    paramObserverToken = tree.token(byAddingParameterObserver: { [weak self] address, value in
+      let ht = mach_absolute_time()
+      // If we have a cached volumeParam, annotate when the observed address matches it.
+      let matchMark: String
+      if let addr = self?.volumeParam?.address, addr == address {
+        matchMark = " (VOL)"
+      } else {
+        matchMark = ""
+      }
+      os_log(
+        "🎯 PARAM OBS: addr=%llu -> %.3f atHost=%llu%{public}@",
+        log: SpinPlayer.logger, type: .info, address, value, ht, matchMark)
+      print(
+        "🎯 PARAM OBS: addr=\(address) -> \(String(format: "%.3f", value)) atHost=\(ht)\(matchMark)")
+    })
   }
 
   private func avAudioTimeFromDate(date: Date) -> AVAudioTime {
@@ -528,12 +765,17 @@ public class SpinPlayer {
     )
   }
 
+  // MARK: - Scheduled Playback
+
   /// schedule a future play from the beginning of the file
   /// Schedule playback to start at a specific time
   public func schedulePlay(at scheduledDate: Date) {
     do {
       try prepareAudioEngine(scheduledDate: scheduledDate)
       try validateAudioFile()
+
+      // Scheduled plays always start from the top of the file
+      self.playbackStartOffset = 0
 
       let avAudiotime = avAudioTimeFromDate(date: scheduledDate)
       let scheduledSpinId = spin?.id
@@ -614,7 +856,6 @@ public class SpinPlayer {
       os_log("⚠️ Timer invalid or spin changed", log: SpinPlayer.logger, type: .default)
       return
     }
-
     handleSuccessfulTimerFire(spin: spin)
   }
 
@@ -646,10 +887,11 @@ public class SpinPlayer {
     }
   }
 
-  // MARK: File Loading
+  // MARK: - File Loading
 
   /// Loads an AVAudioFile into the current player node
   private func loadFile(_ file: AVAudioFile) {
+    resetRenderAnchors()
     playerNode.scheduleFile(file, at: nil)
   }
 
@@ -693,7 +935,7 @@ public class SpinPlayer {
   }
 
   private func validateFileSize(_ fileSize: Int, url: URL, fileManager: FileManager) throws {
-    if fileSize < 10 * 1024 {
+    if fileSize < Constants.minimumFileSize {
       let error = FileDownloadError.downloadFailed(
         "Audio file is too small: \(fileSize) bytes"
       )
@@ -714,6 +956,15 @@ public class SpinPlayer {
     do {
       currentFile = try AVAudioFile(forReading: url)
       normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
+      // Use calculator's dB helper; clamp to a practical range for safety
+      let rawDb = Double(self.normalizationCalculator?.requiredDbOffsetDb ?? 0)
+      let gainDb = min(24.0, max(-24.0, rawDb))
+      self.normalizationEQ.globalGain = Float(gainDb)
+      os_log(
+        "🎚️ Set normalizationEQ.globalGain = %.2f dB for %@",
+        log: SpinPlayer.logger, type: .info,
+        gainDb, url.lastPathComponent
+      )
       logSuccessfulLoad(url)
     } catch let audioError as NSError {
       await handleAudioFileCreationError(audioError, url: url, fileSize: fileSize)
@@ -785,139 +1036,31 @@ public class SpinPlayer {
         )
       }
     }
-
     self.state = .available
   }
 
-  fileprivate func fadePlayer(
-    toVolume endVolume: Float,
-    overTime time: Float,
-    completionBlock: (() -> Void)? = nil
-  ) {
-    // Current volume (properly normalized via getter)
-    let startVolume = self.volume
-
-    // Current time and end time
-    let startTime = CACurrentMediaTime()
-    let endTime = startTime + Double(time)
-
-    // Create a new fade operation
-    let fadeOperation = FadeOperation(
-      startVolume: startVolume,
-      endVolume: endVolume,
-      startTime: startTime,
-      endTime: endTime,
-      completionBlock: completionBlock
-    )
-
-    // Add to active fades
-    activeFades.insert(fadeOperation)
-
-    os_log(
-      "Scheduled fade: %.2f→%.2f over %.2fs",
-      log: SpinPlayer.logger,
-      type: .debug,
-      startVolume,
-      endVolume,
-      time
-    )
-
-    #if os(iOS)
-      if activeDisplayLink == nil {
-        activeDisplayLink = CADisplayLink(
-          target: self,
-          selector: #selector(updateFades)
-        )
-        activeDisplayLink?.add(to: .current, forMode: .common)
-      }
-    #else
-      if fadeUpdateTimer == nil {
-        fadeUpdateTimer = Timer.scheduledTimer(
-          timeInterval: 1.0 / 60.0,
-          target: self,
-          selector: #selector(updateFades),
-          userInfo: nil,
-          repeats: true
-        )
-      }
-    #endif
-
-  }
-
-  @objc private func updateFades(_ sender: Any) {
-    // Current time
-    let currentTime = CACurrentMediaTime()
-
-    // Set containing completed fades to remove
-    var completedFades: Set<FadeOperation> = []
-
-    // Track latest volume (for fades that might overlap)
-    var latestVolume: Float?
-
-    // Sort the fades by end time (latest fade takes precedence)
-    let sortedFades = activeFades.sorted { $0.endTime < $1.endTime }
-
-    // Process each fade
-    for fade in sortedFades {
-      // If fade is complete, mark for removal and call completion block
-      if fade.isComplete(at: currentTime) {
-        completedFades.insert(fade)
-        fade.completionBlock?()
-
-        // Latest volume is the target volume of the completed fade
-        latestVolume = fade.endVolume
-      } else {
-        // Calculate current volume for this fade
-        latestVolume = fade.currentVolume(at: currentTime)
-      }
-    }
-
-    // Apply the latest calculated volume if any
-    if let volume = latestVolume {
-      self.volume = volume
-    }
-
-    // Remove completed fades
-    activeFades.subtract(completedFades)
-
-    if activeFades.isEmpty {
-      #if os(iOS)
-        activeDisplayLink?.invalidate()
-        activeDisplayLink = nil
-      #else
-        fadeUpdateTimer?.invalidate()
-        fadeUpdateTimer = nil
-      #endif
-
-      os_log("All fades completed", log: SpinPlayer.logger, type: .debug)
-    }
-  }
-
   public func scheduleFades(_ spin: Spin) {
-    for fade in spin.fades {
-      let fadeTime = spin.airtime.addingTimeInterval(
-        TimeInterval(fade.atMS / 1000)
-      )
-      let timer = Timer(
-        fire: fadeTime,
-        interval: 0,
-        repeats: false
-      ) { [weak self, fade] timer in
-        // Always invalidate timer first
-        timer.invalidate()
-
-        guard let self = self else { return }
-
-        Task { @MainActor in
-          // Remove timer from the set (it's already invalidated)
-          self.fadeTimers.remove(timer)
-          self.fadePlayer(toVolume: fade.toVolume, overTime: 1.5)
-        }
-      }
-      RunLoop.main.add(timer, forMode: .default)
-      fadeTimers.insert(timer)
+    // Convert Spin fades to offsets (seconds) relative to *this* playback start
+    // If we started mid-file (playNow(from:)), shift fades left by that offset and drop past ones
+    let fades: [(offset: Double, to: Float)] = spin.fades.compactMap { fade in
+      let original = Double(fade.atMS) / 1000.0
+      let adjusted = original - playbackStartOffset
+      // Ignore fades that would have occurred before we started
+      guard adjusted >= 0 else { return nil }
+      return (adjusted, fade.toVolume)
     }
+
+    // If we already captured the mixer start, schedule immediately.
+    if scheduledStartSample != nil {
+      scheduleFadesAtStartIfNeeded(fades)
+      return
+    }
+
+    // Otherwise, install a one-shot tap to capture the true start and then schedule.
+    installStartTapIfNeeded(pendingFades: fades)
   }
+
+  // MARK: - Timer Management
 
   private func setClearTimer(_ spin: Spin?) {
     guard let endtime = spin?.endtime else {
@@ -927,7 +1070,7 @@ public class SpinPlayer {
 
     // for now, fire a timer. Later we should try and use a callback
     self.clearTimer = Timer(
-      fire: endtime.addingTimeInterval(1),
+      fire: endtime.addingTimeInterval(Constants.cleanupBufferTime),
       interval: 0,
       repeats: false,
       block: { [weak self] timer in
@@ -951,3 +1094,5 @@ public class SpinPlayer {
     RunLoop.main.add(self.clearTimer!, forMode: .default)
   }
 }
+
+// swiftlint:enable file_length

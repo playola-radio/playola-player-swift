@@ -4,6 +4,7 @@
 //
 //  Created by Brian D Keane on 1/8/25.
 //
+// swiftlint:disable file_length
 
 import Foundation
 import Testing
@@ -365,8 +366,13 @@ struct SpinTests {
 
   private func verifyFadeProperties(_ spin: Spin) {
     #expect(spin.fades.count == 3)
-    #expect(spin.fades[0].atMS == 229365)
-    #expect(spin.fades[0].toVolume == 0.3)
+    // Fades are sorted by atMS in the initializer
+    #expect(spin.fades[0].atMS == 1000)
+    #expect(spin.fades[0].toVolume == 1.0)
+    #expect(spin.fades[1].atMS == 229365)
+    #expect(spin.fades[1].toVolume == 0.3)
+    #expect(spin.fades[2].atMS == 238324)
+    #expect(spin.fades[2].toVolume == 0.0)
   }
 
   private func verifyRelatedTextProperties(_ spin: Spin) {
@@ -632,5 +638,463 @@ struct SpinTests {
 
     let totalOffset: TimeInterval = 300 - 100 + 50
     #expect(finalSpin.airtime == originalAirtime.addingTimeInterval(totalOffset))
+  }
+
+  // MARK: - volumeAtMS Tests
+
+  // MARK: - volumeAt (3s look‑ahead) Tests
+
+  @Test("volumeAt returns next fade volume when it is within 3s")
+  func testVolumeAt_lookahead_hitsNextFade() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 1.0),
+      Fade(atMS: 10000, toVolume: 0.2),
+    ]
+    let spin = Spin.mockWith(startingVolume: 0.3, fades: fades)
+
+    // At 7.5s, current is 1.0 (from 5s fade), next fade is at 10s (within 3s)
+    // Expect to return the next fade's target (0.2)
+    #expect(spin.volumeAt(7500) == 0.2)
+
+    // Just before first fade: at 3.2s, next fade at 5s (within 1.8s)
+    #expect(spin.volumeAt(3200) == 1.0)
+  }
+
+  @Test("volumeAt returns current volume when next fade is beyond 3s")
+  func testVolumeAt_lookahead_tooFar() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.7),
+      Fade(atMS: 12000, toVolume: 0.4),
+    ]
+    let spin = Spin.mockWith(startingVolume: 0.3, fades: fades)
+
+    // At 1s, current is 0.3; next is at 5s (delta 4s) -> return current (0.3)
+    #expect(spin.volumeAt(1000) == 0.3)
+
+    // At 8s, current is 0.7 (from 5s); next at 12s (delta 4s) -> return 0.7
+    #expect(spin.volumeAt(8000) == 0.7)
+  }
+
+  @Test("volumeAt treats 3s boundary as inclusive")
+  func testVolumeAt_boundaryInclusive() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.8)
+    ]
+    let spin = Spin.mockWith(startingVolume: 0.2, fades: fades)
+
+    // At 2s, next fade at 5s -> delta 3000ms (exact). Should return next fade's target (0.8)
+    #expect(spin.volumeAt(2000) == 0.8)
+  }
+
+  @Test("volumeAt handles negative ms by clamping to 0")
+  func testVolumeAt_negativeClampsToZero() throws {
+    let fades = [Fade(atMS: 1000, toVolume: 0.6)]
+    let spin = Spin.mockWith(startingVolume: 0.4, fades: fades)
+
+    #expect(spin.volumeAt(-500) == 0.6)  // next fade at 1s is within 3s, so return 0.6
+  }
+
+  @Test("volumeAtMS returns starting volume when no fades")
+  func testVolumeAtMS_noFades() throws {
+    let spin = Spin.mockWith(
+      startingVolume: 0.7,
+      fades: []
+    )
+
+    #expect(spin.volumeAtMS(0) == 0.7)
+    #expect(spin.volumeAtMS(1000) == 0.7)
+    #expect(spin.volumeAtMS(10000) == 0.7)
+  }
+
+  @Test("volumeAtMS returns starting volume before first fade")
+  func testVolumeAtMS_beforeFirstFade() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.5),
+      Fade(atMS: 10000, toVolume: 0.2),
+    ]
+
+    let spin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: fades
+    )
+
+    #expect(spin.volumeAtMS(0) == 1.0)
+    #expect(spin.volumeAtMS(2500) == 1.0)
+    #expect(spin.volumeAtMS(4999) == 1.0)
+  }
+
+  @Test("volumeAtMS returns fade volume at exact fade time")
+  func testVolumeAtMS_atExactFadeTime() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.5),
+      Fade(atMS: 10000, toVolume: 0.2),
+    ]
+
+    let spin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: fades
+    )
+
+    #expect(spin.volumeAtMS(5000) == 0.5)
+    #expect(spin.volumeAtMS(10000) == 0.2)
+  }
+
+  @Test("volumeAtMS returns last fade volume after all fades")
+  func testVolumeAtMS_afterAllFades() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.5),
+      Fade(atMS: 10000, toVolume: 0.2),
+      Fade(atMS: 15000, toVolume: 0.0),
+    ]
+
+    let spin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: fades
+    )
+
+    #expect(spin.volumeAtMS(20000) == 0.0)
+    #expect(spin.volumeAtMS(100000) == 0.0)
+  }
+
+  @Test("volumeAtMS handles multiple fades correctly")
+  func testVolumeAtMS_multipleFades() throws {
+    let fades = [
+      Fade(atMS: 1000, toVolume: 0.8),
+      Fade(atMS: 5000, toVolume: 0.5),
+      Fade(atMS: 10000, toVolume: 0.2),
+      Fade(atMS: 15000, toVolume: 0.0),
+    ]
+
+    let spin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: fades
+    )
+
+    // Before any fades
+    #expect(spin.volumeAtMS(500) == 1.0)
+
+    // After first fade
+    #expect(spin.volumeAtMS(1000) == 0.8)
+    #expect(spin.volumeAtMS(3000) == 0.8)
+
+    // After second fade
+    #expect(spin.volumeAtMS(5000) == 0.5)
+    #expect(spin.volumeAtMS(7500) == 0.5)
+
+    // After third fade
+    #expect(spin.volumeAtMS(10000) == 0.2)
+    #expect(spin.volumeAtMS(12500) == 0.2)
+
+    // After final fade
+    #expect(spin.volumeAtMS(15000) == 0.0)
+    #expect(spin.volumeAtMS(20000) == 0.0)
+  }
+
+  @Test("volumeAtMS handles unsorted fades correctly")
+  func testVolumeAtMS_unsortedFades() throws {
+    // Create fades in unsorted order
+    let unsortedFades = [
+      Fade(atMS: 10000, toVolume: 0.2),
+      Fade(atMS: 1000, toVolume: 0.8),
+      Fade(atMS: 15000, toVolume: 0.0),
+      Fade(atMS: 5000, toVolume: 0.5),
+    ]
+
+    let spin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: unsortedFades
+    )
+
+    // The Spin initializer should sort these, so results should be correct
+    #expect(spin.volumeAtMS(500) == 1.0)
+    #expect(spin.volumeAtMS(1500) == 0.8)
+    #expect(spin.volumeAtMS(6000) == 0.5)
+    #expect(spin.volumeAtMS(11000) == 0.2)
+    #expect(spin.volumeAtMS(16000) == 0.0)
+  }
+
+  // MARK: - volumeAtDate Tests
+
+  @Test("volumeAtDate returns starting volume before spin airtime")
+  func testVolumeAtDate_beforeAirtime() throws {
+    let airtime = Date()
+    let spin = Spin.mockWith(
+      airtime: airtime,
+      startingVolume: 0.3,
+      fades: [Fade(atMS: 5000, toVolume: 1.0)]
+    )
+
+    let beforeAirtime = airtime.addingTimeInterval(-10)
+    #expect(spin.volumeAtDate(beforeAirtime) == 0.3)
+  }
+
+  @Test("volumeAtDate returns correct volume at exact airtime")
+  func testVolumeAtDate_atAirtime() throws {
+    let airtime = Date()
+    let spin = Spin.mockWith(
+      airtime: airtime,
+      startingVolume: 0.3,
+      fades: [Fade(atMS: 5000, toVolume: 1.0)]
+    )
+
+    #expect(spin.volumeAtDate(airtime) == 0.3)
+  }
+
+  @Test("volumeAtDate returns correct volume during spin")
+  func testVolumeAtDate_duringSpin() throws {
+    let airtime = Date()
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.5),
+      Fade(atMS: 10000, toVolume: 1.0),
+    ]
+
+    let spin = Spin.mockWith(
+      airtime: airtime,
+      startingVolume: 0.3,
+      fades: fades
+    )
+
+    // 3 seconds after airtime (before first fade)
+    let during1 = airtime.addingTimeInterval(3)
+    #expect(spin.volumeAtDate(during1) == 0.3)
+
+    // 5 seconds after airtime (at first fade)
+    let during2 = airtime.addingTimeInterval(5)
+    #expect(spin.volumeAtDate(during2) == 0.5)
+
+    // 7.5 seconds after airtime (between fades)
+    let during3 = airtime.addingTimeInterval(7.5)
+    #expect(spin.volumeAtDate(during3) == 0.5)
+
+    // 10 seconds after airtime (at second fade)
+    let during4 = airtime.addingTimeInterval(10)
+    #expect(spin.volumeAtDate(during4) == 1.0)
+
+    // 15 seconds after airtime (after all fades)
+    let during5 = airtime.addingTimeInterval(15)
+    #expect(spin.volumeAtDate(during5) == 1.0)
+  }
+
+  @Test("volumeAtDate handles fractional seconds correctly")
+  func testVolumeAtDate_fractionalSeconds() throws {
+    let airtime = Date()
+    let fades = [
+      Fade(atMS: 1500, toVolume: 0.7),  // 1.5 seconds
+      Fade(atMS: 3750, toVolume: 0.4),  // 3.75 seconds
+    ]
+
+    let spin = Spin.mockWith(
+      airtime: airtime,
+      startingVolume: 1.0,
+      fades: fades
+    )
+
+    // 1.4 seconds after airtime (just before first fade)
+    let time1 = airtime.addingTimeInterval(1.4)
+    #expect(spin.volumeAtDate(time1) == 1.0)
+
+    // 1.5 seconds after airtime (exactly at first fade)
+    let time2 = airtime.addingTimeInterval(1.5)
+    #expect(spin.volumeAtDate(time2) == 0.7)
+
+    // 3.8 seconds after airtime (just after second fade)
+    let time3 = airtime.addingTimeInterval(3.8)
+    #expect(spin.volumeAtDate(time3) == 0.4)
+  }
+
+  @Test("volumeAtDate consistent with volumeAtMS")
+  func testVolumeAtDate_consistentWithVolumeAtMS() throws {
+    let airtime = Date()
+    let fades = [
+      Fade(atMS: 2000, toVolume: 0.8),
+      Fade(atMS: 5000, toVolume: 0.3),
+      Fade(atMS: 8000, toVolume: 0.0),
+    ]
+
+    let spin = Spin.mockWith(
+      airtime: airtime,
+      startingVolume: 1.0,
+      fades: fades
+    )
+
+    // Test various time points
+    let testPoints: [(TimeInterval, Int)] = [
+      (0, 0),
+      (1, 1000),
+      (2, 2000),
+      (3.5, 3500),
+      (5, 5000),
+      (7, 7000),
+      (8, 8000),
+      (10, 10000),
+    ]
+
+    for (seconds, milliseconds) in testPoints {
+      let date = airtime.addingTimeInterval(seconds)
+      let volumeFromDate = spin.volumeAtDate(date)
+      let volumeFromMS = spin.volumeAtMS(milliseconds)
+      #expect(volumeFromDate == volumeFromMS)
+    }
+  }
+
+  @Test("volumeAtDate works with real-world fade scenario")
+  func testVolumeAtDate_realWorldScenario() throws {
+    let airtime = Date()
+
+    // Simulate a typical song with intro fade-in and outro fade-out
+    let fades = [
+      Fade(atMS: 3700, toVolume: 1.0),  // Fade in from 0.3 to 1.0 at 3.7 seconds
+      Fade(atMS: 180500, toVolume: 0.0),  // Fade out to 0.0 at 180.5 seconds (3 minutes)
+    ]
+
+    let spin = Spin.mockWith(
+      airtime: airtime,
+      startingVolume: 0.3,
+      fades: fades
+    )
+
+    // Test volume at various points
+    let startTime = airtime
+    #expect(spin.volumeAtDate(startTime) == 0.3)
+
+    let afterFadeIn = airtime.addingTimeInterval(4.0)
+    #expect(spin.volumeAtDate(afterFadeIn) == 1.0)
+
+    let midSong = airtime.addingTimeInterval(90.0)  // 1.5 minutes
+    #expect(spin.volumeAtDate(midSong) == 1.0)
+
+    let afterFadeOut = airtime.addingTimeInterval(181.0)
+    #expect(spin.volumeAtDate(afterFadeOut) == 0.0)
+  }
+
+  // MARK: - PlaybackTiming Tests
+
+  @Test("playbackTiming returns future when before airtime")
+  func testPlaybackTiming_future() throws {
+    let now = Date()
+    let dateProviderMock = DateProviderMock(mockDate: now)
+
+    let futureSpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(30),  // 30 seconds in future
+      dateProvider: dateProviderMock
+    )
+
+    #expect(futureSpin.playbackTiming == .future)
+  }
+
+  @Test("playbackTiming returns playing when during spin with enough time left")
+  func testPlaybackTiming_playing() throws {
+    let now = Date()
+    let dateProviderMock = DateProviderMock(mockDate: now)
+
+    // Create audio block with 60 second duration
+    let audioBlock = AudioBlock.mockWith(
+      durationMS: 60000,
+      endOfMessageMS: 60000
+    )
+
+    let playingSpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(-10),  // Started 10 seconds ago
+      audioBlock: audioBlock,
+      dateProvider: dateProviderMock
+    )
+
+    #expect(playingSpin.playbackTiming == .playing)
+  }
+
+  @Test("playbackTiming returns past when spin has finished")
+  func testPlaybackTiming_pastFinished() throws {
+    let now = Date()
+    let dateProviderMock = DateProviderMock(mockDate: now)
+
+    // Create audio block with 30 second duration
+    let audioBlock = AudioBlock.mockWith(
+      durationMS: 30000,
+      endOfMessageMS: 30000
+    )
+
+    let finishedSpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(-60),  // Started 60 seconds ago, finished 30 seconds ago
+      audioBlock: audioBlock,
+      dateProvider: dateProviderMock
+    )
+
+    #expect(finishedSpin.playbackTiming == .past)
+  }
+
+  @Test("playbackTiming returns past when less than 2 seconds remaining")
+  func testPlaybackTiming_pastTooLate() throws {
+    let now = Date()
+    let dateProviderMock = DateProviderMock(mockDate: now)
+
+    // Create audio block with 10 second duration
+    let audioBlock = AudioBlock.mockWith(
+      durationMS: 10000,
+      endOfMessageMS: 10000
+    )
+
+    // Spin started 8.5 seconds ago, only 1.5 seconds left (less than 2 second minimum)
+    let almostFinishedSpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(-8.5),
+      audioBlock: audioBlock,
+      dateProvider: dateProviderMock
+    )
+
+    #expect(almostFinishedSpin.playbackTiming == .past)
+  }
+
+  @Test("playbackTiming returns playing when exactly 2 seconds remaining")
+  func testPlaybackTiming_playingAtBoundary() throws {
+    let now = Date()
+    let dateProviderMock = DateProviderMock(mockDate: now)
+
+    // Create audio block with 10 second duration
+    let audioBlock = AudioBlock.mockWith(
+      durationMS: 10000,
+      endOfMessageMS: 10000
+    )
+
+    // Spin started 8 seconds ago, exactly 2 seconds left (at the boundary)
+    let boundarySpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(-8.0),
+      audioBlock: audioBlock,
+      dateProvider: dateProviderMock
+    )
+
+    #expect(boundarySpin.playbackTiming == .playing)
+  }
+
+  @Test("playbackTiming handles edge case at exact airtime")
+  func testPlaybackTiming_atExactAirtime() throws {
+    let now = Date()
+    let dateProviderMock = DateProviderMock(mockDate: now)
+
+    let exactTimeSpin = Spin.mockWith(
+      airtime: now,
+      dateProvider: dateProviderMock
+    )
+
+    #expect(exactTimeSpin.playbackTiming == .playing)
+  }
+
+  @Test("playbackTiming handles edge case at exact endtime")
+  func testPlaybackTiming_atExactEndtime() throws {
+    let now = Date()
+    let dateProviderMock = DateProviderMock(mockDate: now)
+
+    // Create audio block with 10 second duration
+    let audioBlock = AudioBlock.mockWith(
+      durationMS: 10000,
+      endOfMessageMS: 10000
+    )
+
+    // Spin started exactly 10 seconds ago (at endtime)
+    let endTimeSpin = Spin.mockWith(
+      airtime: now.addingTimeInterval(-10.0),
+      audioBlock: audioBlock,
+      dateProvider: dateProviderMock
+    )
+
+    #expect(endTimeSpin.playbackTiming == .past)
   }
 }
