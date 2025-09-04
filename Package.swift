@@ -11,7 +11,7 @@ let package = Package(
   targets: [
     .target(
       name: "PlayolaPlayer",
-      resources: [.copy("MockData")],
+      resources: [.copy("MockData")]
     ),
     .testTarget(
       name: "PlayolaPlayerTests",
