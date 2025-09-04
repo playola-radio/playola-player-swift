@@ -642,6 +642,58 @@ struct SpinTests {
 
   // MARK: - volumeAtMS Tests
 
+  // MARK: - volumeAt (3s look‑ahead) Tests
+
+  @Test("volumeAt returns next fade volume when it is within 3s")
+  func testVolumeAt_lookahead_hitsNextFade() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 1.0),
+      Fade(atMS: 10000, toVolume: 0.2),
+    ]
+    let spin = Spin.mockWith(startingVolume: 0.3, fades: fades)
+
+    // At 7.5s, current is 1.0 (from 5s fade), next fade is at 10s (within 3s)
+    // Expect to return the next fade's target (0.2)
+    #expect(spin.volumeAt(7500) == 0.2)
+
+    // Just before first fade: at 3.2s, next fade at 5s (within 1.8s)
+    #expect(spin.volumeAt(3200) == 1.0)
+  }
+
+  @Test("volumeAt returns current volume when next fade is beyond 3s")
+  func testVolumeAt_lookahead_tooFar() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.7),
+      Fade(atMS: 12000, toVolume: 0.4),
+    ]
+    let spin = Spin.mockWith(startingVolume: 0.3, fades: fades)
+
+    // At 1s, current is 0.3; next is at 5s (delta 4s) -> return current (0.3)
+    #expect(spin.volumeAt(1000) == 0.3)
+
+    // At 8s, current is 0.7 (from 5s); next at 12s (delta 4s) -> return 0.7
+    #expect(spin.volumeAt(8000) == 0.7)
+  }
+
+  @Test("volumeAt treats 3s boundary as inclusive")
+  func testVolumeAt_boundaryInclusive() throws {
+    let fades = [
+      Fade(atMS: 5000, toVolume: 0.8)
+    ]
+    let spin = Spin.mockWith(startingVolume: 0.2, fades: fades)
+
+    // At 2s, next fade at 5s -> delta 3000ms (exact). Should return next fade's target (0.8)
+    #expect(spin.volumeAt(2000) == 0.8)
+  }
+
+  @Test("volumeAt handles negative ms by clamping to 0")
+  func testVolumeAt_negativeClampsToZero() throws {
+    let fades = [Fade(atMS: 1000, toVolume: 0.6)]
+    let spin = Spin.mockWith(startingVolume: 0.4, fades: fades)
+
+    #expect(spin.volumeAt(-500) == 0.6)  // next fade at 1s is within 3s, so return 0.6
+  }
+
   @Test("volumeAtMS returns starting volume when no fades")
   func testVolumeAtMS_noFades() throws {
     let spin = Spin.mockWith(

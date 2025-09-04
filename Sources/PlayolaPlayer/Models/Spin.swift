@@ -142,6 +142,38 @@ public struct Spin: Codable, Sendable {
     return currentVolume
   }
 
+  /// Calculates the *perceived* volume at a given millisecond offset into the spin with a small look‑ahead.
+  /// If the next fade occurs within 3 seconds, we return that fade's target as the initial level
+  /// (useful when starting mid‑file and you want to land on the “soon imminent” level).
+  /// - Parameter ms: Milliseconds since the start of the spin (negative values are treated as 0)
+  /// - Returns: The volume level (0.0 to 1.0) to use at this point, with 3s look‑ahead
+  public func volumeAt(_ ms: Int) -> Float {
+    let milliseconds = max(0, ms)
+
+    // Current volume at this instant (no look‑ahead)
+    var currentVolume = startingVolume
+    var nextFade: Fade? = nil
+
+    for fade in fades {  // fades are sorted in init
+      if fade.atMS <= milliseconds {
+        currentVolume = fade.toVolume
+      } else {
+        nextFade = fade
+        break
+      }
+    }
+
+    // If the next fade is within 3 seconds, prefer its target as the starting point
+    if let nf = nextFade {
+      let delta = nf.atMS - milliseconds
+      if delta <= 3000 {  // within 3s (inclusive)
+        return nf.toVolume
+      }
+    }
+
+    return currentVolume
+  }
+
   /// Calculates the volume that should be applied at a given date
   /// - Parameter date: The date to calculate volume for
   /// - Returns: The volume level (0.0 to 1.0) that should be applied at this date

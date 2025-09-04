@@ -664,7 +664,13 @@ public class SpinPlayer {
 
       // Ensure a known baseline on the exact host time of first render (user-space only)
       if let param = self.resolveVolumeParam() {
-        let userInitial = self.spin?.startingVolume ?? self.currentVolume
+        let userInitial: Float
+        if let spin = self.spin {
+          let ms = Int((self.playbackStartOffset * 1000.0).rounded())
+          userInitial = spin.volumeAt(ms)
+        } else {
+          userInitial = self.currentVolume
+        }
         let paramInitial = userInitial
         param.setValue(AUValue(paramInitial), originator: nil, atHostTime: time.hostTime)
         os_log(
@@ -688,7 +694,14 @@ public class SpinPlayer {
     let schedule = trackMixer.auAudioUnit.scheduleParameterBlock
 
     // Establish the intended starting value in PARAM domain (now == user space)
-    let userStart = spin?.startingVolume ?? currentVolume
+    let userStart: Float = {
+      if let s = spin {
+        let ms = Int((playbackStartOffset * 1000.0).rounded())
+        return s.volumeAt(ms)
+      } else {
+        return currentVolume
+      }
+    }()
     var fromParam = userStart
 
     for (offset, targetUser) in fades {
