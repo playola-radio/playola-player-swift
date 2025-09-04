@@ -43,6 +43,12 @@ public class SpinPlayer {
     static let minimumEnergyThreshold: Float = 1e-6
     /// Tap buffer size for start detection
     static let tapBufferSize: AVAudioFrameCount = 1024
+    /// Standard audio sample rate used for duration calculations
+    static let standardSampleRate: Double = 44100
+    /// Minimum valid audio file size in bytes (10KB)
+    static let minimumFileSize: Int = 10 * 1024
+    /// Buffer time in seconds after spin end before cleanup
+    static let cleanupBufferTime: TimeInterval = 1.0
   }
 
   private static let logger = OSLog(
@@ -50,53 +56,53 @@ public class SpinPlayer {
     category: "Player"
   )
 
+  // MARK: - Public Properties
   public var id: UUID = UUID()
   public var spin: Spin? {
     didSet { setClearTimer(spin) }
   }
+  public weak var delegate: SpinPlayerDelegate?
+  public var localUrl: URL? { return currentFile?.url }
 
+  // MARK: - Timer Management
   public var startNotificationTimer: Timer?
   public var clearTimer: Timer?
 
-  public var localUrl: URL? { return currentFile?.url }
-
-  // dependencies
+  // MARK: - Dependencies
   @objc var playolaMainMixer: PlayolaMainMixer = .shared
   private var fileDownloadManager: FileDownloadManaging
   private let errorReporter = PlayolaErrorReporter.shared
 
-  // Track active download ID
+  // MARK: - Download State
   private var activeDownloadId: UUID?
 
-  // Mixer-driven volume state
+  // MARK: - Playback State
   private var currentVolume: Float = 1.0
   /// Seconds offset into the file where playback started (e.g., when using playNow(from:)).
   private var playbackStartOffset: Double = 0
 
-  public weak var delegate: SpinPlayerDelegate?
-
   public var duration: Double {
     guard let currentFile else { return 0 }
     let audioNodeFileLength = AVAudioFrameCount(currentFile.length)
-    return Double(Double(audioNodeFileLength) / 44100)
+    return Double(Double(audioNodeFileLength) / Constants.standardSampleRate)
   }
 
   public var state: SpinPlayer.State = .available {
     didSet { delegate?.player(self, didChangeState: state) }
   }
 
+  // MARK: - Audio Engine Components
   /// An internal instance of AVAudioEngine
   private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine
-
   /// The node responsible for playing the audio file
   private let playerNode = AVAudioPlayerNode()
-
   /// Per-file loudness normalization stage. We use an EQ solely for its `globalGain` which
   /// supports boosts up to +24 dB (unlike AVAudioMixerNode which tops out at 1.0 and cannot boost).
   private let normalizationEQ = AVAudioUnitEQ(numberOfBands: 0)  // use only globalGain
-
-  // Insert a per-player track mixer so we can automate volume on the audio thread
+  /// Insert a per-player track mixer so we can automate volume on the audio thread
   private let trackMixer = AVAudioMixerNode()
+
+  // MARK: - Audio Parameter Management
   /// Cached rampable volume parameter for fades/automation
   private var volumeParam: AUParameter?
   private var paramObserverToken: AUParameterObserverToken?
@@ -106,8 +112,8 @@ public class SpinPlayer {
   private var startTapInstalled = false
   private var didCaptureStart = false
 
+  // MARK: - File Management
   private var normalizationCalculator: AudioNormalizationCalculator?
-
   /// The currently playing audio file
   private var currentFile: AVAudioFile? {
     didSet {
@@ -127,23 +133,11 @@ public class SpinPlayer {
       // Always keep the player node at unity; all gain happens on the per-track mixer
       if playerNode.volume != 1.0 { playerNode.volume = 1.0 }
 
-      let target = newValue
-
-      if let param = resolveVolumeParam() {
-        param.setValue(AUValue(target), originator: nil, atHostTime: mach_absolute_time())
-        os_log(
-          "🔊 mixer volume set → user=%.3f (param=%.3f) addr=%llu",
-          log: SpinPlayer.logger, type: .info, newValue, target, param.address)
-        print("🔊 Volume set to user=\(newValue), param=\(target)")
-      } else {
-        os_log(
-          "⚠️ mixer volume set failed (no rampable param)", log: SpinPlayer.logger, type: .error)
-        print("⚠️ Volume set failed (no rampable param), attempted user=\(newValue)")
-      }
+      applyVolumeToAudioParameter(newValue)
     }
   }
 
-  // MARK: Lifecycle
+  // MARK: - Lifecycle
   init(
     delegate: SpinPlayerDelegate? = nil,
     fileDownloadManager: FileDownloadManaging? = nil
@@ -211,7 +205,7 @@ public class SpinPlayer {
     os_log("🔄 Reset render anchors for new spin", log: SpinPlayer.logger, type: .info)
   }
 
-  // MARK: Playback
+  // MARK: - Playback Control
 
   public func stop() {
     os_log(
@@ -337,33 +331,8 @@ public class SpinPlayer {
       playolaMainMixer.configureAudioSession()
       try engine.start()
 
-      // Check if file is still available (not cleared by stop())
-      guard let audioFile = currentFile else {
-        os_log(
-          "Cannot play - audio file was cleared (likely by stop())",
-          log: SpinPlayer.logger,
-          type: .info
-        )
-        self.state = .available
-        return
-      }
-
-      // calculate segment info
-      let sampleRate = playerNode.outputFormat(forBus: 0).sampleRate
-      let newSampleTime = AVAudioFramePosition(sampleRate * from)
-      let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
-
-      // stop the player, schedule the segment, restart the player
-      // Volume is already set before playNow is called
-      playerNode.stop()
-      playerNode.scheduleSegment(
-        audioFile,
-        startingFrame: newSampleTime,
-        frameCount: framesToPlay,
-        at: nil,
-        completionHandler: nil
-      )
-      playerNode.play()
+      guard let audioFile = validateAndGetCurrentFile() else { return }
+      scheduleAndPlaySegment(audioFile: audioFile, from: from)
 
       self.state = .playing
       if let spin {
@@ -385,6 +354,40 @@ public class SpinPlayer {
       self.state = .available
     }
   }
+
+  private func validateAndGetCurrentFile() -> AVAudioFile? {
+    guard let currentFile = currentFile else {
+      os_log(
+        "Cannot play - audio file was cleared (likely by stop())",
+        log: SpinPlayer.logger,
+        type: .info
+      )
+      self.state = .available
+      return nil
+    }
+    return currentFile
+  }
+
+  private func scheduleAndPlaySegment(audioFile: AVAudioFile, from: Double) {
+    // calculate segment info
+    let sampleRate = playerNode.outputFormat(forBus: 0).sampleRate
+    let newSampleTime = AVAudioFramePosition(sampleRate * from)
+    let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
+
+    // stop the player, schedule the segment, restart the player
+    // Volume is already set before playNow is called
+    playerNode.stop()
+    playerNode.scheduleSegment(
+      audioFile,
+      startingFrame: newSampleTime,
+      frameCount: framesToPlay,
+      at: nil,
+      completionHandler: nil
+    )
+    playerNode.play()
+  }
+
+  // MARK: - Loading and Download Management
 
   /// Loads a spin into the player and prepares it for playback.
   ///
@@ -528,6 +531,8 @@ public class SpinPlayer {
     continuation.resume(returning: .failure(error))
   }
 
+  // MARK: - Volume and Audio Parameter Management
+
   /// Resolve and cache the rampable volume parameter we'll use for automation on `trackMixer`.
   private func resolveVolumeParam() -> AUParameter? {
     if let param = volumeParam { return param }
@@ -556,6 +561,35 @@ public class SpinPlayer {
     }
     return nil
   }
+
+  private func applyVolumeToAudioParameter(_ newValue: Float) {
+    let target = newValue
+
+    if let param = resolveVolumeParam() {
+      param.setValue(AUValue(target), originator: nil, atHostTime: mach_absolute_time())
+      logVolumeSuccess(userVolume: newValue, paramVolume: target, paramAddress: param.address)
+    } else {
+      logVolumeFailure(attemptedVolume: newValue)
+    }
+  }
+
+  private func logVolumeSuccess(
+    userVolume: Float, paramVolume: Float, paramAddress: AUParameterAddress
+  ) {
+    os_log(
+      "🔊 mixer volume set → user=%.3f (param=%.3f) addr=%llu",
+      log: SpinPlayer.logger, type: .info, userVolume, paramVolume, paramAddress)
+    print("🔊 Volume set to user=\(userVolume), param=\(paramVolume)")
+  }
+
+  private func logVolumeFailure(attemptedVolume: Float) {
+    os_log(
+      "⚠️ mixer volume set failed (no rampable param)",
+      log: SpinPlayer.logger, type: .error)
+    print("⚠️ Volume set failed (no rampable param), attempted user=\(attemptedVolume)")
+  }
+
+  // MARK: - Fade Management
 
   /// Install a one-shot tap to capture the first non-silent render on `trackMixer`,
   /// establishing `scheduledStartSample` so fades can be scheduled in the audio sample domain.
@@ -731,6 +765,8 @@ public class SpinPlayer {
     )
   }
 
+  // MARK: - Scheduled Playback
+
   /// schedule a future play from the beginning of the file
   /// Schedule playback to start at a specific time
   public func schedulePlay(at scheduledDate: Date) {
@@ -851,7 +887,7 @@ public class SpinPlayer {
     }
   }
 
-  // MARK: File Loading
+  // MARK: - File Loading
 
   /// Loads an AVAudioFile into the current player node
   private func loadFile(_ file: AVAudioFile) {
@@ -899,7 +935,7 @@ public class SpinPlayer {
   }
 
   private func validateFileSize(_ fileSize: Int, url: URL, fileManager: FileManager) throws {
-    if fileSize < 10 * 1024 {
+    if fileSize < Constants.minimumFileSize {
       let error = FileDownloadError.downloadFailed(
         "Audio file is too small: \(fileSize) bytes"
       )
@@ -1024,6 +1060,8 @@ public class SpinPlayer {
     installStartTapIfNeeded(pendingFades: fades)
   }
 
+  // MARK: - Timer Management
+
   private func setClearTimer(_ spin: Spin?) {
     guard let endtime = spin?.endtime else {
       self.clearTimer?.invalidate()
@@ -1032,7 +1070,7 @@ public class SpinPlayer {
 
     // for now, fire a timer. Later we should try and use a callback
     self.clearTimer = Timer(
-      fire: endtime.addingTimeInterval(1),
+      fire: endtime.addingTimeInterval(Constants.cleanupBufferTime),
       interval: 0,
       repeats: false,
       block: { [weak self] timer in
