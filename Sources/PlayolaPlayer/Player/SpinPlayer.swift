@@ -251,6 +251,7 @@ public class SpinPlayer {
     }
     playerNode.stop()
     playerNode.reset()
+    trackMixer.reset()  // Clear any scheduled parameter automations (fades)
   }
 
   private func clear() {
