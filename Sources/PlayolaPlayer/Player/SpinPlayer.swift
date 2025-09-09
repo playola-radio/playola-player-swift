@@ -100,7 +100,7 @@ public class SpinPlayer {
   /// supports boosts up to +24 dB (unlike AVAudioMixerNode which tops out at 1.0 and cannot boost).
   private let normalizationEQ = AVAudioUnitEQ(numberOfBands: 0)  // use only globalGain
   /// Insert a per-player track mixer so we can automate volume on the audio thread
-  private let trackMixer = AVAudioMixerNode()
+  private var trackMixer = AVAudioMixerNode()
 
   // MARK: - Audio Parameter Management
   /// Cached rampable volume parameter for fades/automation
@@ -205,6 +205,52 @@ public class SpinPlayer {
     os_log("🔄 Reset render anchors for new spin", log: SpinPlayer.logger, type: .info)
   }
 
+  /// Fully tear down and recreate the per-track mixer so any queued AU parameter automation is discarded.
+  private func hardResetTrackMixer() {
+    // Remove any one-shot start tap to avoid re-install crashes.
+    if startTapInstalled {
+      trackMixer.removeTap(onBus: 0)
+      startTapInstalled = false
+    }
+
+    // Remove parameter observer from old AU tree if present.
+    if let token = paramObserverToken, let tree = trackMixer.auAudioUnit.parameterTree {
+      tree.removeParameterObserver(token)
+      paramObserverToken = nil
+    }
+
+    // Best-effort state reset on current AU, then detach and replace the node.
+    trackMixer.auAudioUnit.reset()
+    engine.disconnectNodeInput(trackMixer)
+    engine.disconnectNodeOutput(trackMixer)
+    engine.detach(trackMixer)
+
+    // Create and attach a fresh mixer node.
+    let newMixer = AVAudioMixerNode()
+    trackMixer = newMixer
+    engine.attach(newMixer)
+
+    // Reconnect normalizationEQ -> trackMixer -> main mixer
+    engine.connect(
+      normalizationEQ,
+      to: newMixer,
+      format: TapProperties.default.format
+    )
+    engine.connect(
+      newMixer,
+      to: playolaMainMixer.mixerNode,
+      format: TapProperties.default.format
+    )
+
+    // Clear cached parameter handles and render anchors; this node is brand new.
+    volumeParam = nil
+    scheduledStartSample = nil
+    didCaptureStart = false
+
+    // Reinstall the parameter observer on the fresh AU as needed.
+    installParamObserverIfNeeded()
+  }
+
   // MARK: - Playback Control
 
   public func stop() {
@@ -251,7 +297,6 @@ public class SpinPlayer {
     }
     playerNode.stop()
     playerNode.reset()
-    trackMixer.reset()  // Clear any scheduled parameter automations (fades)
   }
 
   private func clear() {
@@ -263,6 +308,8 @@ public class SpinPlayer {
     )
 
     stopAudio()
+
+    hardResetTrackMixer()
     clearTimers()
     resetRenderAnchors()
 
