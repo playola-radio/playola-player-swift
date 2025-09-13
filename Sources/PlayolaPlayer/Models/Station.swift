@@ -11,12 +11,14 @@ public struct Station: Codable, Sendable {
   public let name: String
   public let curatorName: String
   public let imageUrl: URL?
+  public let description: String
+  public let active: Bool?
   public let createdAt: Date
   public let updatedAt: Date
 
   // Custom coding keys to handle the imageUrl conversion
   private enum CodingKeys: String, CodingKey {
-    case id, name, curatorName, createdAt, updatedAt
+    case id, name, curatorName, description, active, createdAt, updatedAt
     case imageUrlString = "imageUrl"
   }
 
@@ -26,6 +28,8 @@ public struct Station: Codable, Sendable {
     id = try container.decode(String.self, forKey: .id)
     name = try container.decode(String.self, forKey: .name)
     curatorName = try container.decode(String.self, forKey: .curatorName)
+    description = try container.decode(String.self, forKey: .description)
+    active = try container.decodeIfPresent(Bool.self, forKey: .active)
     createdAt = try container.decode(Date.self, forKey: .createdAt)
     updatedAt = try container.decode(Date.self, forKey: .updatedAt)
 
@@ -43,6 +47,8 @@ public struct Station: Codable, Sendable {
     try container.encode(id, forKey: .id)
     try container.encode(name, forKey: .name)
     try container.encode(curatorName, forKey: .curatorName)
+    try container.encode(description, forKey: .description)
+    try container.encodeIfPresent(active, forKey: .active)
     try container.encode(createdAt, forKey: .createdAt)
     try container.encode(updatedAt, forKey: .updatedAt)
 
@@ -52,25 +58,30 @@ public struct Station: Codable, Sendable {
 
   // Original initializer updated to convert String to URL
   public init(
-    id: String, name: String, curatorName: String, imageUrl: String?, createdAt: Date,
-    updatedAt: Date
+    id: String, name: String, curatorName: String, imageUrl: String?, description: String,
+    active: Bool? = nil, createdAt: Date, updatedAt: Date
   ) {
     self.id = id
     self.name = name
     self.curatorName = curatorName
     self.imageUrl = imageUrl != nil ? URL(string: imageUrl!) : nil
+    self.description = description
+    self.active = active
     self.createdAt = createdAt
     self.updatedAt = updatedAt
   }
 
   // New convenience initializer that accepts URL directly
   public init(
-    id: String, name: String, curatorName: String, imageUrl: URL?, createdAt: Date, updatedAt: Date
+    id: String, name: String, curatorName: String, imageUrl: URL?, description: String,
+    active: Bool? = nil, createdAt: Date, updatedAt: Date
   ) {
     self.id = id
     self.name = name
     self.curatorName = curatorName
     self.imageUrl = imageUrl
+    self.description = description
+    self.active = active
     self.createdAt = createdAt
     self.updatedAt = updatedAt
   }
