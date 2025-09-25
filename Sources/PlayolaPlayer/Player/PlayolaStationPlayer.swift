@@ -400,7 +400,7 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   private func createScheduleURL(for stationId: String) -> URL {
-    return baseUrl.appending(path: "/stations/\(stationId)/schedule")
+    return baseUrl.appending(path: "/v1/stations/\(stationId)/schedule")
       .appending(queryItems: [URLQueryItem(name: "includeRelatedTexts", value: "true")])
   }
 
