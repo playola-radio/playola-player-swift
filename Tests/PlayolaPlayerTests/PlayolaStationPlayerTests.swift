@@ -18,6 +18,18 @@ struct PlayolaStationPlayerTests {
     #expect(player.listeningSessionReporter?.baseURL == customBaseURL)
   }
 
+  @Test("Configure updates the player baseUrl")
+  func testConfigureUpdatesPlayerBaseURL() async throws {
+    let customBaseURL = URL(string: "http://localhost:6000/v1")!
+    let mockAuthProvider = MockAuthProvider()
+    let mockFileDownloadManager = MockFileDownloadManager()
+    let player = PlayolaStationPlayer(fileDownloadManager: mockFileDownloadManager)
+
+    player.configure(authProvider: mockAuthProvider, baseURL: customBaseURL)
+
+    #expect(player.baseUrl == customBaseURL)
+  }
+
   @Test("Configure uses default production baseURL when not specified")
   func testConfigureUsesDefaultBaseURL() async throws {
     let mockAuthProvider = MockAuthProvider()
