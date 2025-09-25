@@ -10,158 +10,164 @@ import Foundation
 import os.log
 
 #if os(iOS)
-  import UIKit
+    import UIKit
 #endif
 
 public protocol PlayolaMainMixerDelegate: AnyObject {
-  func player(_ mainMixer: PlayolaMainMixer, didPlayBuffer: AVAudioPCMBuffer)
+    func player(_ mainMixer: PlayolaMainMixer, didPlayBuffer: AVAudioPCMBuffer)
 }
 
 /// Default properties for the tap
 enum TapProperties {
-  case `default`
+    case `default`
 
-  /// The amount of samples in each buffer of audio
-  var bufferSize: AVAudioFrameCount {
-    return 512
-  }
+    /// The amount of samples in each buffer of audio
+    var bufferSize: AVAudioFrameCount {
+        return 512
+    }
 
-  /// The format of the audio in the tap (desired is float 32, non-interleaved)
-  var format: AVAudioFormat {
-    return AVAudioFormat(
-      commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false)!
-  }
+    /// The format of the audio in the tap (desired is float 32, non-interleaved)
+    var format: AVAudioFormat {
+        return AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 44100, channels: 2, interleaved: false
+        )!
+    }
 }
 
 open class PlayolaMainMixer: NSObject {
-  open private(set) var mixerNode: AVAudioMixerNode
-  open private(set) var engine: AVAudioEngine
+    open private(set) var mixerNode: AVAudioMixerNode
+    open private(set) var engine: AVAudioEngine
 
-  open var delegate: PlayolaMainMixerDelegate?
-  private let errorReporter = PlayolaErrorReporter.shared
-  private let audioSessionManager: AudioSessionManager
+    open var delegate: PlayolaMainMixerDelegate?
+    private let errorReporter = PlayolaErrorReporter.shared
+    private let audioSessionManager: AudioSessionManager
 
-  private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
+    private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
 
-  override init() {
-    self.mixerNode = AVAudioMixerNode()
-    self.engine = AVAudioEngine()
-    self.audioSessionManager = AudioSessionManager()
+    override init() {
+        mixerNode = AVAudioMixerNode()
+        engine = AVAudioEngine()
+        audioSessionManager = AudioSessionManager()
 
-    super.init()
-    self.engine.attach(self.mixerNode)
+        super.init()
+        engine.attach(mixerNode)
 
-    self.engine.connect(
-      self.mixerNode,
-      to: self.engine.mainMixerNode,
-      format: TapProperties.default.format)
+        engine.connect(
+            mixerNode,
+            to: engine.mainMixerNode,
+            format: TapProperties.default.format
+        )
 
-    self.engine.prepare()
+        engine.prepare()
 
-    self.mixerNode.installTap(
-      onBus: 0,
-      bufferSize: TapProperties.default.bufferSize,
-      format: TapProperties.default.format,
-      block: self.onTap(_:_:))
-  }
-
-  deinit {
-    self.mixerNode.removeTap(onBus: 0)
-  }
-
-  /// Configures the shared audio session for playback
-  public func configureAudioSession() {
-    guard !audioSessionManager.isConfigured else { return }
-
-    Task { @MainActor in
-      do {
-        try await audioSessionManager.configureForPlayback()
-        try await audioSessionManager.activate()
-        os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
-      } catch {
-        let deviceName = DeviceInfoProvider.deviceName
-        let systemVersion = DeviceInfoProvider.systemVersion
-        await errorReporter.reportError(
-          error,
-          context:
-            "Failed to configure audio session | Device: \(deviceName) | OS: \(systemVersion)",
-          level: .critical)
-      }
+        mixerNode.installTap(
+            onBus: 0,
+            bufferSize: TapProperties.default.bufferSize,
+            format: TapProperties.default.format,
+            block: onTap(_:_:)
+        )
     }
-  }
 
-  /// Deactivates the audio session when it's no longer needed
-  public func deactivateAudioSession() {
-    guard audioSessionManager.isConfigured else { return }
-
-    Task { @MainActor in
-      do {
-        try await audioSessionManager.deactivate()
-        os_log("Audio session deactivated", log: PlayolaMainMixer.logger, type: .info)
-      } catch {
-        await errorReporter.reportError(
-          error, context: "Failed to deactivate audio session", level: .warning)
-      }
+    deinit {
+        self.mixerNode.removeTap(onBus: 0)
     }
-  }
 
-  /// Handles the audio tap
-  private func onTap(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime) {
-    self.delegate?.player(self, didPlayBuffer: buffer)
-  }
+    /// Configures the shared audio session for playback
+    public func configureAudioSession() {
+        guard !audioSessionManager.isConfigured else { return }
 
-  @MainActor
-  public static let shared: PlayolaMainMixer = PlayolaMainMixer()
+        Task { @MainActor in
+            do {
+                try await audioSessionManager.configureForPlayback()
+                try await audioSessionManager.activate()
+                os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
+            } catch {
+                let deviceName = DeviceInfoProvider.deviceName
+                let systemVersion = DeviceInfoProvider.systemVersion
+                await errorReporter.reportError(
+                    error,
+                    context:
+                    "Failed to configure audio session | Device: \(deviceName) | OS: \(systemVersion)",
+                    level: .critical
+                )
+            }
+        }
+    }
+
+    /// Deactivates the audio session when it's no longer needed
+    public func deactivateAudioSession() {
+        guard audioSessionManager.isConfigured else { return }
+
+        Task { @MainActor in
+            do {
+                try await audioSessionManager.deactivate()
+                os_log("Audio session deactivated", log: PlayolaMainMixer.logger, type: .info)
+            } catch {
+                await errorReporter.reportError(
+                    error, context: "Failed to deactivate audio session", level: .warning
+                )
+            }
+        }
+    }
+
+    /// Handles the audio tap
+    private func onTap(_ buffer: AVAudioPCMBuffer, _: AVAudioTime) {
+        delegate?.player(self, didPlayBuffer: buffer)
+    }
+
+    @MainActor
+    public static let shared: PlayolaMainMixer = .init()
 }
 
-extension PlayolaMainMixer {
-  @MainActor
-  public func start() throws {
-    let maxRetries = 3
-    var retryCount = 0
-    var lastError: Error?
+public extension PlayolaMainMixer {
+    @MainActor
+    func start() throws {
+        let maxRetries = 3
+        var retryCount = 0
+        var lastError: Error?
 
-    while retryCount < maxRetries {
-      do {
-        try engine.start()
-        return
-      } catch {
-        lastError = error
-        retryCount += 1
+        while retryCount < maxRetries {
+            do {
+                try engine.start()
+                return
+            } catch {
+                lastError = error
+                retryCount += 1
 
-        if retryCount < maxRetries {
-          os_log(
-            "Audio engine start failed, retry %d of %d: %@",
-            log: PlayolaMainMixer.logger, type: .error,
-            retryCount, maxRetries, error.localizedDescription)
-          Thread.sleep(forTimeInterval: 0.1)  // Short delay before retry
+                if retryCount < maxRetries {
+                    os_log(
+                        "Audio engine start failed, retry %d of %d: %@",
+                        log: PlayolaMainMixer.logger, type: .error,
+                        retryCount, maxRetries, error.localizedDescription
+                    )
+                    Thread.sleep(forTimeInterval: 0.1) // Short delay before retry
+                }
+            }
         }
-      }
+
+        // If we get here, all retries failed
+        if let error = lastError {
+            Task {
+                await errorReporter.reportError(
+                    error, context: "Failed to start audio engine after \(maxRetries) attempts",
+                    level: .critical
+                )
+            }
+            throw error
+        }
     }
 
-    // If we get here, all retries failed
-    if let error = lastError {
-
-      Task {
-        await errorReporter.reportError(
-          error, context: "Failed to start audio engine after \(maxRetries) attempts",
-          level: .critical)
-      }
-      throw error
+    func attach(_ node: AVAudioPlayerNode) {
+        engine.attach(node)
     }
-  }
 
-  public func attach(_ node: AVAudioPlayerNode) {
-    engine.attach(node)
-  }
+    func connect(
+        _ playerNode: AVAudioPlayerNode, to mixerNode: AVAudioMixerNode, format: AVAudioFormat?
+    ) {
+        engine.connect(playerNode, to: mixerNode, format: format)
+    }
 
-  public func connect(
-    _ playerNode: AVAudioPlayerNode, to mixerNode: AVAudioMixerNode, format: AVAudioFormat?
-  ) {
-    engine.connect(playerNode, to: mixerNode, format: format)
-  }
-
-  public func prepare() {
-    engine.prepare()
-  }
+    func prepare() {
+        engine.prepare()
+    }
 }

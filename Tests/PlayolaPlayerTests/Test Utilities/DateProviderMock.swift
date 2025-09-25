@@ -1,5 +1,5 @@
 //
-//  DateMock.swift
+//  DateProviderMock.swift
 //  PlayolaPlayer
 //
 //  Created by Brian D Keane on 12/30/24.
@@ -15,7 +15,7 @@ final class DateProviderMock: DateProviderProtocol, @unchecked Sendable {
     private var _mockDate: Date
 
     init(mockDate: Date = Date()) {
-        self._mockDate = mockDate
+        _mockDate = mockDate
     }
 
     func now() -> Date {

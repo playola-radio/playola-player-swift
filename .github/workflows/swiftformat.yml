@@ -1,0 +1,30 @@
+name: SwiftFormat Check
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '**/*.swift'
+      - '.swiftformat'
+      - '.github/workflows/swiftformat.yml'
+  pull_request:
+    paths:
+      - '**/*.swift'
+      - '.swiftformat'
+      - '.github/workflows/swiftformat.yml'
+
+jobs:
+  swiftformat:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install SwiftFormat
+        run: brew install swiftformat
+
+      - name: Verify formatting
+        run: swiftformat --lint PlayolaPlayer

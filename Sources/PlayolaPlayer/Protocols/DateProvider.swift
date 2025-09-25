@@ -6,17 +6,17 @@
 //
 import Foundation
 
-final public class DateProvider: Sendable, DateProviderProtocol {
-  public static let shared: DateProvider = {
-    let instance = DateProvider()
-    return instance
-  }()
+public final class DateProvider: Sendable, DateProviderProtocol {
+    public static let shared: DateProvider = {
+        let instance = DateProvider()
+        return instance
+    }()
 
-  public func now() -> Date {
-    return Date()
-  }
+    public func now() -> Date {
+        return Date()
+    }
 }
 
 public protocol DateProviderProtocol: Sendable {
-  func now() -> Date
+    func now() -> Date
 }
