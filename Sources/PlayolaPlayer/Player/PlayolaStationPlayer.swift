@@ -10,8 +10,6 @@ import Combine
 import Foundation
 import os.log
 
-let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
-
 /// Errors specific to the station player
 public enum StationPlayerError: Error, LocalizedError {
   case networkError(String)
@@ -60,6 +58,7 @@ public enum StationPlayerError: Error, LocalizedError {
 /// ```
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
+  var baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
   @Published public var stationId: String?  // TODO: Change this to Station model
   private var interruptedStationId: String?
   var currentSchedule: Schedule?
@@ -110,6 +109,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.authProvider = authProvider
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
+    self.baseUrl = baseURL
   }
 
   public enum State: Sendable {
