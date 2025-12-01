@@ -50,6 +50,9 @@ public struct Spin: Codable, Sendable {
   /// Volume transitions that should occur during playback
   public let fades: [Fade]
 
+  /// Optional group identifier for spins that should be grouped together
+  public let spinGroupId: String?
+
   /// Related texts associated with this spin (e.g., DJ notes, song explanations)
   public let relatedTexts: [RelatedText]?
 
@@ -65,6 +68,7 @@ public struct Spin: Codable, Sendable {
     updatedAt: Date,
     audioBlock: AudioBlock,
     fades: [Fade],
+    spinGroupId: String? = nil,
     relatedTexts: [RelatedText]? = nil,
     dateProvider: DateProviderProtocol? = nil
   ) {
@@ -76,6 +80,7 @@ public struct Spin: Codable, Sendable {
     self.updatedAt = updatedAt
     self.audioBlock = audioBlock
     self.fades = fades.sorted { $0.atMS < $1.atMS }
+    self.spinGroupId = spinGroupId
     self.relatedTexts = relatedTexts
     self.dateProvider = dateProvider ?? DateProvider()
   }
@@ -205,6 +210,7 @@ public struct Spin: Codable, Sendable {
       updatedAt: updatedAt,
       audioBlock: audioBlock,
       fades: fades,
+      spinGroupId: spinGroupId,
       relatedTexts: relatedTexts
     )
 
@@ -215,8 +221,8 @@ public struct Spin: Codable, Sendable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, startingVolume,
-      relatedTexts
+    case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, spinGroupId,
+      startingVolume, relatedTexts
   }
 
   // Custom decoder to handle dateProvider
@@ -232,6 +238,7 @@ public struct Spin: Codable, Sendable {
     audioBlock = try container.decode(AudioBlock.self, forKey: .audioBlock)
     let decodedFades = try container.decode([Fade].self, forKey: .fades)
     fades = decodedFades.sorted { $0.atMS < $1.atMS }
+    spinGroupId = try container.decodeIfPresent(String.self, forKey: .spinGroupId)
     relatedTexts = try container.decodeIfPresent([RelatedText].self, forKey: .relatedTexts)
 
     // Initialize dateProvider with default value
@@ -250,6 +257,7 @@ public struct Spin: Codable, Sendable {
     try container.encode(updatedAt, forKey: .updatedAt)
     try container.encode(audioBlock, forKey: .audioBlock)
     try container.encode(fades, forKey: .fades)
+    try container.encodeIfPresent(spinGroupId, forKey: .spinGroupId)
     try container.encodeIfPresent(relatedTexts, forKey: .relatedTexts)
   }
 }
@@ -270,6 +278,7 @@ extension Spin {
   ///   - audioBlock: Optional override for audio block
   ///   - startingVolume: Optional override for starting volume
   ///   - fades: Optional override for fades
+  ///   - spinGroupId: Optional override for spin group ID
   ///   - createdAt: Optional override for created date
   ///   - updatedAt: Optional override for updated date
   ///   - relatedTexts: Optional override for related texts
@@ -282,6 +291,7 @@ extension Spin {
     audioBlock: AudioBlock? = nil,
     startingVolume: Float? = nil,
     fades: [Fade]? = nil,
+    spinGroupId: String? = nil,
     createdAt: Date? = nil,
     updatedAt: Date? = nil,
     relatedTexts: [RelatedText]? = nil,
@@ -300,6 +310,7 @@ extension Spin {
       updatedAt: updatedAt ?? mockSpin.updatedAt,
       audioBlock: audioBlock ?? mockSpin.audioBlock,
       fades: fades ?? mockSpin.fades,
+      spinGroupId: spinGroupId ?? mockSpin.spinGroupId,
       relatedTexts: relatedTexts ?? mockSpin.relatedTexts
     )
 
