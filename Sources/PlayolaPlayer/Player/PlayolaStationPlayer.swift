@@ -59,7 +59,7 @@ public enum StationPlayerError: Error, LocalizedError {
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
   var baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
-  @Published public var stationId: String?  // TODO: Change this to Station model
+  @Published public var stationId: String?
   private var interruptedStationId: String?
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManaging
@@ -68,15 +68,16 @@ final public class PlayolaStationPlayer: ObservableObject {
   private var authProvider: PlayolaAuthenticationProvider?
 
   /// Time offset for playing station from a different point in time
-  /// Negative values play from the past, positive values play from the future
   private var scheduleOffset: TimeInterval?
 
-  // Track active download IDs for potential cancellation
   private var activeDownloadIds: [String: UUID] = [:]
 
-  // Track active async tasks for proper cancellation
   private var schedulingTask: Task<Void, Never>?
   private var playTask: Task<Void, Error>?
+
+  // Audio interruption state
+  private var isSuspended = false
+  private var wasPlayingBeforeInterruption = false
 
   public weak var delegate: PlayolaStationPlayerDelegate?
 
@@ -148,8 +149,18 @@ final public class PlayolaStationPlayer: ObservableObject {
       )
 
       NotificationCenter.default.addObserver(
-        self, selector: #selector(handleAudioRouteChange(_:)),
-        name: AVAudioSession.routeChangeNotification, object: nil)
+        self,
+        selector: #selector(handleAudioRouteChange(_:)),
+        name: AVAudioSession.routeChangeNotification,
+        object: nil
+      )
+
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(handleAudioEngineConfigurationChange(_:)),
+        name: .AVAudioEngineConfigurationChange,
+        object: PlayolaMainMixer.shared.engine
+      )
     #endif
   }
 
@@ -615,7 +626,6 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   #if os(iOS)
-    /// Handle audio route changes such as connecting/disconnecting headphones
     @objc public func handleAudioRouteChange(_ notification: Notification) {
       guard let userInfo = notification.userInfo,
         let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
@@ -624,26 +634,37 @@ final public class PlayolaStationPlayer: ObservableObject {
         return
       }
 
-      // Check if the audio route changed
       switch reason {
       case .newDeviceAvailable:
-        // New device (like headphones) was connected
         os_log("New audio route device available", log: PlayolaStationPlayer.logger, type: .info)
 
       case .oldDeviceUnavailable:
-        // Old device (like headphones) was disconnected
-        // You might want to pause playback here
         os_log("Audio route device disconnected", log: PlayolaStationPlayer.logger, type: .info)
+        guard
+          let previousRoute = userInfo[AVAudioSessionRouteChangePreviousRouteKey]
+            as? AVAudioSessionRouteDescription
+        else { return }
+
+        let wasUsingHeadphones = previousRoute.outputs.contains {
+          [.headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType)
+        }
+
+        if wasUsingHeadphones && isPlaying {
+          os_log(
+            "Headphones disconnected while playing - pausing", log: PlayolaStationPlayer.logger,
+            type: .info)
+          interruptedStationId = stationId
+          wasPlayingBeforeInterruption = true
+          stop()
+        }
 
       default:
-        // Handle other route changes if needed
         os_log(
           "Audio route changed for reason: %d", log: PlayolaStationPlayer.logger, type: .info,
           reasonValue)
       }
     }
 
-    /// Handle audio session interruptions such as phone calls
     @objc public func handleAudioSessionInterruption(_ notification: Notification) {
       guard let userInfo = notification.userInfo,
         let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -654,32 +675,67 @@ final public class PlayolaStationPlayer: ObservableObject {
 
       switch type {
       case .began:
-        // Audio session was interrupted - might need to pause playback
-        os_log("Audio session interrupted", log: PlayolaStationPlayer.logger, type: .info)
-        self.interruptedStationId = stationId
-        stop()
+        os_log(
+          "Audio session interrupted - suspending", log: PlayolaStationPlayer.logger, type: .info)
+        isSuspended = true
+        wasPlayingBeforeInterruption = isPlaying
+        interruptedStationId = stationId
 
       case .ended:
-        // Interruption ended - might need to resume playback
+        os_log("Audio session interruption ended", log: PlayolaStationPlayer.logger, type: .info)
+        isSuspended = false
+
         guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
           return
         }
         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
 
-        if options.contains(.shouldResume) {
-          // The system indicates that we can resume audio
-          if let interruptedStationId {
-            Task { @MainActor [interruptedStationId] in
-              try? await self.play(stationId: interruptedStationId)
-            }
-            self.interruptedStationId = nil
-          }
+        if options.contains(.shouldResume) && wasPlayingBeforeInterruption {
+          resumeAfterInterruption()
         }
 
       @unknown default:
         os_log(
           "Unknown audio session interruption type: %d", log: PlayolaStationPlayer.logger,
           type: .error, typeValue)
+      }
+    }
+
+    @objc public func handleAudioEngineConfigurationChange(_ notification: Notification) {
+      os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
+
+      guard !isSuspended else {
+        os_log(
+          "Ignoring config change while suspended", log: PlayolaStationPlayer.logger, type: .info)
+        return
+      }
+
+      if wasPlayingBeforeInterruption {
+        resumeAfterInterruption()
+      }
+    }
+
+    private func resumeAfterInterruption() {
+      guard let stationToResume = interruptedStationId else { return }
+
+      os_log("Resuming playback after interruption", log: PlayolaStationPlayer.logger, type: .info)
+
+      Task { @MainActor in
+        do {
+          try await PlayolaMainMixer.shared.audioSessionManager.activate()
+          try PlayolaMainMixer.shared.restartEngine()
+          try await self.play(stationId: stationToResume)
+        } catch {
+          os_log(
+            "Failed to resume after interruption: %@",
+            log: PlayolaStationPlayer.logger, type: .error,
+            error.localizedDescription)
+          await errorReporter.reportError(
+            error, context: "Failed to resume playback after interruption", level: .error)
+        }
+
+        self.interruptedStationId = nil
+        self.wasPlayingBeforeInterruption = false
       }
     }
   #endif
