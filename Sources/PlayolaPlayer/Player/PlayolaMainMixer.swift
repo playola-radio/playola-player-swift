@@ -39,7 +39,7 @@ open class PlayolaMainMixer: NSObject {
 
   open var delegate: PlayolaMainMixerDelegate?
   private let errorReporter = PlayolaErrorReporter.shared
-  private let audioSessionManager: AudioSessionManager
+  let audioSessionManager: AudioSessionManager
 
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
 
@@ -134,14 +134,12 @@ extension PlayolaMainMixer {
             "Audio engine start failed, retry %d of %d: %@",
             log: PlayolaMainMixer.logger, type: .error,
             retryCount, maxRetries, error.localizedDescription)
-          Thread.sleep(forTimeInterval: 0.1)  // Short delay before retry
+          Thread.sleep(forTimeInterval: 0.1)
         }
       }
     }
 
-    // If we get here, all retries failed
     if let error = lastError {
-
       Task {
         await errorReporter.reportError(
           error, context: "Failed to start audio engine after \(maxRetries) attempts",
@@ -149,6 +147,22 @@ extension PlayolaMainMixer {
       }
       throw error
     }
+  }
+
+  @MainActor
+  public func restartEngine() throws {
+    os_log("Restarting audio engine", log: PlayolaMainMixer.logger, type: .info)
+
+    if engine.isRunning {
+      engine.stop()
+    }
+
+    engine.prepare()
+    try start()
+  }
+
+  public var isEngineRunning: Bool {
+    return engine.isRunning
   }
 
   public func attach(_ node: AVAudioPlayerNode) {
