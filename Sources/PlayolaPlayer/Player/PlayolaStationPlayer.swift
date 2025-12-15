@@ -328,6 +328,8 @@ final public class PlayolaStationPlayer: ObservableObject {
     return _spinPlayers.contains { $0.spin?.id == spin.id }
   }
 
+  private let schedulePollingInterval: UInt64 = 20_000_000_000  // 20 seconds in nanoseconds
+
   @MainActor
   private func scheduleUpcomingSpins() async {
     guard let stationId else {
@@ -338,59 +340,62 @@ final public class PlayolaStationPlayer: ObservableObject {
       return
     }
 
-    do {
-      // Check if task is cancelled before proceeding
-      try Task.checkCancellation()
+    while !Task.isCancelled {
+      do {
+        let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
 
-      let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
-
-      // Log how many spins are in the updated schedule
-      os_log(
-        "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
-        updatedSchedule.spins.count,
-        updatedSchedule.current(offsetTimeInterval: scheduleOffset).count)
-
-      // Extend the time window to load more upcoming spins (10 minutes instead of 6)
-      let spinsToLoad = updatedSchedule.current(offsetTimeInterval: scheduleOffset).filter {
-        $0.airtime < .now + TimeInterval(600)
-      }
-
-      os_log(
-        "Loading %d upcoming spins", log: PlayolaStationPlayer.logger, type: .info,
-        spinsToLoad.count)
-
-      for spin in spinsToLoad {
-        // Check cancellation before each spin
-        try Task.checkCancellation()
-
-        if !isScheduled(spin: spin) {
-          os_log(
-            "Scheduling new spin: %@ at %@", log: PlayolaStationPlayer.logger, type: .info, spin.id,
-            ISO8601DateFormatter().string(from: spin.airtime))
-          try await scheduleSpin(spin: spin)
-        }
-      }
-
-      // Log already scheduled spins
-      let scheduledSpinsCount = _spinPlayers.filter { $0.spin != nil }.count
-      os_log(
-        "Total scheduled spins: %d", log: PlayolaStationPlayer.logger, type: .info,
-        scheduledSpinsCount)
-
-    } catch {
-      // Check if this was a cancellation
-      if error is CancellationError {
-        os_log("📛 Schedule update cancelled", log: PlayolaStationPlayer.logger, type: .info)
-      } else {
-        Task {
-          await errorReporter.reportError(
-            error, context: "Failed to schedule upcoming spins", level: .error)
-        }
-
-        // Log more details about the error
         os_log(
-          "Schedule update failed: %@", log: PlayolaStationPlayer.logger, type: .error,
-          error.localizedDescription)
+          "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
+          updatedSchedule.spins.count,
+          updatedSchedule.current(offsetTimeInterval: scheduleOffset).count)
+
+        // Server returns only locked-in spins via lockedIn=true param.
+        // This filter is a client-side safety net to prevent scheduling spins too far out.
+        let spinsToLoad = updatedSchedule.current(offsetTimeInterval: scheduleOffset).filter {
+          $0.airtime < .now + TimeInterval(600)
+        }
+
+        os_log(
+          "Loading %d upcoming spins", log: PlayolaStationPlayer.logger, type: .info,
+          spinsToLoad.count)
+
+        for spin in spinsToLoad {
+          try Task.checkCancellation()
+
+          if !isScheduled(spin: spin) {
+            os_log(
+              "Scheduling new spin: %@ at %@", log: PlayolaStationPlayer.logger, type: .info,
+              spin.id,
+              ISO8601DateFormatter().string(from: spin.airtime))
+            try await scheduleSpin(spin: spin)
+          }
+        }
+
+        let scheduledSpinsCount = _spinPlayers.filter { $0.spin != nil }.count
+        os_log(
+          "Total scheduled spins: %d", log: PlayolaStationPlayer.logger, type: .info,
+          scheduledSpinsCount)
+
+      } catch {
+        if error is CancellationError {
+          os_log("📛 Schedule update cancelled", log: PlayolaStationPlayer.logger, type: .info)
+          return
+        } else {
+          Task {
+            await errorReporter.reportError(
+              error, context: "Failed to schedule upcoming spins", level: .error)
+          }
+          os_log(
+            "Schedule update failed: %@", log: PlayolaStationPlayer.logger, type: .error,
+            error.localizedDescription)
+        }
+      }
+
+      // Wait before next poll
+      do {
+        try await Task.sleep(nanoseconds: schedulePollingInterval)
+      } catch {
+        return  // Task was cancelled during sleep
       }
     }
   }
@@ -412,7 +417,10 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private func createScheduleURL(for stationId: String) -> URL {
     return baseUrl.appending(path: "/v1/stations/\(stationId)/schedule")
-      .appending(queryItems: [URLQueryItem(name: "includeRelatedTexts", value: "true")])
+      .appending(queryItems: [
+        URLQueryItem(name: "includeRelatedTexts", value: "true"),
+        URLQueryItem(name: "lockedIn", value: "true"),
+      ])
   }
 
   private func validateHTTPResponse(_ response: URLResponse, url: URL) throws -> HTTPURLResponse {
