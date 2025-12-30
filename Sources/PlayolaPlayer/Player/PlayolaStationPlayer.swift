@@ -692,6 +692,10 @@ final public class PlayolaStationPlayer: ObservableObject {
         wasPlayingBeforeInterruption = isPlaying
         interruptedStationId = stationId
 
+        // Cancel scheduling to prevent grabbing audio back from other apps
+        schedulingTask?.cancel()
+        schedulingTask = nil
+
       case .ended:
         os_log("Audio session interruption ended", log: PlayolaStationPlayer.logger, type: .info)
         isSuspended = false
