@@ -536,6 +536,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   ///   - Missing audio content in the schedule
   ///   - File download failures
   public func play(stationId: String, atDate: Date? = nil) async throws {
+    // Reset any stale interruption state when explicitly starting playback.
+    // This ensures CarPlay and other external callers always get a clean start.
+    isSuspended = false
+    wasPlayingBeforeInterruption = false
+    interruptedStationId = nil
+
     // Cancel any existing play task
     playTask?.cancel()
 
