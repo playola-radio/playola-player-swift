@@ -56,6 +56,9 @@ public struct Spin: Codable, Sendable {
   /// Related texts associated with this spin (e.g., DJ notes, song explanations)
   public let relatedTexts: [RelatedText]?
 
+  /// The airing this spin belongs to (if any)
+  public let airing: Airing?
+
   /// Date provider for testing time-dependent behavior
   public var dateProvider: DateProviderProtocol! = DateProvider()
 
@@ -70,6 +73,7 @@ public struct Spin: Codable, Sendable {
     fades: [Fade],
     spinGroupId: String? = nil,
     relatedTexts: [RelatedText]? = nil,
+    airing: Airing? = nil,
     dateProvider: DateProviderProtocol? = nil
   ) {
     self.id = id
@@ -82,6 +86,7 @@ public struct Spin: Codable, Sendable {
     self.fades = fades.sorted { $0.atMS < $1.atMS }
     self.spinGroupId = spinGroupId
     self.relatedTexts = relatedTexts
+    self.airing = airing
     self.dateProvider = dateProvider ?? DateProvider()
   }
 
@@ -211,7 +216,8 @@ public struct Spin: Codable, Sendable {
       audioBlock: audioBlock,
       fades: fades,
       spinGroupId: spinGroupId,
-      relatedTexts: relatedTexts
+      relatedTexts: relatedTexts,
+      airing: airing
     )
 
     // Preserve the dateProvider
@@ -222,7 +228,7 @@ public struct Spin: Codable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, spinGroupId,
-      startingVolume, relatedTexts
+      startingVolume, relatedTexts, airing
   }
 
   // Custom decoder to handle dateProvider
@@ -240,6 +246,7 @@ public struct Spin: Codable, Sendable {
     fades = decodedFades.sorted { $0.atMS < $1.atMS }
     spinGroupId = try container.decodeIfPresent(String.self, forKey: .spinGroupId)
     relatedTexts = try container.decodeIfPresent([RelatedText].self, forKey: .relatedTexts)
+    airing = try container.decodeIfPresent(Airing.self, forKey: .airing)
 
     // Initialize dateProvider with default value
     dateProvider = DateProvider()
@@ -259,6 +266,7 @@ public struct Spin: Codable, Sendable {
     try container.encode(fades, forKey: .fades)
     try container.encodeIfPresent(spinGroupId, forKey: .spinGroupId)
     try container.encodeIfPresent(relatedTexts, forKey: .relatedTexts)
+    try container.encodeIfPresent(airing, forKey: .airing)
   }
 }
 
@@ -282,6 +290,7 @@ extension Spin {
   ///   - createdAt: Optional override for created date
   ///   - updatedAt: Optional override for updated date
   ///   - relatedTexts: Optional override for related texts
+  ///   - airing: Optional override for airing
   ///   - dateProvider: Optional override for date provider
   /// - Returns: A mock Spin with specified overrides
   public static func mockWith(
@@ -295,6 +304,7 @@ extension Spin {
     createdAt: Date? = nil,
     updatedAt: Date? = nil,
     relatedTexts: [RelatedText]? = nil,
+    airing: Airing?? = nil,
     dateProvider: DateProviderProtocol? = nil
   ) -> Spin {
     // Start with the default mock
@@ -311,7 +321,8 @@ extension Spin {
       audioBlock: audioBlock ?? mockSpin.audioBlock,
       fades: fades ?? mockSpin.fades,
       spinGroupId: spinGroupId ?? mockSpin.spinGroupId,
-      relatedTexts: relatedTexts ?? mockSpin.relatedTexts
+      relatedTexts: relatedTexts ?? mockSpin.relatedTexts,
+      airing: airing ?? mockSpin.airing
     )
 
     // Set date provider if specified
