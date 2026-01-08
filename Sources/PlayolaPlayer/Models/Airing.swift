@@ -16,6 +16,7 @@ public struct Airing: Codable, Sendable, Equatable, Hashable, Identifiable {
   public let createdAt: Date
   public let updatedAt: Date
   public let episode: Episode?
+  public let station: Station?
 
   public init(
     id: String,
@@ -24,7 +25,8 @@ public struct Airing: Codable, Sendable, Equatable, Hashable, Identifiable {
     airtime: Date,
     createdAt: Date,
     updatedAt: Date,
-    episode: Episode? = nil
+    episode: Episode? = nil,
+    station: Station? = nil
   ) {
     self.id = id
     self.episodeId = episodeId
@@ -33,6 +35,7 @@ public struct Airing: Codable, Sendable, Equatable, Hashable, Identifiable {
     self.createdAt = createdAt
     self.updatedAt = updatedAt
     self.episode = episode
+    self.station = station
   }
 }
 
@@ -45,7 +48,8 @@ extension Airing {
       airtime: Date(timeIntervalSince1970: 1_800_000_000),
       createdAt: Date(timeIntervalSince1970: 1_800_000_000),
       updatedAt: Date(timeIntervalSince1970: 1_800_000_000),
-      episode: .mock
+      episode: .mock,
+      station: .mock
     )
   }
 
@@ -56,7 +60,8 @@ extension Airing {
     airtime: Date? = nil,
     createdAt: Date? = nil,
     updatedAt: Date? = nil,
-    episode: Episode?? = nil
+    episode: Episode?? = nil,
+    station: Station?? = nil
   ) -> Airing {
     let mock = Self.mock
     return Airing(
@@ -66,7 +71,8 @@ extension Airing {
       airtime: airtime ?? mock.airtime,
       createdAt: createdAt ?? mock.createdAt,
       updatedAt: updatedAt ?? mock.updatedAt,
-      episode: episode ?? mock.episode
+      episode: episode ?? mock.episode,
+      station: station ?? mock.station
     )
   }
 }
