@@ -124,6 +124,20 @@ extension Station: Hashable, Equatable {
 }
 
 extension Station {
+  public static var mock: Station {
+    Station(
+      id: "mock-station-id",
+      name: "Mock Station",
+      curatorName: "Mock Curator",
+      imageUrl: nil as URL?,
+      description: "A mock station for testing",
+      active: true,
+      releaseDate: nil,
+      createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+      updatedAt: Date(timeIntervalSince1970: 1_800_000_000)
+    )
+  }
+
   public static func mockWith(
     id: String = "mock-station-id",
     name: String = "Mock Station",
