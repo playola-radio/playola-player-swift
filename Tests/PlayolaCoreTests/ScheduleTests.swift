@@ -7,7 +7,7 @@
 import Foundation
 import Testing
 
-@testable import PlayolaPlayer
+@testable import PlayolaCore
 
 private struct TestSpins {
   let pastSpin: Spin

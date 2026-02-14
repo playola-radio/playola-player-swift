@@ -8,6 +8,7 @@
 import AVFoundation
 import AudioToolbox
 import Foundation
+import PlayolaCore
 import os.log
 
 #if os(iOS)
@@ -279,22 +280,8 @@ public class SpinPlayer {
   }
 
   private func stopAudio() {
-    if !engine.isRunning {
-      do {
-        // Make sure audio session is configured before starting engine
-        playolaMainMixer.configureAudioSession()
-        try engine.start()
-      } catch {
-        Task {
-          await errorReporter.reportError(
-            error,
-            context: "Failed to start engine during stop operation",
-            level: .error
-          )
-        }
-        return
-      }
-    }
+    // Only stop if the engine is running - no need to start it just to stop
+    guard engine.isRunning else { return }
     playerNode.stop()
     playerNode.reset()
   }
@@ -673,15 +660,33 @@ public class SpinPlayer {
     // Require some energy to avoid preroll silence
     guard bufferHasEnergy(buffer) else { return }
 
+    // Only capture minimal data in the tap callback - no heavy work here!
+    // Calling removeTap or doing logging/parameter scheduling from within
+    // the tap callback can deadlock with playerNode.stop() on the main thread.
     didCaptureStart = true
     scheduledStartSample = AUEventSampleTime(time.sampleTime)
+    let hostTime = time.hostTime
 
-    // Remove the tap immediately (one-shot)
-    trackMixer.removeTap(onBus: 0)
-    startTapInstalled = false
+    // Dispatch all heavy work to main thread to avoid deadlock
+    DispatchQueue.main.async { [weak self] in
+      self?.finishStartCaptureOnMain(hostTime: hostTime, pendingFades: pendingFades)
+    }
+  }
 
-    // Ensure a known baseline on the exact host time of first render (user-space only)
-    setInitialVolume(at: time.hostTime)
+  /// Complete the start capture on main thread where it's safe to remove taps and schedule fades.
+  @MainActor
+  private func finishStartCaptureOnMain(
+    hostTime: UInt64,
+    pendingFades: [(offset: Double, to: Float)]
+  ) {
+    // Remove the tap (safe to do on main thread, not inside the tap callback)
+    if startTapInstalled {
+      trackMixer.removeTap(onBus: 0)
+      startTapInstalled = false
+    }
+
+    // Ensure a known baseline on the exact host time of first render
+    setInitialVolume(at: hostTime)
 
     // Schedule any fades that were waiting for start capture
     scheduleFadesAtStartIfNeeded(pendingFades)
@@ -1134,7 +1139,7 @@ public class SpinPlayer {
           // Clear the timer reference since it's now invalid
           self.clearTimer = nil
 
-          self.stopAudio()
+          // clear() handles stopAudio() internally, no need to call it twice
           self.clear()
         }
       }

@@ -7,7 +7,7 @@
 import Foundation
 
 // Protocol for URLSession dependency injection
-protocol URLSessionProtocol {
+public protocol URLSessionProtocol {
   func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
 

@@ -8,9 +8,8 @@
 import AVFAudio
 import Combine
 import Foundation
+@_exported import PlayolaCore
 import os.log
-
-let baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
 
 /// Errors specific to the station player
 public enum StationPlayerError: Error, LocalizedError {
@@ -60,7 +59,8 @@ public enum StationPlayerError: Error, LocalizedError {
 /// ```
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
-  @Published public var stationId: String?  // TODO: Change this to Station model
+  var baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
+  @Published public var stationId: String?
   private var interruptedStationId: String?
   var currentSchedule: Schedule?
   let fileDownloadManager: FileDownloadManaging
@@ -69,15 +69,16 @@ final public class PlayolaStationPlayer: ObservableObject {
   private var authProvider: PlayolaAuthenticationProvider?
 
   /// Time offset for playing station from a different point in time
-  /// Negative values play from the past, positive values play from the future
   private var scheduleOffset: TimeInterval?
 
-  // Track active download IDs for potential cancellation
   private var activeDownloadIds: [String: UUID] = [:]
 
-  // Track active async tasks for proper cancellation
   private var schedulingTask: Task<Void, Never>?
   private var playTask: Task<Void, Error>?
+
+  // Audio interruption state
+  private var isSuspended = false
+  private var wasPlayingBeforeInterruption = false
 
   public weak var delegate: PlayolaStationPlayerDelegate?
 
@@ -110,6 +111,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.authProvider = authProvider
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
+    self.baseUrl = baseURL
   }
 
   public enum State: Sendable {
@@ -139,7 +141,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
       NotificationCenter.default.addObserver(
         self,
         selector: #selector(handleAudioSessionInterruption(_:)),
@@ -148,8 +150,18 @@ final public class PlayolaStationPlayer: ObservableObject {
       )
 
       NotificationCenter.default.addObserver(
-        self, selector: #selector(handleAudioRouteChange(_:)),
-        name: AVAudioSession.routeChangeNotification, object: nil)
+        self,
+        selector: #selector(handleAudioRouteChange(_:)),
+        name: AVAudioSession.routeChangeNotification,
+        object: nil
+      )
+
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(handleAudioEngineConfigurationChange(_:)),
+        name: .AVAudioEngineConfigurationChange,
+        object: PlayolaMainMixer.shared.engine
+      )
     #endif
   }
 
@@ -317,71 +329,73 @@ final public class PlayolaStationPlayer: ObservableObject {
     return _spinPlayers.contains { $0.spin?.id == spin.id }
   }
 
+  private let schedulePollingInterval: UInt64 = 20_000_000_000  // 20 seconds in nanoseconds
+
   @MainActor
   private func scheduleUpcomingSpins() async {
     guard let stationId else {
       let error = StationPlayerError.invalidStationId("No station ID available")
-      Task {
-        await errorReporter.reportError(error, level: .warning)
-      }
+      Task { await errorReporter.reportError(error, level: .warning) }
       return
     }
 
-    do {
-      // Check if task is cancelled before proceeding
-      try Task.checkCancellation()
-
-      let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
-
-      // Log how many spins are in the updated schedule
-      os_log(
-        "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
-        updatedSchedule.spins.count,
-        updatedSchedule.current(offsetTimeInterval: scheduleOffset).count)
-
-      // Extend the time window to load more upcoming spins (10 minutes instead of 6)
-      let spinsToLoad = updatedSchedule.current(offsetTimeInterval: scheduleOffset).filter {
-        $0.airtime < .now + TimeInterval(600)
-      }
-
-      os_log(
-        "Loading %d upcoming spins", log: PlayolaStationPlayer.logger, type: .info,
-        spinsToLoad.count)
-
-      for spin in spinsToLoad {
-        // Check cancellation before each spin
-        try Task.checkCancellation()
-
-        if !isScheduled(spin: spin) {
-          os_log(
-            "Scheduling new spin: %@ at %@", log: PlayolaStationPlayer.logger, type: .info, spin.id,
-            ISO8601DateFormatter().string(from: spin.airtime))
-          try await scheduleSpin(spin: spin)
-        }
-      }
-
-      // Log already scheduled spins
-      let scheduledSpinsCount = _spinPlayers.filter { $0.spin != nil }.count
-      os_log(
-        "Total scheduled spins: %d", log: PlayolaStationPlayer.logger, type: .info,
-        scheduledSpinsCount)
-
-    } catch {
-      // Check if this was a cancellation
-      if error is CancellationError {
+    while !Task.isCancelled {
+      do {
+        try await performScheduleUpdate(stationId: stationId)
+      } catch is CancellationError {
         os_log("📛 Schedule update cancelled", log: PlayolaStationPlayer.logger, type: .info)
-      } else {
+        return
+      } catch {
         Task {
           await errorReporter.reportError(
             error, context: "Failed to schedule upcoming spins", level: .error)
         }
-
-        // Log more details about the error
         os_log(
           "Schedule update failed: %@", log: PlayolaStationPlayer.logger, type: .error,
           error.localizedDescription)
       }
+
+      do {
+        try await Task.sleep(nanoseconds: schedulePollingInterval)
+      } catch {
+        return
+      }
     }
+  }
+
+  @MainActor
+  private func performScheduleUpdate(stationId: String) async throws {
+    let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
+
+    os_log(
+      "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
+      updatedSchedule.spins.count,
+      updatedSchedule.current(offsetTimeInterval: scheduleOffset).count)
+
+    // Server returns only locked-in spins via lockedIn=true param.
+    // This filter is a client-side safety net to prevent scheduling spins too far out.
+    let spinsToLoad = updatedSchedule.current(offsetTimeInterval: scheduleOffset).filter {
+      $0.airtime < .now + TimeInterval(600)
+    }
+
+    os_log(
+      "Loading %d upcoming spins", log: PlayolaStationPlayer.logger, type: .info,
+      spinsToLoad.count)
+
+    for spin in spinsToLoad {
+      try Task.checkCancellation()
+      if !isScheduled(spin: spin) {
+        os_log(
+          "Scheduling new spin: %@ at %@", log: PlayolaStationPlayer.logger, type: .info,
+          spin.id, ISO8601DateFormatter().string(from: spin.airtime))
+        try await scheduleSpin(spin: spin)
+      }
+    }
+
+    let scheduledSpinsCount = _spinPlayers.filter { $0.spin != nil }.count
+    os_log(
+      "Total scheduled spins: %d", log: PlayolaStationPlayer.logger, type: .info,
+      scheduledSpinsCount)
   }
 
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
@@ -400,8 +414,11 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   private func createScheduleURL(for stationId: String) -> URL {
-    return baseUrl.appending(path: "/stations/\(stationId)/schedule")
-      .appending(queryItems: [URLQueryItem(name: "includeRelatedTexts", value: "true")])
+    return baseUrl.appending(path: "/v1/stations/\(stationId)/schedule")
+      .appending(queryItems: [
+        URLQueryItem(name: "includeRelatedTexts", value: "true"),
+        URLQueryItem(name: "lockedIn", value: "true"),
+      ])
   }
 
   private func validateHTTPResponse(_ response: URLResponse, url: URL) throws -> HTTPURLResponse {
@@ -520,6 +537,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   ///   - Missing audio content in the schedule
   ///   - File download failures
   public func play(stationId: String, atDate: Date? = nil) async throws {
+    // Reset any stale interruption state when explicitly starting playback.
+    // This ensures CarPlay and other external callers always get a clean start.
+    isSuspended = false
+    wasPlayingBeforeInterruption = false
+    interruptedStationId = nil
+
     // Cancel any existing play task
     playTask?.cancel()
 
@@ -614,8 +637,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     os_log("✅ STOP completed", log: PlayolaStationPlayer.logger, type: .info)
   }
 
-  #if os(iOS)
-    /// Handle audio route changes such as connecting/disconnecting headphones
+  #if os(iOS) || os(tvOS)
     @objc public func handleAudioRouteChange(_ notification: Notification) {
       guard let userInfo = notification.userInfo,
         let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
@@ -624,26 +646,37 @@ final public class PlayolaStationPlayer: ObservableObject {
         return
       }
 
-      // Check if the audio route changed
       switch reason {
       case .newDeviceAvailable:
-        // New device (like headphones) was connected
         os_log("New audio route device available", log: PlayolaStationPlayer.logger, type: .info)
 
       case .oldDeviceUnavailable:
-        // Old device (like headphones) was disconnected
-        // You might want to pause playback here
         os_log("Audio route device disconnected", log: PlayolaStationPlayer.logger, type: .info)
+        guard
+          let previousRoute = userInfo[AVAudioSessionRouteChangePreviousRouteKey]
+            as? AVAudioSessionRouteDescription
+        else { return }
+
+        let wasUsingHeadphones = previousRoute.outputs.contains {
+          [.headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType)
+        }
+
+        if wasUsingHeadphones && isPlaying {
+          os_log(
+            "Headphones disconnected while playing - pausing", log: PlayolaStationPlayer.logger,
+            type: .info)
+          interruptedStationId = stationId
+          wasPlayingBeforeInterruption = true
+          stop()
+        }
 
       default:
-        // Handle other route changes if needed
         os_log(
           "Audio route changed for reason: %d", log: PlayolaStationPlayer.logger, type: .info,
           reasonValue)
       }
     }
 
-    /// Handle audio session interruptions such as phone calls
     @objc public func handleAudioSessionInterruption(_ notification: Notification) {
       guard let userInfo = notification.userInfo,
         let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -654,32 +687,71 @@ final public class PlayolaStationPlayer: ObservableObject {
 
       switch type {
       case .began:
-        // Audio session was interrupted - might need to pause playback
-        os_log("Audio session interrupted", log: PlayolaStationPlayer.logger, type: .info)
-        self.interruptedStationId = stationId
-        stop()
+        os_log(
+          "Audio session interrupted - suspending", log: PlayolaStationPlayer.logger, type: .info)
+        isSuspended = true
+        wasPlayingBeforeInterruption = isPlaying
+        interruptedStationId = stationId
+
+        // Cancel scheduling to prevent grabbing audio back from other apps
+        schedulingTask?.cancel()
+        schedulingTask = nil
 
       case .ended:
-        // Interruption ended - might need to resume playback
+        os_log("Audio session interruption ended", log: PlayolaStationPlayer.logger, type: .info)
+        isSuspended = false
+
         guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
           return
         }
         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
 
-        if options.contains(.shouldResume) {
-          // The system indicates that we can resume audio
-          if let interruptedStationId {
-            Task { @MainActor [interruptedStationId] in
-              try? await self.play(stationId: interruptedStationId)
-            }
-            self.interruptedStationId = nil
-          }
+        if options.contains(.shouldResume) && wasPlayingBeforeInterruption {
+          resumeAfterInterruption()
         }
 
       @unknown default:
         os_log(
           "Unknown audio session interruption type: %d", log: PlayolaStationPlayer.logger,
           type: .error, typeValue)
+      }
+    }
+
+    @objc public func handleAudioEngineConfigurationChange(_ notification: Notification) {
+      os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
+
+      guard !isSuspended else {
+        os_log(
+          "Ignoring config change while suspended", log: PlayolaStationPlayer.logger, type: .info)
+        return
+      }
+
+      if wasPlayingBeforeInterruption {
+        resumeAfterInterruption()
+      }
+    }
+
+    private func resumeAfterInterruption() {
+      guard let stationToResume = interruptedStationId else { return }
+
+      os_log("Resuming playback after interruption", log: PlayolaStationPlayer.logger, type: .info)
+
+      Task { @MainActor in
+        do {
+          try await PlayolaMainMixer.shared.audioSessionManager.activate()
+          try PlayolaMainMixer.shared.restartEngine()
+          try await self.play(stationId: stationToResume)
+        } catch {
+          os_log(
+            "Failed to resume after interruption: %@",
+            log: PlayolaStationPlayer.logger, type: .error,
+            error.localizedDescription)
+          await errorReporter.reportError(
+            error, context: "Failed to resume playback after interruption", level: .error)
+        }
+
+        self.interruptedStationId = nil
+        self.wasPlayingBeforeInterruption = false
       }
     }
   #endif

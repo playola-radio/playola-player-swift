@@ -8,8 +8,9 @@
 import AVFoundation
 import Combine
 import Foundation
+import PlayolaCore
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
   import UIKit
 #endif
 
@@ -74,7 +75,8 @@ public class ListeningSessionReporter {
     self.urlSession = urlSession
     self.baseURL = baseURL
 
-    stationPlayer.$stationId.sink { stationId in
+    stationPlayer.$stationId.sink { [weak self] stationId in
+      guard let self else { return }
       if let stationId {
         Task {
           do {

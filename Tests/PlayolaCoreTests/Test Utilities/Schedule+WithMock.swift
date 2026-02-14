@@ -6,7 +6,7 @@
 //
 import Foundation
 
-@testable import PlayolaPlayer
+@testable import PlayolaCore
 
 // Extension to provide additional mock utilities for testing
 extension Schedule {
