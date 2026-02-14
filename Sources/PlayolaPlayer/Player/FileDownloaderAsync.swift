@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PlayolaCore
 import os.log
 
 /// An async/await-based file downloader that eliminates deadlock issues

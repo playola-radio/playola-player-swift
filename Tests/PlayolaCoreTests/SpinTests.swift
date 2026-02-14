@@ -9,7 +9,7 @@
 import Foundation
 import Testing
 
-@testable import PlayolaPlayer
+@testable import PlayolaCore
 
 struct SpinTests {
   var spin: Spin = .mock

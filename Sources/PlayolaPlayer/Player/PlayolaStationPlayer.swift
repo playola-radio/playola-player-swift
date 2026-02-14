@@ -8,6 +8,7 @@
 import AVFAudio
 import Combine
 import Foundation
+@_exported import PlayolaCore
 import os.log
 
 /// Errors specific to the station player
@@ -140,7 +141,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
       NotificationCenter.default.addObserver(
         self,
         selector: #selector(handleAudioSessionInterruption(_:)),
@@ -636,7 +637,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     os_log("✅ STOP completed", log: PlayolaStationPlayer.logger, type: .info)
   }
 
-  #if os(iOS)
+  #if os(iOS) || os(tvOS)
     @objc public func handleAudioRouteChange(_ notification: Notification) {
       guard let userInfo = notification.userInfo,
         let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,

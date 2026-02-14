@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PlayolaCore
 import os.log
 
 private struct FileInfo {
@@ -143,7 +144,7 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   /// File manager for cache operations
   private let fileManager = FileManager.default
 
-  #if os(iOS)
+  #if os(iOS) || os(tvOS)
     /// Cache directory URL
     private var cacheDirectoryURL: URL {
       let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!

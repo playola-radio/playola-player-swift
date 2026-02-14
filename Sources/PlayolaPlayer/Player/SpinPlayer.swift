@@ -8,6 +8,7 @@
 import AVFoundation
 import AudioToolbox
 import Foundation
+import PlayolaCore
 import os.log
 
 #if os(iOS)

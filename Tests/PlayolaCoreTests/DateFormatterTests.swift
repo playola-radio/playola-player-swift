@@ -8,7 +8,7 @@
 import Testing
 import XCTest
 
-@testable import PlayolaPlayer
+@testable import PlayolaCore
 
 struct DateFormatterTests {
   // Test that the iso8601Full formatter correctly formats dates
