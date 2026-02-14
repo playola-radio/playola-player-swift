@@ -8,8 +8,9 @@
 import AVFoundation
 import Combine
 import Foundation
+import PlayolaCore
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
   import UIKit
 #endif
 

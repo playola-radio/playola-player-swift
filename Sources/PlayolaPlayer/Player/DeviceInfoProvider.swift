@@ -7,7 +7,7 @@
 
 import Foundation
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
   import UIKit
 #endif
 
@@ -15,7 +15,7 @@ import Foundation
 public struct DeviceInfoProvider {
 
   public static var deviceName: String {
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
       return UIDevice.current.name
     #elseif os(macOS)
       return Host.current().localizedName ?? "Mac"
@@ -23,7 +23,7 @@ public struct DeviceInfoProvider {
   }
 
   public static var systemVersion: String {
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
       return UIDevice.current.systemVersion
     #elseif os(macOS)
       let version = ProcessInfo.processInfo.operatingSystemVersion
@@ -32,7 +32,7 @@ public struct DeviceInfoProvider {
   }
 
   public static var identifierForVendor: UUID? {
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
       return UIDevice.current.identifierForVendor
     #elseif os(macOS)
       return getOrCreateVendorIdentifier()

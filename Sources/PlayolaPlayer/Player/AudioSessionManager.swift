@@ -7,6 +7,7 @@
 
 import AVFoundation
 import Foundation
+import PlayolaCore
 
 /// Protocol for managing audio session configuration across platforms
 protocol AudioSessionManaging {
@@ -16,8 +17,8 @@ protocol AudioSessionManaging {
   var isConfigured: Bool { get }
 }
 
-#if os(iOS)
-  /// iOS implementation using AVAudioSession
+#if os(iOS) || os(tvOS)
+  /// iOS/tvOS implementation using AVAudioSession
   class AudioSessionManager: AudioSessionManaging {
     private let errorReporter: PlayolaErrorReporter
 

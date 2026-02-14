@@ -7,9 +7,10 @@
 
 import AVFoundation
 import Foundation
+import PlayolaCore
 import os.log
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
   import UIKit
 #endif
 

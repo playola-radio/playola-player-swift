@@ -8,7 +8,7 @@
 import Foundation
 import os
 
-@testable import PlayolaPlayer
+@testable import PlayolaCore
 
 final class DateProviderMock: DateProviderProtocol, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock()
