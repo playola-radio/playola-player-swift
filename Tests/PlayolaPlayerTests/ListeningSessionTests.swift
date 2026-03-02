@@ -30,33 +30,29 @@ struct ListeningSessionTests {
       #expect(authHeader == "Bearer valid.jwt.token")
     }
 
-    @Test("Uses Basic auth when no token available")
-    func testUsesBasicAuthWhenNoToken() async throws {
+    @Test("Throws when no token available")
+    func testThrowsWhenNoToken() async throws {
       let mockAuth = MockAuthProvider(currentToken: nil)
       let reporter = await ListeningSessionReporter(authProvider: mockAuth)
 
       let requestBody = ["test": "data"]
       let url = URL(string: "https://test.com")!
 
-      let request = try await reporter.createPostRequest(url: url, requestBody: requestBody)
-
-      // Check that Authorization header contains Basic auth
-      let authHeader = request.value(forHTTPHeaderField: "Authorization")
-      #expect(authHeader == "Basic aW9zQXBwOnNwb3RpZnlTdWNrc0FCaWcx")
+      await #expect(throws: ListeningSessionError.self) {
+        _ = try await reporter.createPostRequest(url: url, requestBody: requestBody)
+      }
     }
 
-    @Test("Uses Basic auth when auth provider is nil")
-    func testUsesBasicAuthWhenProviderIsNil() async throws {
+    @Test("Throws when auth provider is nil")
+    func testThrowsWhenProviderIsNil() async throws {
       let reporter = await ListeningSessionReporter(authProvider: nil)
 
       let requestBody = ["test": "data"]
       let url = URL(string: "https://test.com")!
 
-      let request = try await reporter.createPostRequest(url: url, requestBody: requestBody)
-
-      // Check that Authorization header contains Basic auth
-      let authHeader = request.value(forHTTPHeaderField: "Authorization")
-      #expect(authHeader == "Basic aW9zQXBwOnNwb3RpZnlTdWNrc0FCaWcx")
+      await #expect(throws: ListeningSessionError.self) {
+        _ = try await reporter.createPostRequest(url: url, requestBody: requestBody)
+      }
     }
   }
 
@@ -90,8 +86,8 @@ struct ListeningSessionTests {
       #expect(mockURLSession.requestCallCount == 2)
     }
 
-    @Test("Handles failed token refresh gracefully")
-    func testHandlesFailedRefresh() async throws {
+    @Test("Throws when token refresh fails")
+    func testThrowsWhenRefreshFails() async throws {
       let mockAuth = MockAuthProvider(
         currentToken: "expired.token",
         refreshedToken: nil  // Refresh fails
@@ -102,24 +98,22 @@ struct ListeningSessionTests {
       let testURL = URL(string: "https://admin-api.playola.fm/v1/listeningSessions")!
       mockURLSession.addResponse(statusCode: 401, url: testURL)
 
-      // Basic auth fallback returns 200
-      mockURLSession.addResponse(statusCode: 200, url: testURL)
-
       let reporter = await ListeningSessionReporter(
         authProvider: mockAuth, urlSession: mockURLSession)
 
-      // This should fall back to Basic auth
-      try await reporter.reportOrExtendListeningSession("test-station-id")
+      await #expect(throws: ListeningSessionError.self) {
+        try await reporter.reportOrExtendListeningSession("test-station-id")
+      }
 
-      // Verify that refresh was called
+      // Verify that refresh was attempted
       #expect(mockAuth.refreshCallCount == 1)
 
-      // Verify that two HTTP requests were made (initial + Basic auth fallback)
-      #expect(mockURLSession.requestCallCount == 2)
+      // Verify only the initial request was made (no fallback)
+      #expect(mockURLSession.requestCallCount == 1)
     }
 
-    @Test("Exceeds max refresh attempts and falls back to Basic auth")
-    func testExceedsMaxRefreshAttempts() async throws {
+    @Test("Throws after exceeding max refresh attempts")
+    func testThrowsAfterMaxRefreshAttempts() async throws {
       let mockAuth = MockAuthProvider(
         currentToken: "expired.token",
         refreshedToken: "still.expired.token"  // Refresh returns token but still gets 401
@@ -136,21 +130,19 @@ struct ListeningSessionTests {
         mockURLSession.addResponse(statusCode: 401, url: testURL)
       }
 
-      // Final Basic auth fallback returns 200
-      mockURLSession.addResponse(statusCode: 200, url: testURL)
-
       let reporter = await ListeningSessionReporter(
         authProvider: mockAuth, urlSession: mockURLSession)
 
-      // This should exhaust refresh attempts and fall back to Basic auth
-      try await reporter.reportOrExtendListeningSession("test-station-id")
+      await #expect(throws: ListeningSessionError.self) {
+        try await reporter.reportOrExtendListeningSession("test-station-id")
+      }
 
       // Verify that refresh was called 3 times (max attempts)
       #expect(mockAuth.refreshCallCount == 3)
 
       // Verify correct number of HTTP requests:
-      // 1 initial + 3 refresh attempts + 1 Basic auth fallback = 5
-      #expect(mockURLSession.requestCallCount == 5)
+      // 1 initial + 3 refresh attempts = 4 (no fallback)
+      #expect(mockURLSession.requestCallCount == 4)
     }
 
     @Test("Resets retry counter after successful request")
@@ -216,7 +208,7 @@ struct ListeningSessionTests {
     func testUsesCustomBaseURL() async throws {
       let customBaseURL = URL(string: "http://localhost:3000")!
       let mockSession = MockURLSession()
-      let mockAuth = MockAuthProvider()
+      let mockAuth = MockAuthProvider(currentToken: "test.token")
 
       let reporter = await ListeningSessionReporter(
         authProvider: mockAuth,
@@ -237,7 +229,7 @@ struct ListeningSessionTests {
     @Test("Uses default production URL when not specified")
     func testUsesDefaultProductionURL() async throws {
       let mockSession = MockURLSession()
-      let mockAuth = MockAuthProvider()
+      let mockAuth = MockAuthProvider(currentToken: "test.token")
 
       let reporter = await ListeningSessionReporter(
         authProvider: mockAuth,
@@ -258,7 +250,7 @@ struct ListeningSessionTests {
     func testEndSessionUsesCustomBaseURL() async throws {
       let customBaseURL = URL(string: "http://localhost:8080")!
       let mockSession = MockURLSession()
-      let mockAuth = MockAuthProvider()
+      let mockAuth = MockAuthProvider(currentToken: "test.token")
 
       let reporter = await ListeningSessionReporter(
         authProvider: mockAuth,
