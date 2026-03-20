@@ -1,0 +1,335 @@
+import AVFoundation
+import Combine
+import Foundation
+import PlayolaCore
+import os.log
+
+/// Delegate for StreamingSpinPlayer events.
+@MainActor
+protocol StreamingSpinPlayerDelegate: AnyObject {
+  func streamingPlayer(_ player: StreamingSpinPlayer, startedPlaying spin: Spin)
+  func streamingPlayer(
+    _ player: StreamingSpinPlayer, didChangeState state: StreamingSpinPlayer.State)
+  func streamingPlayer(_ player: StreamingSpinPlayer, didEncounterError error: Error)
+}
+
+/// Handles playback of a single spin using AVPlayer for streaming.
+///
+/// ```
+/// State Machine:
+///   ┌───────────┐   load()   ┌──────────┐  readyToPlay  ┌────────┐
+///   │ available ├───────────►│ loading  ├──────────────►│ loaded │
+///   └─────▲─────┘            └────┬─────┘               └───┬────┘
+///         │                       │ .failed                  │ play/schedulePlay
+///         │                       ▼                          ▼
+///         │                  ┌─────────┐              ┌──────────┐
+///         │                  │  error  │              │ playing  │
+///         │                  └─────────┘              └────┬─────┘
+///         │                                                │ endtime+1s
+///         │              clear()                           ▼
+///         └────────────────────────────────────────── finished
+/// ```
+@MainActor
+public class StreamingSpinPlayer {
+  public enum State: Equatable {
+    case available
+    case loading
+    case loaded
+    case playing
+    case finished
+    case error
+  }
+
+  private static let logger = OSLog(
+    subsystem: "PlayolaPlayer",
+    category: "StreamingSpinPlayer")
+
+  private static let fadeTimerInterval: TimeInterval = 1.0 / 30.0  // ~33ms
+  private static let cleanupBufferTime: TimeInterval = 1.0
+
+  // MARK: - Public Properties
+  let id = UUID()
+  var spin: Spin?
+  weak var delegate: StreamingSpinPlayerDelegate?
+
+  public var state: State = .available {
+    didSet {
+      if oldValue != state {
+        delegate?.streamingPlayer(self, didChangeState: state)
+      }
+    }
+  }
+
+  // MARK: - Audio
+  private var avPlayer: AVPlayerProviding?
+
+  // MARK: - Fade Automation
+  private(set) var fadeSchedule: [FadeStep] = []
+  private(set) var nextFadeIndex: Int = 0
+  private var fadeTimer: Timer?
+
+  // MARK: - Scheduling Timers
+  private var playTimer: Timer?
+  private var clearTimer: Timer?
+
+  // MARK: - Dependencies
+  private let errorReporter = PlayolaErrorReporter.shared
+  private let playerFactory: () -> AVPlayerProviding
+
+  // MARK: - Playback State
+  private var playbackStartOffsetMS: Int = 0
+
+  // MARK: - Lifecycle
+
+  init(
+    delegate: StreamingSpinPlayerDelegate? = nil,
+    playerFactory: (() -> AVPlayerProviding)? = nil
+  ) {
+    self.delegate = delegate
+    self.playerFactory = playerFactory ?? { AVPlayerWrapper() }
+  }
+
+  // MARK: - Loading
+
+  /// Loads a spin for streaming playback.
+  ///
+  /// Creates an AVPlayer with the spin's download URL and waits for the player
+  /// to report readyToPlay status.
+  func load(_ spin: Spin) async -> Result<Void, Error> {
+    os_log(
+      "Loading spin: %@", log: StreamingSpinPlayer.logger, type: .info, spin.id)
+
+    guard let audioFileUrl = spin.audioBlock.downloadUrl else {
+      let error = StationPlayerError.playbackError("Invalid audio file URL in spin")
+      Task {
+        await errorReporter.reportError(error, context: "Missing download URL", level: .error)
+      }
+      self.state = .available
+      return .failure(error)
+    }
+
+    self.state = .loading
+    self.spin = spin
+
+    // Build fade schedule while player buffers
+    self.fadeSchedule = FadeScheduleBuilder.buildFadeSchedule(for: spin)
+
+    let player = playerFactory()
+    self.avPlayer = player
+
+    do {
+      try await player.loadURL(audioFileUrl)
+      os_log(
+        "Player ready for spin: %@",
+        log: StreamingSpinPlayer.logger, type: .info, spin.id)
+      self.state = .loaded
+      return .success(())
+    } catch {
+      os_log(
+        "Player failed for spin: %@ - %@",
+        log: StreamingSpinPlayer.logger, type: .error,
+        spin.id, error.localizedDescription)
+      Task {
+        await self.errorReporter.reportError(
+          error, context: "AVPlayerItem failed to load", level: .error)
+      }
+      self.state = .error
+      return .failure(error)
+    }
+  }
+
+  // MARK: - Playback
+
+  /// Plays the loaded spin immediately from the specified position (in seconds).
+  func playNow(from offsetSeconds: Double) {
+    guard let avPlayer, state == .loaded || state == .playing else {
+      os_log(
+        "Cannot playNow - not loaded (state: %@)",
+        log: StreamingSpinPlayer.logger, type: .info,
+        String(describing: state))
+      return
+    }
+
+    guard let spin else { return }
+
+    let offsetMS = Int(offsetSeconds * 1000)
+
+    // If past endOfMessage, skip
+    if offsetMS >= spin.audioBlock.endOfMessageMS {
+      os_log(
+        "Offset %d past endOfMessage %d - skipping",
+        log: StreamingSpinPlayer.logger, type: .info,
+        offsetMS, spin.audioBlock.endOfMessageMS)
+      clear()
+      return
+    }
+
+    self.playbackStartOffsetMS = offsetMS
+
+    // Set volume from fade schedule at current position
+    let volume = FadeScheduleBuilder.volumeAtMS(
+      offsetMS, in: fadeSchedule, startingVolume: spin.startingVolume)
+    avPlayer.volume = volume
+
+    // Seek to position and play
+    let seekTime = CMTime(seconds: offsetSeconds, preferredTimescale: 600)
+    Task {
+      _ = await avPlayer.seek(to: seekTime)
+      avPlayer.play()
+
+      self.state = .playing
+      delegate?.streamingPlayer(self, startedPlaying: spin)
+
+      // Start fade automation from the right index
+      nextFadeIndex = FadeScheduleBuilder.firstUnprocessedIndex(
+        in: fadeSchedule, afterMS: offsetMS)
+      startFadeTimer()
+      setupClearTimer()
+    }
+  }
+
+  /// Schedules playback to start at a specific date (for future spins).
+  func schedulePlay(at scheduledDate: Date) {
+    guard state == .loaded else {
+      os_log(
+        "Cannot schedulePlay - not loaded (state: %@)",
+        log: StreamingSpinPlayer.logger, type: .info,
+        String(describing: state))
+      return
+    }
+
+    guard let spin else { return }
+
+    os_log(
+      "Scheduling play at %@ for spin: %@",
+      log: StreamingSpinPlayer.logger, type: .info,
+      ISO8601DateFormatter().string(from: scheduledDate), spin.id)
+
+    // Set initial volume
+    avPlayer?.volume = spin.startingVolume
+
+    self.playbackStartOffsetMS = 0
+
+    self.playTimer = Timer(
+      fire: scheduledDate,
+      interval: 0,
+      repeats: false
+    ) { [weak self] timer in
+      timer.invalidate()
+      guard let self else { return }
+
+      Task { @MainActor in
+        guard self.playTimer === timer, let avPlayer = self.avPlayer, let spin = self.spin else {
+          return
+        }
+
+        avPlayer.play()
+        self.state = .playing
+        self.delegate?.streamingPlayer(self, startedPlaying: spin)
+        self.nextFadeIndex = 0
+        self.startFadeTimer()
+        self.setupClearTimer()
+      }
+    }
+
+    RunLoop.main.add(self.playTimer!, forMode: .default)
+  }
+
+  // MARK: - Fade Timer
+
+  private func startFadeTimer() {
+    guard !fadeSchedule.isEmpty, nextFadeIndex < fadeSchedule.count else { return }
+
+    fadeTimer = Timer.scheduledTimer(
+      withTimeInterval: StreamingSpinPlayer.fadeTimerInterval,
+      repeats: true
+    ) { [weak self] _ in
+      guard let self else { return }
+      Task { @MainActor in
+        self.processFades()
+      }
+    }
+  }
+
+  private func processFades() {
+    guard state == .playing, let avPlayer else {
+      stopFadeTimer()
+      return
+    }
+
+    let currentTimeMS = Int(avPlayer.currentTimeSeconds * 1000)
+
+    while nextFadeIndex < fadeSchedule.count {
+      let step = fadeSchedule[nextFadeIndex]
+      if step.timeMS <= currentTimeMS {
+        avPlayer.volume = step.volume
+        nextFadeIndex += 1
+      } else {
+        break
+      }
+    }
+
+    if nextFadeIndex >= fadeSchedule.count {
+      stopFadeTimer()
+    }
+  }
+
+  private func stopFadeTimer() {
+    fadeTimer?.invalidate()
+    fadeTimer = nil
+  }
+
+  // MARK: - Clear Timer
+
+  private func setupClearTimer() {
+    guard let spin else { return }
+
+    clearTimer = Timer(
+      fire: spin.endtime.addingTimeInterval(StreamingSpinPlayer.cleanupBufferTime),
+      interval: 0,
+      repeats: false
+    ) { [weak self] timer in
+      timer.invalidate()
+      guard let self else { return }
+      Task { @MainActor in
+        guard self.clearTimer === timer else { return }
+        self.clearTimer = nil
+        self.state = .finished
+        self.clear()
+      }
+    }
+
+    RunLoop.main.add(clearTimer!, forMode: .default)
+  }
+
+  // MARK: - Cleanup
+
+  func stop() {
+    os_log(
+      "StreamingSpinPlayer.stop() - ID: %@, spin: %@",
+      log: StreamingSpinPlayer.logger, type: .info,
+      id.uuidString, spin?.id ?? "nil")
+    clear()
+  }
+
+  func clear() {
+    avPlayer?.pause()
+    avPlayer?.clearItem()
+    avPlayer = nil
+
+    stopFadeTimer()
+
+    playTimer?.invalidate()
+    playTimer = nil
+
+    clearTimer?.invalidate()
+    clearTimer = nil
+
+    fadeSchedule = []
+    nextFadeIndex = 0
+    playbackStartOffsetMS = 0
+
+    spin = nil
+    state = .available
+  }
+}
