@@ -81,10 +81,8 @@ public enum FadeScheduleBuilder {
     in schedule: [FadeStep],
     afterMS currentMS: Int
   ) -> Int {
-    for (index, step) in schedule.enumerated() {
-      if step.timeMS > currentMS {
-        return index
-      }
+    for (index, step) in schedule.enumerated() where step.timeMS > currentMS {
+      return index
     }
     return schedule.count
   }

@@ -74,32 +74,36 @@ final class MockStreamingSpinPlayerDelegate: StreamingSpinPlayerDelegate {
 @MainActor
 struct StreamingSpinPlayerTests {
 
-  private func createPlayer(mockPlayer: MockAVPlayer? = nil) -> (
-    StreamingSpinPlayer, MockAVPlayer, MockStreamingSpinPlayerDelegate
-  ) {
+  private struct PlayerTestContext {
+    let player: StreamingSpinPlayer
+    let mock: MockAVPlayer
+    let delegate: MockStreamingSpinPlayerDelegate
+  }
+
+  private func createPlayer(mockPlayer: MockAVPlayer? = nil) -> PlayerTestContext {
     let mock = mockPlayer ?? MockAVPlayer()
     let delegate = MockStreamingSpinPlayerDelegate()
     let player = StreamingSpinPlayer(
       delegate: delegate,
       playerFactory: { mock }
     )
-    return (player, mock, delegate)
+    return PlayerTestContext(player: player, mock: mock, delegate: delegate)
   }
 
   // MARK: - Initial State
 
   @Test("Initial state is available")
   func testInitialState() {
-    let (player, _, _) = createPlayer()
-    #expect(player.state == .available)
-    #expect(player.spin == nil)
+    let ctx = createPlayer()
+    #expect(ctx.player.state == .available)
+    #expect(ctx.player.spin == nil)
   }
 
   // MARK: - Load
 
   @Test("Load with nil downloadUrl fails immediately")
   func testLoadNilDownloadUrl() async {
-    let (player, _, _) = createPlayer()
+    let ctx = createPlayer()
     let audioBlock = AudioBlock(
       id: "test", title: "Test", artist: "Test", durationMS: 30000,
       endOfMessageMS: 28000, beginningOfOutroMS: 25000, endOfIntroMS: 5000,
@@ -109,31 +113,31 @@ struct StreamingSpinPlayerTests {
     )
     let spin = Spin.mockWith(audioBlock: audioBlock)
 
-    let result = await player.load(spin)
+    let result = await ctx.player.load(spin)
 
     switch result {
     case .success:
       Issue.record("Expected failure for nil downloadUrl")
     case .failure:
-      #expect(player.state == .available)
+      #expect(ctx.player.state == .available)
     }
   }
 
   @Test("Successful load transitions to loaded state")
   func testLoadSuccess() async {
     let mock = MockAVPlayer()
-    let (player, _, delegate) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
     let spin = Spin.mockWith()
 
-    let result = await player.load(spin)
+    let result = await ctx.player.load(spin)
 
     switch result {
     case .success:
-      #expect(player.state == .loaded)
-      #expect(player.spin?.id == spin.id)
+      #expect(ctx.player.state == .loaded)
+      #expect(ctx.player.spin?.id == spin.id)
       #expect(mock.loadedURL != nil)
-      #expect(delegate.stateChanges.contains(.loading))
-      #expect(delegate.stateChanges.contains(.loaded))
+      #expect(ctx.delegate.stateChanges.contains(.loading))
+      #expect(ctx.delegate.stateChanges.contains(.loaded))
     case .failure(let error):
       Issue.record("Expected success but got: \(error)")
     }
@@ -143,35 +147,35 @@ struct StreamingSpinPlayerTests {
   func testLoadFailure() async {
     let mock = MockAVPlayer()
     mock.shouldFailLoad = true
-    let (player, _, delegate) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
     let spin = Spin.mockWith()
 
-    let result = await player.load(spin)
+    let result = await ctx.player.load(spin)
 
     switch result {
     case .success:
       Issue.record("Expected failure")
     case .failure:
-      #expect(player.state == .error)
-      #expect(delegate.stateChanges.contains(.loading))
-      #expect(delegate.stateChanges.contains(.error))
+      #expect(ctx.player.state == .error)
+      #expect(ctx.delegate.stateChanges.contains(.loading))
+      #expect(ctx.delegate.stateChanges.contains(.error))
     }
   }
 
   @Test("Load builds fade schedule")
   func testFadeScheduleBuiltDuringLoad() async {
     let mock = MockAVPlayer()
-    let (player, _, _) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
 
     let spin = Spin.mockWith(
       startingVolume: 1.0,
       fades: [Fade(atMS: 10000, toVolume: 0.0)]
     )
 
-    _ = await player.load(spin)
+    _ = await ctx.player.load(spin)
 
-    #expect(!player.fadeSchedule.isEmpty)
-    #expect(player.fadeSchedule.count == FadeScheduleBuilder.fadeSteps + 1)
+    #expect(!ctx.player.fadeSchedule.isEmpty)
+    #expect(ctx.player.fadeSchedule.count == FadeScheduleBuilder.fadeSteps + 1)
   }
 
   // MARK: - Clear
@@ -179,18 +183,18 @@ struct StreamingSpinPlayerTests {
   @Test("Clear resets all state")
   func testClear() async {
     let mock = MockAVPlayer()
-    let (player, _, _) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
 
     let spin = Spin.mockWith()
-    _ = await player.load(spin)
+    _ = await ctx.player.load(spin)
 
-    player.clear()
+    ctx.player.clear()
 
-    #expect(player.state == .available)
-    #expect(player.spin == nil)
+    #expect(ctx.player.state == .available)
+    #expect(ctx.player.spin == nil)
     #expect(mock.pauseCallCount == 1)
     #expect(mock.clearItemCallCount == 1)
-    #expect(player.fadeSchedule.isEmpty)
+    #expect(ctx.player.fadeSchedule.isEmpty)
   }
 
   // MARK: - Stop
@@ -198,15 +202,15 @@ struct StreamingSpinPlayerTests {
   @Test("Stop calls clear")
   func testStop() async {
     let mock = MockAVPlayer()
-    let (player, _, _) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
 
     let spin = Spin.mockWith()
-    _ = await player.load(spin)
+    _ = await ctx.player.load(spin)
 
-    player.stop()
+    ctx.player.stop()
 
-    #expect(player.state == .available)
-    #expect(player.spin == nil)
+    #expect(ctx.player.state == .available)
+    #expect(ctx.player.spin == nil)
     #expect(mock.pauseCallCount == 1)
   }
 
@@ -215,42 +219,42 @@ struct StreamingSpinPlayerTests {
   @Test("PlayNow with offset past endOfMessage clears player")
   func testPlayNowPastEndOfMessage() async {
     let mock = MockAVPlayer()
-    let (player, _, _) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
 
     let spin = Spin.mockWith(
       audioBlock: AudioBlock.mockWith(endOfMessageMS: 30000)
     )
-    _ = await player.load(spin)
+    _ = await ctx.player.load(spin)
 
-    player.playNow(from: 31.0)  // 31 seconds > 30s endOfMessage
+    ctx.player.playNow(from: 31.0)  // 31 seconds > 30s endOfMessage
 
-    #expect(player.state == .available)
-    #expect(player.spin == nil)
+    #expect(ctx.player.state == .available)
+    #expect(ctx.player.spin == nil)
   }
 
   @Test("PlayNow when not loaded is a no-op")
   func testPlayNowNotLoaded() {
-    let (player, mock, _) = createPlayer()
-    player.spin = Spin.mockWith()
+    let ctx = createPlayer()
+    ctx.player.spin = Spin.mockWith()
 
-    player.playNow(from: 5.0)
+    ctx.player.playNow(from: 5.0)
 
-    #expect(mock.playCallCount == 0)
-    #expect(player.state == .available)
+    #expect(ctx.mock.playCallCount == 0)
+    #expect(ctx.player.state == .available)
   }
 
   @Test("PlayNow sets volume from fade schedule")
   func testPlayNowSetsVolume() async {
     let mock = MockAVPlayer()
-    let (player, _, _) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
 
     let spin = Spin.mockWith(
       startingVolume: 0.8,
       fades: []
     )
-    _ = await player.load(spin)
+    _ = await ctx.player.load(spin)
 
-    player.playNow(from: 0.0)
+    ctx.player.playNow(from: 0.0)
 
     // Give the async Task inside playNow a moment
     try? await Task.sleep(for: .milliseconds(50))
@@ -262,22 +266,22 @@ struct StreamingSpinPlayerTests {
 
   @Test("SchedulePlay when not loaded is a no-op")
   func testSchedulePlayNotLoaded() {
-    let (player, mock, _) = createPlayer()
+    let ctx = createPlayer()
 
-    player.schedulePlay(at: Date().addingTimeInterval(10))
+    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
 
-    #expect(mock.playCallCount == 0)
+    #expect(ctx.mock.playCallCount == 0)
   }
 
   @Test("SchedulePlay sets initial volume")
   func testSchedulePlaySetsVolume() async {
     let mock = MockAVPlayer()
-    let (player, _, _) = createPlayer(mockPlayer: mock)
+    let ctx = createPlayer(mockPlayer: mock)
 
     let spin = Spin.mockWith(startingVolume: 0.6)
-    _ = await player.load(spin)
+    _ = await ctx.player.load(spin)
 
-    player.schedulePlay(at: Date().addingTimeInterval(10))
+    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
 
     #expect(mock.volume == 0.6)
   }
@@ -286,22 +290,22 @@ struct StreamingSpinPlayerTests {
 
   @Test("Delegate receives state changes")
   func testDelegateReceivesStateChanges() {
-    let (player, _, delegate) = createPlayer()
+    let ctx = createPlayer()
 
-    player.state = .loading
-    player.state = .loaded
-    player.state = .playing
+    ctx.player.state = .loading
+    ctx.player.state = .loaded
+    ctx.player.state = .playing
 
-    #expect(delegate.stateChanges == [.loading, .loaded, .playing])
+    #expect(ctx.delegate.stateChanges == [.loading, .loaded, .playing])
   }
 
   @Test("Duplicate state changes are not reported")
   func testNoDuplicateStateChanges() {
-    let (player, _, delegate) = createPlayer()
+    let ctx = createPlayer()
 
-    player.state = .loading
-    player.state = .loading  // duplicate
+    ctx.player.state = .loading
+    ctx.player.state = .loading  // duplicate
 
-    #expect(delegate.stateChanges == [.loading])
+    #expect(ctx.delegate.stateChanges == [.loading])
   }
 }
