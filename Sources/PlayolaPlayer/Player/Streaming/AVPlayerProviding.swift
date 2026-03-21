@@ -19,6 +19,31 @@ public protocol AVPlayerProviding: AnyObject {
 
   /// Tears down the current item.
   func clearItem()
+
+  /// Registers a boundary time observer that fires when playback crosses any of the given times.
+  func addBoundaryTimeObserver(
+    forTimes times: [NSValue],
+    queue: DispatchQueue?,
+    using block: @escaping @Sendable () -> Void
+  ) -> Any
+
+  /// Removes a previously registered boundary time observer.
+  func removeBoundaryTimeObserver(_ token: Any)
+
+  /// Pre-rolls the player at the given rate. Returns true if preroll succeeded.
+  func preroll(atRate rate: Float) async -> Bool
+
+  /// Cancels any pending preroll.
+  func cancelPendingPrerolls()
+
+  /// Starts playback at a specific item time synchronized to a host time.
+  func setRate(_ rate: Float, time: CMTime, atHostTime hostTime: CMTime)
+
+  /// Callback invoked when playback stalls due to empty buffer.
+  var onStall: (() -> Void)? { get set }
+
+  /// Callback invoked when playback buffer recovers after a stall.
+  var onUnstall: (() -> Void)? { get set }
 }
 
 /// Production AVPlayer wrapper that handles AVPlayerItem KVO internally.
@@ -26,6 +51,11 @@ public protocol AVPlayerProviding: AnyObject {
 public class AVPlayerWrapper: AVPlayerProviding {
   private var player: AVPlayer?
   private var statusObservation: NSKeyValueObservation?
+  private var bufferEmptyObservation: NSKeyValueObservation?
+  private var likelyToKeepUpObservation: NSKeyValueObservation?
+
+  public var onStall: (() -> Void)?
+  public var onUnstall: (() -> Void)?
 
   public var volume: Float {
     get { player?.volume ?? 0 }
@@ -56,10 +86,24 @@ public class AVPlayerWrapper: AVPlayerProviding {
   public func loadURL(_ url: URL) async throws {
     let item = AVPlayerItem(url: url)
     let newPlayer = AVPlayer(playerItem: item)
-    newPlayer.automaticallyWaitsToMinimizeStalling = true
+    newPlayer.automaticallyWaitsToMinimizeStalling = false
     self.player = newPlayer
 
+    setupBufferObservations(for: item)
     try await waitForReady(item: item)
+  }
+
+  private func setupBufferObservations(for item: AVPlayerItem) {
+    bufferEmptyObservation = item.observe(\.isPlaybackBufferEmpty, options: [.new]) {
+      [weak self] _, change in
+      guard let self, change.newValue == true else { return }
+      Task { @MainActor in self.onStall?() }
+    }
+    likelyToKeepUpObservation = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) {
+      [weak self] _, change in
+      guard let self, change.newValue == true else { return }
+      Task { @MainActor in self.onUnstall?() }
+    }
   }
 
   private func waitForReady(item: AVPlayerItem) async throws {
@@ -99,12 +143,52 @@ public class AVPlayerWrapper: AVPlayerProviding {
   public func clearItem() {
     statusObservation?.invalidate()
     statusObservation = nil
+    bufferEmptyObservation?.invalidate()
+    bufferEmptyObservation = nil
+    likelyToKeepUpObservation?.invalidate()
+    likelyToKeepUpObservation = nil
+    onStall = nil
+    onUnstall = nil
     player?.pause()
     player?.replaceCurrentItem(with: nil)
     player = nil
   }
 
+  public func preroll(atRate rate: Float) async -> Bool {
+    guard let player else { return false }
+    return await withCheckedContinuation { continuation in
+      player.preroll(atRate: rate) { finished in
+        continuation.resume(returning: finished)
+      }
+    }
+  }
+
+  public func cancelPendingPrerolls() {
+    player?.cancelPendingPrerolls()
+  }
+
+  public func setRate(_ rate: Float, time: CMTime, atHostTime hostTime: CMTime) {
+    player?.setRate(rate, time: time, atHostTime: hostTime)
+  }
+
+  public func addBoundaryTimeObserver(
+    forTimes times: [NSValue],
+    queue: DispatchQueue?,
+    using block: @escaping @Sendable () -> Void
+  ) -> Any {
+    guard let player else {
+      return NSObject()
+    }
+    return player.addBoundaryTimeObserver(forTimes: times, queue: queue, using: block)
+  }
+
+  public func removeBoundaryTimeObserver(_ token: Any) {
+    player?.removeTimeObserver(token)
+  }
+
   deinit {
     statusObservation?.invalidate()
+    bufferEmptyObservation?.invalidate()
+    likelyToKeepUpObservation?.invalidate()
   }
 }

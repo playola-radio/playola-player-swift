@@ -21,6 +21,31 @@ final class MockAVPlayer: AVPlayerProviding {
   var shouldFailLoad = false
   var loadError: Error = StationPlayerError.playbackError("Mock load failure")
 
+  // Boundary observer tracking
+  var registeredBoundaryTimes: [NSValue] = []
+  var boundaryCallback: (@Sendable () -> Void)?
+  var addBoundaryObserverCallCount = 0
+  var removeBoundaryObserverCallCount = 0
+  private let boundaryToken = NSObject()
+
+  // Preroll tracking
+  var prerollCallCount = 0
+  var prerollShouldSucceed = true
+  var cancelPendingPrerollsCallCount = 0
+
+  // setRate tracking
+  var setRateCallCount = 0
+  var lastSetRate: Float?
+  var lastSetRateTime: CMTime?
+  var lastSetRateHostTime: CMTime?
+
+  // Stall callbacks
+  var onStall: (() -> Void)?
+  var onUnstall: (() -> Void)?
+
+  // Call ordering
+  var callLog: [String] = []
+
   func play() {
     playCallCount += 1
   }
@@ -42,7 +67,46 @@ final class MockAVPlayer: AVPlayerProviding {
   }
 
   func clearItem() {
+    callLog.append("clearItem")
     clearItemCallCount += 1
+  }
+
+  func addBoundaryTimeObserver(
+    forTimes times: [NSValue],
+    queue: DispatchQueue?,
+    using block: @escaping @Sendable () -> Void
+  ) -> Any {
+    registeredBoundaryTimes = times
+    boundaryCallback = block
+    addBoundaryObserverCallCount += 1
+    return boundaryToken
+  }
+
+  func removeBoundaryTimeObserver(_ token: Any) {
+    callLog.append("removeBoundaryTimeObserver")
+    removeBoundaryObserverCallCount += 1
+  }
+
+  func preroll(atRate rate: Float) async -> Bool {
+    prerollCallCount += 1
+    return prerollShouldSucceed
+  }
+
+  func cancelPendingPrerolls() {
+    callLog.append("cancelPendingPrerolls")
+    cancelPendingPrerollsCallCount += 1
+  }
+
+  func setRate(_ rate: Float, time: CMTime, atHostTime hostTime: CMTime) {
+    callLog.append("setRate")
+    setRateCallCount += 1
+    lastSetRate = rate
+    lastSetRateTime = time
+    lastSetRateHostTime = hostTime
+  }
+
+  func fireBoundaryCallback() {
+    boundaryCallback?()
   }
 }
 
@@ -72,6 +136,7 @@ final class MockStreamingSpinPlayerDelegate: StreamingSpinPlayerDelegate {
 // MARK: - Tests
 
 @MainActor
+@Suite(.serialized)
 struct StreamingSpinPlayerTests {
 
   private struct PlayerTestContext {
@@ -307,5 +372,336 @@ struct StreamingSpinPlayerTests {
     ctx.player.state = .loading  // duplicate
 
     #expect(ctx.delegate.stateChanges == [.loading])
+  }
+
+  // MARK: - Boundary Observer Fades
+
+  @Test("PlayNow registers boundary observer with correct number of fade times")
+  func testPlayNowRegistersBoundaryObserver() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(
+      airtime: Date(),
+      startingVolume: 1.0,
+      fades: [Fade(atMS: 10000, toVolume: 0.0)]
+    )
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 0.0)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(mock.addBoundaryObserverCallCount == 1)
+    #expect(mock.registeredBoundaryTimes.count == FadeScheduleBuilder.fadeSteps + 1)
+  }
+
+  @Test("Boundary observer callback sets correct volume")
+  func testBoundaryCallbackSetsVolume() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(
+      airtime: Date(),
+      startingVolume: 1.0,
+      fades: [Fade(atMS: 10000, toVolume: 0.0)]
+    )
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 0.0)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    // Simulate playback reaching a fade step midway through
+    let midIndex = FadeScheduleBuilder.fadeSteps / 2
+    let midStep = ctx.player.fadeSchedule[midIndex]
+    mock.currentTimeSeconds = Double(midStep.timeMS) / 1000.0
+
+    mock.fireBoundaryCallback()
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(mock.volume == midStep.volume)
+  }
+
+  @Test("Boundary observer token removed on clear")
+  func testBoundaryObserverRemovedOnClear() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(
+      airtime: Date(),
+      startingVolume: 1.0,
+      fades: [Fade(atMS: 10000, toVolume: 0.0)]
+    )
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 0.0)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(mock.addBoundaryObserverCallCount == 1)
+
+    ctx.player.clear()
+
+    #expect(mock.removeBoundaryObserverCallCount == 1)
+  }
+
+  @Test("removeBoundaryTimeObserver called before clearItem on clear")
+  func testBoundaryObserverRemovedBeforeClearItem() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(
+      airtime: Date(),
+      startingVolume: 1.0,
+      fades: [Fade(atMS: 10000, toVolume: 0.0)]
+    )
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 0.0)
+    try? await Task.sleep(for: .milliseconds(100))
+
+    mock.callLog.removeAll()
+    ctx.player.clear()
+
+    #expect(mock.callLog == ["removeBoundaryTimeObserver", "cancelPendingPrerolls", "clearItem"])
+  }
+
+  @Test("Mid-join boundary observer starts from correct fade index")
+  func testMidJoinBoundaryObserverStartsFromCorrectIndex() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    // Fade at 5000ms lasts 1500ms, ending at 6500ms
+    let spin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: [Fade(atMS: 5000, toVolume: 0.0)]
+    )
+    _ = await ctx.player.load(spin)
+
+    // Join at 7 seconds — past the entire fade (5000ms + 1500ms = 6500ms)
+    ctx.player.playNow(from: 7.0)
+    try? await Task.sleep(for: .milliseconds(100))
+
+    // All fade steps are before 7s, so no boundary times should be registered
+    #expect(mock.registeredBoundaryTimes.isEmpty)
+    #expect(mock.addBoundaryObserverCallCount == 0)
+  }
+
+  @Test("Boundary observer not registered when no fades")
+  func testNoBoundaryObserverWithoutFades() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(startingVolume: 1.0, fades: [])
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 0.0)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(mock.addBoundaryObserverCallCount == 0)
+  }
+
+  // MARK: - Preroll
+
+  @Test("Preroll called after successful load")
+  func testPrerollCalledAfterLoad() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith()
+    _ = await ctx.player.load(spin)
+
+    #expect(mock.prerollCallCount == 1)
+    #expect(ctx.player.isPrerolled == true)
+  }
+
+  @Test("Preroll failure sets isPrerolled to false")
+  func testPrerollFailure() async {
+    let mock = MockAVPlayer()
+    mock.prerollShouldSucceed = false
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith()
+    _ = await ctx.player.load(spin)
+
+    #expect(mock.prerollCallCount == 1)
+    #expect(ctx.player.isPrerolled == false)
+  }
+
+  @Test("cancelPendingPrerolls called on clear")
+  func testCancelPendingPrerollsOnClear() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith()
+    _ = await ctx.player.load(spin)
+
+    ctx.player.clear()
+
+    #expect(mock.cancelPendingPrerollsCallCount == 1)
+  }
+
+  @Test("isPrerolled reset on clear")
+  func testIsPrerolledResetOnClear() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith()
+    _ = await ctx.player.load(spin)
+    #expect(ctx.player.isPrerolled == true)
+
+    ctx.player.clear()
+
+    #expect(ctx.player.isPrerolled == false)
+  }
+
+  // MARK: - Host-Time-Synced SchedulePlay
+
+  @Test("SchedulePlay uses setRate when prerolled")
+  func testSchedulePlayUsesSetRate() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
+    _ = await ctx.player.load(spin)
+    #expect(ctx.player.isPrerolled == true)
+
+    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+
+    #expect(mock.setRateCallCount == 1)
+    #expect(mock.lastSetRate == 1.0)
+    #expect(mock.playCallCount == 0)
+  }
+
+  @Test("SchedulePlay falls back to Timer when not prerolled")
+  func testSchedulePlayFallsBackToTimer() async {
+    let mock = MockAVPlayer()
+    mock.prerollShouldSucceed = false
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
+    _ = await ctx.player.load(spin)
+    #expect(ctx.player.isPrerolled == false)
+
+    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+
+    #expect(mock.setRateCallCount == 0)
+    #expect(mock.playCallCount == 0)  // Timer hasn't fired yet
+  }
+
+  @Test("SchedulePlay with past date uses play() as fallback")
+  func testSchedulePlayPastDateUsesPlay() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
+    _ = await ctx.player.load(spin)
+
+    ctx.player.schedulePlay(at: Date().addingTimeInterval(-1))
+
+    #expect(mock.playCallCount == 1)
+    #expect(mock.setRateCallCount == 0)
+  }
+
+  // MARK: - Stall Recovery
+
+  @Test("Stall callbacks set up after load")
+  func testStallCallbacksSetUp() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith()
+    _ = await ctx.player.load(spin)
+
+    #expect(mock.onStall != nil)
+    #expect(mock.onUnstall != nil)
+  }
+
+  @Test("Unstall callback calls play to resume")
+  func testUnstallResumesPlayback() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date())
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 0.0)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    let playCountBefore = mock.playCallCount
+    mock.onUnstall?()
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(mock.playCallCount == playCountBefore + 1)
+  }
+
+  @Test("Stall does not change state")
+  func testStallDoesNotChangeState() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date())
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 0.0)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(ctx.player.state == .playing)
+
+    mock.onStall?()
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(ctx.player.state == .playing)
+  }
+
+  // MARK: - Playback Start Observer
+
+  @Test("SchedulePlay with preroll registers playback start observer")
+  func testSchedulePlayRegistersStartObserver() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
+    _ = await ctx.player.load(spin)
+
+    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+
+    // One for playback start (0.001s), plus boundary fades if any
+    #expect(mock.addBoundaryObserverCallCount >= 1)
+  }
+
+  // MARK: - Mid-Song Join with setRate
+
+  @Test("PlayNow uses setRate instead of play")
+  func testPlayNowUsesSetRate() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date())
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 5.0)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(mock.setRateCallCount == 1)
+    #expect(mock.lastSetRate == 1.0)
+    #expect(mock.playCallCount == 0)
+  }
+
+  @Test("PlayNow setRate uses correct seek time")
+  func testPlayNowSetRateSeekTime() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(
+      airtime: Date(),
+      audioBlock: AudioBlock.mockWith(endOfMessageMS: 300_000)
+    )
+    _ = await ctx.player.load(spin)
+
+    ctx.player.playNow(from: 12.5)
+    try? await Task.sleep(for: .milliseconds(50))
+
+    #expect(mock.setRateCallCount == 1)
+    let expectedTime = CMTime(seconds: 12.5, preferredTimescale: 600)
+    #expect(mock.lastSetRateTime == expectedTime)
   }
 }
