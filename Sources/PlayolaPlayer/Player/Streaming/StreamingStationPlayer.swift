@@ -56,6 +56,10 @@ final public class StreamingStationPlayer: ObservableObject {
   private var authProvider: PlayolaAuthenticationProvider?
   private let playerFactory: () -> AVPlayerProviding
   private let audioSessionManager = AudioSessionManager()
+  // internal for testability
+  var scheduleFetcher: (String, URL) async throws -> Schedule = { stationId, baseUrl in
+    try await ScheduleService.getSchedule(stationId: stationId, baseUrl: baseUrl)
+  }
 
   // MARK: - Internal State
 
@@ -64,10 +68,9 @@ final public class StreamingStationPlayer: ObservableObject {
   private var scheduleOffset: TimeInterval?
   private var schedulingTask: Task<Void, Never>?
 
-  // Audio interruption state
-  private var isSuspended = false
-  private var wasPlayingBeforeInterruption = false
-  private var interruptedStationId: String?
+  // Audio interruption state (internal for testability)
+  var wasPlayingBeforeInterruption = false
+  var interruptedStationId: String?
 
   // MARK: - Lifecycle
 
@@ -116,19 +119,22 @@ final public class StreamingStationPlayer: ObservableObject {
 
   /// Begins streaming playback of the specified station.
   public func play(stationId: String, atDate: Date? = nil) async throws {
-    isSuspended = false
     wasPlayingBeforeInterruption = false
     interruptedStationId = nil
 
     schedulingTask?.cancel()
+
+    for (_, player) in spinPlayers {
+      player.stop()
+    }
+    spinPlayers.removeAll()
     self.scheduleOffset = atDate?.timeIntervalSinceNow
     self.stationId = stationId
     self.state = .loading
 
     try await audioSessionManager.activate()
 
-    let schedule = try await ScheduleService.getSchedule(
-      stationId: stationId, baseUrl: baseUrl)
+    let schedule = try await scheduleFetcher(stationId, baseUrl)
     self.currentSchedule = schedule
 
     let currentSpins = schedule.current(offsetTimeInterval: scheduleOffset)
@@ -240,8 +246,7 @@ final public class StreamingStationPlayer: ObservableObject {
   }
 
   private func performScheduleUpdate(stationId: String) async throws {
-    let updatedSchedule = try await ScheduleService.getSchedule(
-      stationId: stationId, baseUrl: baseUrl)
+    let updatedSchedule = try await scheduleFetcher(stationId, baseUrl)
 
     let spinsToLoad = updatedSchedule.current(offsetTimeInterval: scheduleOffset).filter {
       $0.airtime < .now + StreamingStationPlayer.scheduleWindow
@@ -283,8 +288,6 @@ final public class StreamingStationPlayer: ObservableObject {
         }
 
         if wasUsingHeadphones && isPlaying {
-          interruptedStationId = stationId
-          wasPlayingBeforeInterruption = true
           stop()
         }
       default:
@@ -300,48 +303,57 @@ final public class StreamingStationPlayer: ObservableObject {
 
       switch type {
       case .began:
-        isSuspended = true
-        wasPlayingBeforeInterruption = isPlaying
-        interruptedStationId = stationId
-        schedulingTask?.cancel()
-        schedulingTask = nil
+        handleInterruptionBegan()
 
       case .ended:
-        isSuspended = false
         guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
           return
         }
         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-        if options.contains(.shouldResume) && wasPlayingBeforeInterruption {
-          resumeAfterInterruption()
-        }
+        handleInterruptionEnded(shouldResume: options.contains(.shouldResume))
 
       @unknown default:
         break
       }
     }
-
-    private func resumeAfterInterruption() {
-      guard let stationToResume = interruptedStationId else { return }
-
-      Task { @MainActor in
-        do {
-          try await self.audioSessionManager.activate()
-          try await self.play(stationId: stationToResume)
-        } catch {
-          os_log(
-            "Failed to resume after interruption: %@",
-            log: StreamingStationPlayer.logger, type: .error,
-            error.localizedDescription)
-          await errorReporter.reportError(
-            error, context: "Failed to resume playback after interruption", level: .error)
-        }
-
-        self.interruptedStationId = nil
-        self.wasPlayingBeforeInterruption = false
-      }
-    }
   #endif
+
+  // internal for testability
+  func handleInterruptionBegan() {
+    wasPlayingBeforeInterruption = isPlaying
+    interruptedStationId = stationId
+    schedulingTask?.cancel()
+    schedulingTask = nil
+  }
+
+  // internal for testability
+  func handleInterruptionEnded(shouldResume: Bool) {
+    if shouldResume && wasPlayingBeforeInterruption {
+      resumeAfterInterruption()
+    }
+  }
+
+  // internal for testability
+  func resumeAfterInterruption() {
+    guard let stationToResume = interruptedStationId else { return }
+
+    Task { @MainActor in
+      do {
+        try await self.audioSessionManager.activate()
+        try await self.play(stationId: stationToResume)
+      } catch {
+        os_log(
+          "Failed to resume after interruption: %@",
+          log: StreamingStationPlayer.logger, type: .error,
+          error.localizedDescription)
+        await errorReporter.reportError(
+          error, context: "Failed to resume playback after interruption", level: .error)
+      }
+
+      self.interruptedStationId = nil
+      self.wasPlayingBeforeInterruption = false
+    }
+  }
 }
 
 // MARK: - StreamingSpinPlayerDelegate
