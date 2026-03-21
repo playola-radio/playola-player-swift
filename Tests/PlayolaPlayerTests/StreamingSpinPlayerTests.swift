@@ -652,6 +652,30 @@ struct StreamingSpinPlayerTests {
     #expect(ctx.player.state == .playing)
   }
 
+  @Test("Unstall during host-time wait re-prerolls instead of calling play")
+  func testUnstallDuringHostTimeWaitReprerolls() async {
+    let mock = MockAVPlayer()
+    let ctx = createPlayer(mockPlayer: mock)
+
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
+    _ = await ctx.player.load(spin)
+
+    let prerollCountBefore = mock.prerollCallCount
+    let playCountBefore = mock.playCallCount
+
+    // Schedule with host-time sync (prerolled)
+    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+
+    // Simulate buffer drain + recovery while waiting for host-time start
+    mock.onUnstall?()
+    try? await Task.sleep(for: .milliseconds(50))
+
+    // Should re-preroll, NOT call play()
+    #expect(mock.prerollCallCount == prerollCountBefore + 1)
+    #expect(mock.playCallCount == playCountBefore)
+    #expect(ctx.player.state == .loaded)
+  }
+
   // MARK: - Playback Start Observer
 
   @Test("SchedulePlay with preroll registers playback start observer")

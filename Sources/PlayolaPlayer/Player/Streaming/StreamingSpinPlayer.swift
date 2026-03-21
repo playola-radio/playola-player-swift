@@ -69,8 +69,7 @@ public class StreamingSpinPlayer {
 
   // MARK: - Preroll
   private(set) var isPrerolled: Bool = false
-  private var prerollHealthCheckTimer: Timer?
-  private static let prerollHealthCheckLeadTime: TimeInterval = 30.0
+  private var isAwaitingHostTimeStart: Bool = false
 
   // MARK: - Scheduling Timers
   private var playTimer: Timer?
@@ -241,6 +240,7 @@ public class StreamingSpinPlayer {
     let delta = scheduledDate.timeIntervalSince(Date())
 
     if delta > 0 {
+      self.isAwaitingHostTimeStart = true
       let hostTimeNow = CMClockGetTime(CMClockGetHostTimeClock())
       let hostTimeAtAirtime = CMTimeAdd(
         hostTimeNow,
@@ -254,7 +254,6 @@ public class StreamingSpinPlayer {
     self.nextFadeIndex = 0
     setupBoundaryFades()
     setupClearTimer()
-    setupPrerollHealthCheck(for: scheduledDate)
   }
 
   private func schedulePlayWithTimer(
@@ -299,6 +298,7 @@ public class StreamingSpinPlayer {
     ) { [weak self] in
       Task { @MainActor [weak self] in
         guard let self, self.state == .loaded else { return }
+        self.isAwaitingHostTimeStart = false
         self.state = .playing
         self.delegate?.streamingPlayer(self, startedPlaying: spin)
       }
@@ -383,43 +383,16 @@ public class StreamingSpinPlayer {
           "Playback recovered for spin: %@",
           log: StreamingSpinPlayer.logger, type: .info,
           self.spin?.id ?? "nil")
-        avPlayer.play()
+
+        if self.isAwaitingHostTimeStart {
+          // Re-preroll to be ready for the scheduled host-time start.
+          // Do NOT call play() — that would defeat the precise scheduling.
+          self.isPrerolled = await avPlayer.preroll(atRate: 1.0)
+        } else {
+          avPlayer.play()
+        }
       }
     }
-  }
-
-  // MARK: - Preroll Health Check
-
-  private func setupPrerollHealthCheck(for scheduledDate: Date) {
-    let checkDate = scheduledDate.addingTimeInterval(
-      -StreamingSpinPlayer.prerollHealthCheckLeadTime)
-
-    guard checkDate > Date() else { return }
-
-    prerollHealthCheckTimer = Timer(
-      fire: checkDate,
-      interval: 0,
-      repeats: false
-    ) { [weak self] timer in
-      timer.invalidate()
-      guard let self else { return }
-
-      Task { @MainActor in
-        guard self.prerollHealthCheckTimer === timer,
-          let avPlayer = self.avPlayer,
-          self.state == .loaded
-        else { return }
-
-        let rePrerolled = await avPlayer.preroll(atRate: 1.0)
-        self.isPrerolled = rePrerolled
-        os_log(
-          "Health check re-preroll %@",
-          log: StreamingSpinPlayer.logger, type: .info,
-          rePrerolled ? "succeeded" : "failed")
-      }
-    }
-
-    RunLoop.main.add(prerollHealthCheckTimer!, forMode: .default)
   }
 
   // MARK: - Clear Timer
@@ -470,13 +443,11 @@ public class StreamingSpinPlayer {
     clearTimer?.invalidate()
     clearTimer = nil
 
-    prerollHealthCheckTimer?.invalidate()
-    prerollHealthCheckTimer = nil
-
     fadeSchedule = []
     nextFadeIndex = 0
     playbackStartOffsetMS = 0
     isPrerolled = false
+    isAwaitingHostTimeStart = false
 
     spin = nil
     state = .available
