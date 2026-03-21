@@ -51,10 +51,10 @@ public class ListeningSessionReporter {
     return DeviceInfoProvider.identifierForVendor?.uuidString
   }
   var timer: Timer?
-  let basicToken = "aW9zQXBwOnNwb3RpZnlTdWNrc0FCaWcx"  // TODO: De-hard-code this
   var currentSessionStationId: String?
   var disposeBag = Set<AnyCancellable>()
   weak var stationPlayer: PlayolaStationPlayer?
+  private let stationIdGetter: () -> String?
   var currentListeningSessionID: String?
   private let errorReporter = PlayolaErrorReporter.shared
   private let authProvider: PlayolaAuthenticationProvider?
@@ -74,8 +74,29 @@ public class ListeningSessionReporter {
     self.authProvider = authProvider
     self.urlSession = urlSession
     self.baseURL = baseURL
+    self.stationIdGetter = { [weak stationPlayer] in stationPlayer?.stationId }
 
-    stationPlayer.$stationId.sink { [weak self] stationId in
+    subscribeToStationId(stationPlayer.$stationId.eraseToAnyPublisher())
+  }
+
+  init(
+    stationIdPublisher: AnyPublisher<String?, Never>,
+    stationIdGetter: @escaping () -> String?,
+    authProvider: PlayolaAuthenticationProvider? = nil,
+    urlSession: URLSessionProtocol = URLSession.shared,
+    baseURL: URL = URL(string: "https://admin-api.playola.fm")!
+  ) {
+    self.stationPlayer = nil
+    self.authProvider = authProvider
+    self.urlSession = urlSession
+    self.baseURL = baseURL
+    self.stationIdGetter = stationIdGetter
+
+    subscribeToStationId(stationIdPublisher)
+  }
+
+  private func subscribeToStationId(_ publisher: AnyPublisher<String?, Never>) {
+    publisher.sink { [weak self] stationId in
       guard let self else { return }
       if let stationId {
         Task {
@@ -98,7 +119,6 @@ public class ListeningSessionReporter {
             try await self.endListeningSession()
             self.stopPeriodicNotifications()
           } catch {
-            // Just log the error but don't fail critically since this is cleanup
             Task {
               await self.errorReporter.reportError(
                 error,
@@ -196,7 +216,7 @@ public class ListeningSessionReporter {
       withTimeInterval: 10.0, repeats: true,
       block: { [weak self] _ in
         guard let self else { return }
-        guard let stationId = self.stationPlayer?.stationId else {
+        guard let stationId = self.stationIdGetter() else {
           let error = ListeningSessionError.invalidResponse(
             "Missing stationId in periodic notification")
           Task {
@@ -239,17 +259,15 @@ public class ListeningSessionReporter {
 
     // Check if we've exceeded retry limits
     if refreshAttempts >= maxRefreshAttempts {
+      let error = ListeningSessionError.authenticationFailed("Max refresh attempts exceeded")
       Task {
         await errorReporter.reportError(
-          ListeningSessionError.authenticationFailed("Max refresh attempts exceeded"),
+          error,
           context: "Exceeded maximum refresh attempts (\(maxRefreshAttempts))",
           level: .warning
         )
       }
-
-      // Fall back to Basic auth
-      try await attemptWithBasicAuth(url: url, requestBody: requestBody)
-      return
+      throw error
     }
 
     // Attempt token refresh
@@ -276,43 +294,7 @@ public class ListeningSessionReporter {
           "HTTP status code after refresh: \(retryHttpResponse.statusCode)")
       }
     } else {
-      // Refresh failed - try with Basic auth as fallback
-      try await attemptWithBasicAuth(url: url, requestBody: requestBody)
-    }
-  }
-
-  private func attemptWithBasicAuth(url: URL, requestBody: ListeningSessionRequest) async throws {
-    // Create request with Basic auth (bypassing the auth provider)
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-
-    do {
-      request.httpBody = try JSONEncoder().encode(requestBody)
-    } catch {
-      throw ListeningSessionError.encodingError(
-        "Failed to encode request body: \(error.localizedDescription)")
-    }
-
-    request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
-    request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-    let (_, response) = try await urlSession.data(for: request)
-
-    guard let httpResponse = response as? HTTPURLResponse else {
-      throw ListeningSessionError.invalidResponse("Invalid HTTP response with Basic auth")
-    }
-
-    if (200...299).contains(httpResponse.statusCode) {
-      // Success with Basic auth
-      Task {
-        await errorReporter.reportError(
-          ListeningSessionError.authenticationFailed("Fell back to Basic auth"),
-          context: "Authentication failed, using Basic auth fallback",
-          level: .warning
-        )
-      }
-    } else {
-      throw ListeningSessionError.authenticationFailed("Both Bearer token and Basic auth failed")
+      throw ListeningSessionError.authenticationFailed("Token refresh failed")
     }
   }
 
@@ -333,18 +315,15 @@ public class ListeningSessionReporter {
         "Failed to encode request body: \(error.localizedDescription)")
     }
 
-    // Use Bearer token if user is authenticated, otherwise fall back to Basic auth
-    if let userToken = await authProvider?.getCurrentToken() {
-      request.addValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
-    } else {
-      request.addValue("Basic \(basicToken)", forHTTPHeaderField: "Authorization")
+    guard let userToken = await authProvider?.getCurrentToken() else {
+      throw ListeningSessionError.authenticationFailed("No authentication token available")
     }
+    request.addValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
 
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
     return request
   }
 
-  // TODO: Find a better way of doing this.  Protocols + ObservableObject has issues.
   #if DEBUG
     internal init(
       authProvider: PlayolaAuthenticationProvider? = nil,
@@ -352,6 +331,7 @@ public class ListeningSessionReporter {
       baseURL: URL = URL(string: "https://admin-api.playola.fm")!
     ) {
       self.stationPlayer = nil
+      self.stationIdGetter = { nil }
       self.authProvider = authProvider
       self.urlSession = urlSession
       self.baseURL = baseURL
