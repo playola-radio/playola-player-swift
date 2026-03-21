@@ -75,7 +75,7 @@ final class MockAVPlayer: AVPlayerProviding {
     forTimes times: [NSValue],
     queue: DispatchQueue?,
     using block: @escaping @Sendable () -> Void
-  ) -> Any {
+  ) -> Any? {
     registeredBoundaryTimes = times
     boundaryCallback = block
     addBoundaryObserverCallCount += 1

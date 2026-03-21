@@ -321,6 +321,7 @@ public class StreamingSpinPlayer {
   // MARK: - Fade Automation (Boundary Observers)
 
   private func setupBoundaryFades() {
+    removeBoundaryFadeObserver()
     guard let avPlayer, !fadeSchedule.isEmpty, nextFadeIndex < fadeSchedule.count else { return }
 
     let fadeTimes = fadeSchedule[nextFadeIndex...].map { step in
@@ -339,7 +340,7 @@ public class StreamingSpinPlayer {
   }
 
   private func applyNextFadeStep() {
-    guard state == .playing, let avPlayer else { return }
+    guard state == .playing || state == .loaded, let avPlayer else { return }
 
     let currentTimeMS = Int(avPlayer.currentTimeSeconds * 1000)
     let targetIndex = FadeScheduleBuilder.firstUnprocessedIndex(
@@ -374,7 +375,10 @@ public class StreamingSpinPlayer {
 
     player.onUnstall = { [weak self] in
       Task { @MainActor [weak self] in
-        guard let self, self.state == .playing, let avPlayer = self.avPlayer else { return }
+        guard let self,
+          self.state == .playing || self.state == .loaded,
+          let avPlayer = self.avPlayer
+        else { return }
         os_log(
           "Playback recovered for spin: %@",
           log: StreamingSpinPlayer.logger, type: .info,

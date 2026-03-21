@@ -21,11 +21,12 @@ public protocol AVPlayerProviding: AnyObject {
   func clearItem()
 
   /// Registers a boundary time observer that fires when playback crosses any of the given times.
+  /// Returns `nil` if the player has no current item.
   func addBoundaryTimeObserver(
     forTimes times: [NSValue],
     queue: DispatchQueue?,
     using block: @escaping @Sendable () -> Void
-  ) -> Any
+  ) -> Any?
 
   /// Removes a previously registered boundary time observer.
   func removeBoundaryTimeObserver(_ token: Any)
@@ -175,10 +176,8 @@ public class AVPlayerWrapper: AVPlayerProviding {
     forTimes times: [NSValue],
     queue: DispatchQueue?,
     using block: @escaping @Sendable () -> Void
-  ) -> Any {
-    guard let player else {
-      return NSObject()
-    }
+  ) -> Any? {
+    guard let player else { return nil }
     return player.addBoundaryTimeObserver(forTimes: times, queue: queue, using: block)
   }
 
