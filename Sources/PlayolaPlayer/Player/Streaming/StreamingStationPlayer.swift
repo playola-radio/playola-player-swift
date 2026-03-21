@@ -174,6 +174,14 @@ final public class StreamingStationPlayer: ObservableObject {
     let player = getOrCreateSpinPlayer(for: spin)
 
     let result = await player.load(spin)
+
+    // Guard against stop() called during the await
+    guard stationId != nil else {
+      player.clear()
+      spinPlayers.removeValue(forKey: spin.id)
+      return
+    }
+
     switch result {
     case .success:
       let timing = spin.playbackTiming
