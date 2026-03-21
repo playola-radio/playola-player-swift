@@ -36,6 +36,8 @@ public enum FadeScheduleBuilder {
     var fromVolume = spin.startingVolume
     let stepDurationMS = fadeDurationMS / Double(fadeSteps)
 
+    var lastTimeMS = Int.min
+
     for fade in sortedFades {
       let toVolume = fade.toVolume
       let fadeStartMS = fade.atMS
@@ -44,7 +46,13 @@ public enum FadeScheduleBuilder {
         let progress = Float(step) / Float(fadeSteps)
         let volume = fromVolume + (toVolume - fromVolume) * progress
         let timeMS = fadeStartMS + Int(Double(step) * stepDurationMS)
+
+        // Ensure monotonic time ordering — skip steps that overlap with previous fade
+        if timeMS <= lastTimeMS {
+          continue
+        }
         schedule.append(FadeStep(timeMS: timeMS, volume: volume))
+        lastTimeMS = timeMS
       }
 
       fromVolume = toVolume

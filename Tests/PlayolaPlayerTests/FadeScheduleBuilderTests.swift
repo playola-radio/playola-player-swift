@@ -177,4 +177,27 @@ struct FadeScheduleBuilderTests {
     let index = FadeScheduleBuilder.firstUnprocessedIndex(in: schedule, afterMS: 10500)
     #expect(index == 2)
   }
+
+  // MARK: - Overlapping Fades
+
+  @Test("Overlapping fades produce monotonic time ordering")
+  func testOverlappingFadesMonotonic() {
+    let spin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: [
+        Fade(atMS: 10000, toVolume: 0.5),
+        Fade(atMS: 10500, toVolume: 0.0),  // Starts before first fade ends (10000 + 1500)
+      ]
+    )
+
+    let schedule = FadeScheduleBuilder.buildFadeSchedule(for: spin)
+
+    // Verify all times are strictly increasing
+    for i in 1..<schedule.count {
+      #expect(
+        schedule[i].timeMS > schedule[i - 1].timeMS,
+        "Times must increase: [\(i)] \(schedule[i].timeMS) <= [\(i-1)] \(schedule[i-1].timeMS)"
+      )
+    }
+  }
 }

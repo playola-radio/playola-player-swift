@@ -49,7 +49,7 @@ class MainThreadMonitor: ObservableObject {
 
 struct ContentView: View {
   @ObservedObject var downloadPlayer = PlayolaStationPlayer.shared
-  @ObservedObject var streamingPlayer = StreamingStationPlayer()
+  @StateObject var streamingPlayer = StreamingStationPlayer()
   @StateObject private var threadMonitor = MainThreadMonitor()
   @State private var showingStationPicker = false
   @State private var showingScheduleViewer = false

@@ -353,6 +353,9 @@ extension StreamingStationPlayer: StreamingSpinPlayerDelegate {
       if let spinId = player.spin?.id ?? spinPlayers.first(where: { $0.value === player })?.key {
         spinPlayers.removeValue(forKey: spinId)
       }
+      if spinPlayers.isEmpty {
+        self.state = .idle
+      }
     }
   }
 
