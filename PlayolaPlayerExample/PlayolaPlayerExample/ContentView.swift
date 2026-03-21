@@ -137,7 +137,7 @@ struct ContentView: View {
           .pickerStyle(.segmented)
           .padding(.horizontal)
           .onChange(of: playerMode) { _, _ in
-            stopCurrentPlayer()
+            Task { await stopCurrentPlayer() }
           }
 
           Text(
@@ -301,17 +301,15 @@ struct ContentView: View {
     return "stop.fill"
   }
 
-  func stopCurrentPlayer() {
-    Task {
-      await downloadPlayer.stop()
-      streamingPlayer.stop()
-    }
+  func stopCurrentPlayer() async {
+    await downloadPlayer.stop()
+    streamingPlayer.stop()
   }
 
   func playOrPause() {
     Task {
       if isPlaying || isLoading {
-        stopCurrentPlayer()
+        await stopCurrentPlayer()
       } else {
         do {
           switch playerMode {
@@ -329,7 +327,7 @@ struct ContentView: View {
 
   func playWithOffset(_ offsetSeconds: TimeInterval) {
     Task {
-      stopCurrentPlayer()
+      await stopCurrentPlayer()
       let atDate = Date().addingTimeInterval(offsetSeconds)
       do {
         switch playerMode {

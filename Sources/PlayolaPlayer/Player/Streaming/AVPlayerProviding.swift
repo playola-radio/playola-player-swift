@@ -69,21 +69,27 @@ public class AVPlayerWrapper: AVPlayerProviding {
         guard let self else { return }
 
         Task { @MainActor in
-          self.statusObservation?.invalidate()
-          self.statusObservation = nil
-
           switch observedItem.status {
           case .readyToPlay:
+            self.statusObservation?.invalidate()
+            self.statusObservation = nil
             continuation.resume()
           case .failed:
+            self.statusObservation?.invalidate()
+            self.statusObservation = nil
             let error =
               observedItem.error
               ?? StationPlayerError.playbackError("AVPlayerItem failed to load")
             continuation.resume(throwing: error)
           case .unknown:
-            break
+            // Not yet determined — keep observing.
+            return
           @unknown default:
-            break
+            self.statusObservation?.invalidate()
+            self.statusObservation = nil
+            continuation.resume(
+              throwing: StationPlayerError.playbackError(
+                "AVPlayerItem entered unexpected status"))
           }
         }
       }

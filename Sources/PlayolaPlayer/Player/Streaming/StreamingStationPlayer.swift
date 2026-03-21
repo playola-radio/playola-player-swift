@@ -91,6 +91,12 @@ final public class StreamingStationPlayer: ObservableObject {
     #endif
   }
 
+  deinit {
+    #if os(iOS) || os(tvOS)
+      NotificationCenter.default.removeObserver(self)
+    #endif
+  }
+
   /// Configure with authentication provider.
   public func configure(
     authProvider: PlayolaAuthenticationProvider,

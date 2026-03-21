@@ -173,10 +173,14 @@ public class StreamingSpinPlayer {
 
     // Seek to position and play
     let seekTime = CMTime(seconds: offsetSeconds, preferredTimescale: 600)
-    Task {
+    Task { [weak self] in
+      guard let self else { return }
       _ = await avPlayer.seek(to: seekTime)
-      avPlayer.play()
 
+      // Guard against clear() called during the await
+      guard self.state == .loaded || self.state == .playing else { return }
+
+      avPlayer.play()
       self.state = .playing
       delegate?.streamingPlayer(self, startedPlaying: spin)
 
