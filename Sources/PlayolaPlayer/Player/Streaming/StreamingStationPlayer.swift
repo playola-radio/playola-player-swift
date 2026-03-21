@@ -56,6 +56,7 @@ final public class StreamingStationPlayer: ObservableObject {
   private var authProvider: PlayolaAuthenticationProvider?
   private let playerFactory: () -> AVPlayerProviding
   private let audioSessionManager = AudioSessionManager()
+  // internal for testability
   var scheduleFetcher: (String, URL) async throws -> Schedule = { stationId, baseUrl in
     try await ScheduleService.getSchedule(stationId: stationId, baseUrl: baseUrl)
   }
@@ -67,7 +68,7 @@ final public class StreamingStationPlayer: ObservableObject {
   private var scheduleOffset: TimeInterval?
   private var schedulingTask: Task<Void, Never>?
 
-  // Audio interruption state
+  // Audio interruption state (internal for testability)
   var wasPlayingBeforeInterruption = false
   var interruptedStationId: String?
 
@@ -317,6 +318,7 @@ final public class StreamingStationPlayer: ObservableObject {
     }
   #endif
 
+  // internal for testability
   func handleInterruptionBegan() {
     wasPlayingBeforeInterruption = isPlaying
     interruptedStationId = stationId
@@ -324,12 +326,14 @@ final public class StreamingStationPlayer: ObservableObject {
     schedulingTask = nil
   }
 
+  // internal for testability
   func handleInterruptionEnded(shouldResume: Bool) {
     if shouldResume && wasPlayingBeforeInterruption {
       resumeAfterInterruption()
     }
   }
 
+  // internal for testability
   func resumeAfterInterruption() {
     guard let stationToResume = interruptedStationId else { return }
 
