@@ -8,6 +8,11 @@
 import PlayolaPlayer
 import SwiftUI
 
+enum PlayerMode: String, CaseIterable {
+  case streaming = "Streaming"
+  case download = "Download"
+}
+
 // Main thread responsiveness monitor
 class MainThreadMonitor: ObservableObject {
   @Published var isResponsive = true
@@ -35,7 +40,7 @@ class MainThreadMonitor: ObservableObject {
     let elapsed = displayLink.timestamp - lastUpdate
     if elapsed >= 1.0 {
       fps = Double(frameCount) / elapsed
-      isResponsive = fps > 30  // Consider unresponsive if below 30 FPS
+      isResponsive = fps > 30
       frameCount = 0
       lastUpdate = displayLink.timestamp
     }
@@ -43,15 +48,62 @@ class MainThreadMonitor: ObservableObject {
 }
 
 struct ContentView: View {
-  @ObservedObject var player = PlayolaStationPlayer.shared
+  @ObservedObject var downloadPlayer = PlayolaStationPlayer.shared
+  @ObservedObject var streamingPlayer = StreamingStationPlayer()
   @StateObject private var threadMonitor = MainThreadMonitor()
   @State private var showingStationPicker = false
   @State private var showingScheduleViewer = false
   @State private var selectedStationId: String = "9d79fd38-1940-4312-8fe8-3b9b50d49c6c"
+  @State private var playerMode: PlayerMode = .streaming
+
+  private var isPlaying: Bool {
+    switch playerMode {
+    case .streaming: return streamingPlayer.isPlaying
+    case .download: return downloadPlayer.isPlaying
+    }
+  }
+
+  private var nowPlayingSpin: Spin? {
+    switch playerMode {
+    case .streaming:
+      if case .playing(let spin) = streamingPlayer.state { return spin }
+    case .download:
+      if case .playing(let spin) = downloadPlayer.state { return spin }
+    }
+    return nil
+  }
+
+  private var isLoading: Bool {
+    switch playerMode {
+    case .streaming:
+      if case .loading = streamingPlayer.state { return true }
+    case .download:
+      if case .loading = downloadPlayer.state { return true }
+    }
+    return false
+  }
+
+  private var isIdle: Bool {
+    switch playerMode {
+    case .streaming:
+      if case .idle = streamingPlayer.state { return true }
+    case .download:
+      if case .idle = downloadPlayer.state { return true }
+    }
+    return false
+  }
+
+  private var loadingProgress: Float? {
+    if case .download = playerMode,
+      case .loading(let progress) = downloadPlayer.state
+    {
+      return progress
+    }
+    return nil
+  }
 
   var body: some View {
     ZStack {
-      // Background gradient
       LinearGradient(
         gradient: Gradient(colors: [Color.black, Color.gray.opacity(0.3)]),
         startPoint: .topLeading,
@@ -60,7 +112,7 @@ struct ContentView: View {
       .ignoresSafeArea()
 
       VStack(spacing: 30) {
-        // Header with thread monitor
+        // Header with thread monitor and player toggle
         HStack {
           VStack(alignment: .leading, spacing: 5) {
             Text("Main Thread Monitor")
@@ -75,25 +127,46 @@ struct ContentView: View {
         }
         .padding()
 
+        // Player mode toggle
+        VStack(spacing: 8) {
+          Picker("Player Mode", selection: $playerMode) {
+            ForEach(PlayerMode.allCases, id: \.self) { mode in
+              Text(mode.rawValue).tag(mode)
+            }
+          }
+          .pickerStyle(.segmented)
+          .padding(.horizontal)
+          .onChange(of: playerMode) { _, _ in
+            stopCurrentPlayer()
+          }
+
+          Text(
+            playerMode == .streaming
+              ? "AVPlayer streaming (fast startup)"
+              : "AVAudioEngine download (full file)"
+          )
+          .font(.caption2)
+          .foregroundColor(.white.opacity(0.5))
+        }
+
         Spacer()
 
-        // Main content
         VStack(spacing: 25) {
-          // Album art placeholder with animation
+          // Album art placeholder
           ZStack {
             RoundedRectangle(cornerRadius: 20)
               .fill(Color.white.opacity(0.1))
               .frame(width: 250, height: 250)
 
-            if player.isPlaying {
+            if isPlaying {
               Image(systemName: "music.note")
                 .font(.system(size: 80))
                 .foregroundColor(.white.opacity(0.7))
-                .rotationEffect(.degrees(player.isPlaying ? 360 : 0))
+                .rotationEffect(.degrees(isPlaying ? 360 : 0))
                 .animation(
-                  player.isPlaying
+                  isPlaying
                     ? Animation.linear(duration: 3).repeatForever(autoreverses: false) : .default,
-                  value: player.isPlaying
+                  value: isPlaying
                 )
             } else {
               Image(systemName: "radio")
@@ -104,7 +177,7 @@ struct ContentView: View {
 
           // Now playing info
           VStack(spacing: 10) {
-            if case .playing(let spin) = player.state {
+            if let spin = nowPlayingSpin {
               Text(spin.audioBlock.title)
                 .font(.title2)
                 .fontWeight(.semibold)
@@ -115,19 +188,24 @@ struct ContentView: View {
                 .font(.headline)
                 .foregroundColor(.white.opacity(0.7))
                 .lineLimit(1)
-            } else if case .loading(let progress) = player.state {
+            } else if isLoading {
               VStack(spacing: 15) {
                 Text("Loading Station...")
                   .font(.headline)
                   .foregroundColor(.white.opacity(0.8))
 
-                ProgressView(value: progress)
-                  .progressViewStyle(LinearProgressViewStyle(tint: .white))
-                  .frame(width: 200)
+                if let progress = loadingProgress {
+                  ProgressView(value: progress)
+                    .progressViewStyle(LinearProgressViewStyle(tint: .white))
+                    .frame(width: 200)
 
-                Text("\(Int(progress * 100))%")
-                  .font(.caption)
-                  .foregroundColor(.white.opacity(0.6))
+                  Text("\(Int(progress * 100))%")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.6))
+                } else {
+                  ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                }
               }
             } else {
               Text("Ready to Play")
@@ -139,49 +217,31 @@ struct ContentView: View {
 
           // Offset playback controls
           VStack(spacing: 20) {
-            // Time offset buttons
             Text("Play from different times:")
               .font(.caption)
               .foregroundColor(.white.opacity(0.6))
 
             HStack(spacing: 15) {
-              Button("5min ago") {
-                playWithOffset(-300)  // 5 minutes ago
-              }
-              .buttonStyle(OffsetButtonStyle())
-
-              Button("1min ago") {
-                playWithOffset(-60)  // 1 minute ago
-              }
-              .buttonStyle(OffsetButtonStyle())
-
-              Button("10sec ago") {
-                playWithOffset(-10)  // 10 seconds ago
-              }
-              .buttonStyle(OffsetButtonStyle())
+              Button("5min ago") { playWithOffset(-300) }
+                .buttonStyle(OffsetButtonStyle())
+              Button("1min ago") { playWithOffset(-60) }
+                .buttonStyle(OffsetButtonStyle())
+              Button("10sec ago") { playWithOffset(-10) }
+                .buttonStyle(OffsetButtonStyle())
             }
 
             HStack(spacing: 15) {
-              Button("10sec future") {
-                playWithOffset(10)  // 10 seconds from now
-              }
-              .buttonStyle(OffsetButtonStyle())
-
-              Button("1min future") {
-                playWithOffset(60)  // 1 minute from now
-              }
-              .buttonStyle(OffsetButtonStyle())
-
-              Button("5min future") {
-                playWithOffset(300)  // 5 minutes from now
-              }
-              .buttonStyle(OffsetButtonStyle())
+              Button("10sec future") { playWithOffset(10) }
+                .buttonStyle(OffsetButtonStyle())
+              Button("1min future") { playWithOffset(60) }
+                .buttonStyle(OffsetButtonStyle())
+              Button("5min future") { playWithOffset(300) }
+                .buttonStyle(OffsetButtonStyle())
             }
           }
 
           // Main playback controls
           HStack(spacing: 40) {
-            // Station picker
             Button(
               action: { showingStationPicker.toggle() },
               label: {
@@ -190,23 +250,21 @@ struct ContentView: View {
                   .foregroundColor(.white.opacity(0.8))
               })
 
-            // Play/Stop button (current time)
             Button(
               action: { playOrPause() },
               label: {
                 ZStack {
                   Circle()
-                    .fill(buttonColor(for: player.state))
+                    .fill(currentButtonColor)
                     .frame(width: 80, height: 80)
 
-                  Image(systemName: buttonIcon(for: player.state))
+                  Image(systemName: currentButtonIcon)
                     .font(.title)
                     .foregroundColor(.white)
-                    .offset(x: shouldOffsetIcon(for: player.state) ? 3 : 0)  // Center play icon
+                    .offset(x: isIdle ? 3 : 0)
                 }
               })
 
-            // Schedule viewer
             Button(
               action: { showingScheduleViewer.toggle() },
               label: {
@@ -221,28 +279,48 @@ struct ContentView: View {
       }
     }
     .sheet(isPresented: $showingStationPicker) {
-      StationPickerView(selectedStationId: $selectedStationId)
+      StationPickerView(
+        selectedStationId: $selectedStationId,
+        playerMode: playerMode,
+        streamingPlayer: streamingPlayer
+      )
     }
     .sheet(isPresented: $showingScheduleViewer) {
       ScheduleViewer(selectedStationId: selectedStationId)
     }
   }
 
+  private var currentButtonColor: Color {
+    if isPlaying { return .red }
+    if isLoading { return .orange }
+    return .green
+  }
+
+  private var currentButtonIcon: String {
+    if isIdle { return "play.fill" }
+    return "stop.fill"
+  }
+
+  func stopCurrentPlayer() {
+    Task {
+      await downloadPlayer.stop()
+      streamingPlayer.stop()
+    }
+  }
+
   func playOrPause() {
     Task {
-      switch await player.state {
-      case .loading:
-        // Cancel loading
-        await player.stop()
-      case .playing:
-        // Stop playing
-        await player.stop()
-      case .idle:
-        // Start playing
+      if isPlaying || isLoading {
+        stopCurrentPlayer()
+      } else {
         do {
-          try await player.play(stationId: selectedStationId)
+          switch playerMode {
+          case .streaming:
+            try await streamingPlayer.play(stationId: selectedStationId)
+          case .download:
+            try await downloadPlayer.play(stationId: selectedStationId)
+          }
         } catch {
-          // Handle errors gracefully (including cancellation during loading)
           print("Failed to start playback: \(error)")
         }
       }
@@ -251,18 +329,15 @@ struct ContentView: View {
 
   func playWithOffset(_ offsetSeconds: TimeInterval) {
     Task {
-      // Always stop current playback first
-      await player.stop()
-
-      // Calculate the target date
+      stopCurrentPlayer()
       let atDate = Date().addingTimeInterval(offsetSeconds)
-
       do {
-        try await player.play(
-          stationId: selectedStationId,
-          atDate: atDate
-        )
-        print("Started playback with offset: \(offsetSeconds) seconds (at: \(atDate))")
+        switch playerMode {
+        case .streaming:
+          try await streamingPlayer.play(stationId: selectedStationId, atDate: atDate)
+        case .download:
+          try await downloadPlayer.play(stationId: selectedStationId, atDate: atDate)
+        }
       } catch {
         print("Failed to start offset playback: \(error)")
       }
@@ -277,7 +352,6 @@ struct ThreadResponsivenessIndicator: View {
 
   var body: some View {
     VStack(spacing: 8) {
-      // Visual spinner that shows thread responsiveness
       ZStack {
         Circle()
           .stroke(Color.white.opacity(0.2), lineWidth: 3)
@@ -361,6 +435,8 @@ struct StationInfo: Codable, Identifiable {
 struct StationPickerView: View {
   @Environment(\.dismiss) var dismiss
   @Binding var selectedStationId: String
+  var playerMode: PlayerMode
+  var streamingPlayer: StreamingStationPlayer
   @State private var stations: [StationInfo] = []
   @State private var isLoading = true
   @State private var errorMessage: String?
@@ -389,10 +465,16 @@ struct StationPickerView: View {
               action: {
                 Task {
                   do {
-                    // Use playolaID for playola stations
                     let stationId = station.playolaID ?? station.id
                     selectedStationId = stationId
-                    try await PlayolaStationPlayer.shared.play(stationId: stationId)
+                    switch playerMode {
+                    case .streaming:
+                      streamingPlayer.stop()
+                      try await streamingPlayer.play(stationId: stationId)
+                    case .download:
+                      await PlayolaStationPlayer.shared.stop()
+                      try await PlayolaStationPlayer.shared.play(stationId: stationId)
+                    }
                   } catch {
                     print("Failed to start playback: \(error)")
                   }
@@ -401,7 +483,6 @@ struct StationPickerView: View {
               },
               label: {
                 HStack {
-                  // Show image if available
                   if let imageURL = station.imageURL, let url = URL(string: imageURL) {
                     AsyncImage(url: url) { image in
                       image
@@ -454,12 +535,10 @@ struct StationPickerView: View {
 
       let response = try JSONDecoder().decode(StationListsResponse.self, from: data)
 
-      // Get stations from in_development_list and artist_list
       var allStations: [StationInfo] = []
 
       for list in response.stationLists {
         if list.id == "in_development_list" || list.id == "artist_list" {
-          // Filter to only include playola type stations
           let playolaStations = list.stations.filter { $0.type == "playola" }
           allStations.append(contentsOf: playolaStations)
         }
@@ -476,42 +555,6 @@ struct StationPickerView: View {
       }
     }
   }
-}
-
-func isLoading(_ state: PlayolaStationPlayer.State) -> Bool {
-  if case .loading = state {
-    return true
-  }
-  return false
-}
-
-func buttonColor(for state: PlayolaStationPlayer.State) -> Color {
-  switch state {
-  case .loading:
-    return Color.orange
-  case .playing:
-    return Color.red
-  case .idle:
-    return Color.green
-  }
-}
-
-func buttonIcon(for state: PlayolaStationPlayer.State) -> String {
-  switch state {
-  case .loading:
-    return "stop.fill"
-  case .playing:
-    return "stop.fill"
-  case .idle:
-    return "play.fill"
-  }
-}
-
-func shouldOffsetIcon(for state: PlayolaStationPlayer.State) -> Bool {
-  if case .idle = state {
-    return true
-  }
-  return false
 }
 
 // Custom button style for offset buttons
