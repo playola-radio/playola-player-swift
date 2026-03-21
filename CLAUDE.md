@@ -29,3 +29,7 @@
 - Model types should conform to Codable, Sendable, Equatable & Hashable
 - Use strong typing and avoid optionals where possible
 - Use proper access control (public, internal, private)
+
+## PR Review Comments
+- After addressing a PR review comment, add a 👍 reaction to it via `gh api /repos/{owner}/{repo}/pulls/comments/{id}/reactions -f content='+1'`
+- For PR-level comments, use `gh api /repos/{owner}/{repo}/issues/comments/{id}/reactions -f content='+1'`
