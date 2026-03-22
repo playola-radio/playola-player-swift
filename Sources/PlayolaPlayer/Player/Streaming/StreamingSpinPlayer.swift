@@ -122,17 +122,8 @@ public class StreamingSpinPlayer {
 
     do {
       try await player.loadURL(audioFileUrl)
-      os_log(
-        "Player ready for spin: %@",
-        log: StreamingSpinPlayer.logger, type: .info, spin.id)
 
       setupStallCallbacks(player: player)
-
-      self.isPrerolled = await player.preroll(atRate: 1.0)
-      os_log(
-        "Preroll %@ for spin: %@",
-        log: StreamingSpinPlayer.logger, type: .info,
-        isPrerolled ? "succeeded" : "failed", spin.id)
 
       self.state = .loaded
       return .success(())
@@ -192,9 +183,9 @@ public class StreamingSpinPlayer {
       // Guard against clear() called during the await
       guard self.state == .loaded || self.state == .playing else { return }
 
-      avPlayer.setRate(
-        1.0, time: seekTime,
-        atHostTime: CMClockGetTime(CMClockGetHostTimeClock()))
+      // Use play() for immediate start — works even before readyToPlay.
+      // setRate(atHostTime:) requires preroll and is only for precisely-timed future starts.
+      avPlayer.play()
       self.state = .playing
       delegate?.streamingPlayer(self, startedPlaying: spin)
 
@@ -207,7 +198,8 @@ public class StreamingSpinPlayer {
   }
 
   /// Schedules playback to start at a specific date (for future spins).
-  func schedulePlay(at scheduledDate: Date) {
+  /// Prerolls the player before scheduling for host-time-synced playback.
+  func schedulePlay(at scheduledDate: Date) async {
     guard state == .loaded else {
       os_log(
         "Cannot schedulePlay - not loaded (state: %@)",
@@ -226,6 +218,17 @@ public class StreamingSpinPlayer {
     // Set initial volume
     avPlayer.volume = spin.startingVolume
     self.playbackStartOffsetMS = 0
+
+    // Disable auto-wait for setRate(atHostTime:) support, then preroll
+    avPlayer.disableAutoWait()
+    self.isPrerolled = await avPlayer.preroll(atRate: 1.0)
+    os_log(
+      "Preroll %@ for spin: %@",
+      log: StreamingSpinPlayer.logger, type: .info,
+      isPrerolled ? "succeeded" : "failed", spin.id)
+
+    // Guard against clear() called during preroll await
+    guard state == .loaded, self.avPlayer != nil else { return }
 
     if isPrerolled {
       schedulePlayWithHostTime(at: scheduledDate, avPlayer: avPlayer, spin: spin)

@@ -17,6 +17,9 @@ public protocol AVPlayerProviding: AnyObject {
   /// Throws if the item fails to load.
   func loadURL(_ url: URL) async throws
 
+  /// Disables automatic stall prevention. Required before using `setRate(atHostTime:)`.
+  func disableAutoWait()
+
   /// Tears down the current item.
   func clearItem()
 
@@ -86,12 +89,16 @@ public class AVPlayerWrapper: AVPlayerProviding {
 
   public func loadURL(_ url: URL) async throws {
     let item = AVPlayerItem(url: url)
+    item.preferredForwardBufferDuration = 2
     let newPlayer = AVPlayer(playerItem: item)
-    newPlayer.automaticallyWaitsToMinimizeStalling = false
     self.player = newPlayer
 
     setupBufferObservations(for: item)
     try await waitForReady(item: item)
+  }
+
+  public func disableAutoWait() {
+    player?.automaticallyWaitsToMinimizeStalling = false
   }
 
   private func setupBufferObservations(for item: AVPlayerItem) {

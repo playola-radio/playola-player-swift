@@ -66,6 +66,12 @@ final class MockAVPlayer: AVPlayerProviding {
     }
   }
 
+  var disableAutoWaitCallCount = 0
+
+  func disableAutoWait() {
+    disableAutoWaitCallCount += 1
+  }
+
   func clearItem() {
     callLog.append("clearItem")
     clearItemCallCount += 1
@@ -330,10 +336,10 @@ struct StreamingSpinPlayerTests {
   // MARK: - SchedulePlay
 
   @Test("SchedulePlay when not loaded is a no-op")
-  func testSchedulePlayNotLoaded() {
+  func testSchedulePlayNotLoaded() async {
     let ctx = createPlayer()
 
-    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
 
     #expect(ctx.mock.playCallCount == 0)
   }
@@ -346,7 +352,7 @@ struct StreamingSpinPlayerTests {
     let spin = Spin.mockWith(startingVolume: 0.6)
     _ = await ctx.player.load(spin)
 
-    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
 
     #expect(mock.volume == 0.6)
   }
@@ -501,13 +507,18 @@ struct StreamingSpinPlayerTests {
 
   // MARK: - Preroll
 
-  @Test("Preroll called after successful load")
-  func testPrerollCalledAfterLoad() async {
+  @Test("Preroll called during schedulePlay, not load")
+  func testPrerollCalledDuringSchedulePlay() async {
     let mock = MockAVPlayer()
     let ctx = createPlayer(mockPlayer: mock)
 
-    let spin = Spin.mockWith()
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
+
+    #expect(mock.prerollCallCount == 0)
+    #expect(ctx.player.isPrerolled == false)
+
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
 
     #expect(mock.prerollCallCount == 1)
     #expect(ctx.player.isPrerolled == true)
@@ -519,8 +530,10 @@ struct StreamingSpinPlayerTests {
     mock.prerollShouldSucceed = false
     let ctx = createPlayer(mockPlayer: mock)
 
-    let spin = Spin.mockWith()
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
+
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
 
     #expect(mock.prerollCallCount == 1)
     #expect(ctx.player.isPrerolled == false)
@@ -544,8 +557,10 @@ struct StreamingSpinPlayerTests {
     let mock = MockAVPlayer()
     let ctx = createPlayer(mockPlayer: mock)
 
-    let spin = Spin.mockWith()
+    let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
+
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
     #expect(ctx.player.isPrerolled == true)
 
     ctx.player.clear()
@@ -562,10 +577,10 @@ struct StreamingSpinPlayerTests {
 
     let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
+
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+
     #expect(ctx.player.isPrerolled == true)
-
-    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
-
     #expect(mock.setRateCallCount == 1)
     #expect(mock.lastSetRate == 1.0)
     #expect(mock.playCallCount == 0)
@@ -579,10 +594,10 @@ struct StreamingSpinPlayerTests {
 
     let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
+
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+
     #expect(ctx.player.isPrerolled == false)
-
-    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
-
     #expect(mock.setRateCallCount == 0)
     #expect(mock.playCallCount == 0)  // Timer hasn't fired yet
   }
@@ -595,7 +610,7 @@ struct StreamingSpinPlayerTests {
     let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
 
-    ctx.player.schedulePlay(at: Date().addingTimeInterval(-1))
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(-1))
 
     #expect(mock.playCallCount == 1)
     #expect(mock.setRateCallCount == 0)
@@ -660,19 +675,19 @@ struct StreamingSpinPlayerTests {
     let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
 
-    let prerollCountBefore = mock.prerollCallCount
-    let playCountBefore = mock.playCallCount
-
     // Schedule with host-time sync (prerolled)
-    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+
+    let prerollCountAfterSchedule = mock.prerollCallCount
+    let playCountAfterSchedule = mock.playCallCount
 
     // Simulate buffer drain + recovery while waiting for host-time start
     mock.onUnstall?()
     try? await Task.sleep(for: .milliseconds(50))
 
     // Should re-preroll, NOT call play()
-    #expect(mock.prerollCallCount == prerollCountBefore + 1)
-    #expect(mock.playCallCount == playCountBefore)
+    #expect(mock.prerollCallCount == prerollCountAfterSchedule + 1)
+    #expect(mock.playCallCount == playCountAfterSchedule)
     #expect(ctx.player.state == .loaded)
   }
 
@@ -686,16 +701,16 @@ struct StreamingSpinPlayerTests {
     let spin = Spin.mockWith(airtime: Date().addingTimeInterval(60))
     _ = await ctx.player.load(spin)
 
-    ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
+    await ctx.player.schedulePlay(at: Date().addingTimeInterval(10))
 
     // One for playback start (0.001s), plus boundary fades if any
     #expect(mock.addBoundaryObserverCallCount >= 1)
   }
 
-  // MARK: - Mid-Song Join with setRate
+  // MARK: - Mid-Song Join
 
-  @Test("PlayNow uses setRate instead of play")
-  func testPlayNowUsesSetRate() async {
+  @Test("PlayNow uses play() for immediate start")
+  func testPlayNowUsesPlay() async {
     let mock = MockAVPlayer()
     let ctx = createPlayer(mockPlayer: mock)
 
@@ -705,13 +720,12 @@ struct StreamingSpinPlayerTests {
     ctx.player.playNow(from: 5.0)
     try? await Task.sleep(for: .milliseconds(50))
 
-    #expect(mock.setRateCallCount == 1)
-    #expect(mock.lastSetRate == 1.0)
-    #expect(mock.playCallCount == 0)
+    #expect(mock.playCallCount == 1)
+    #expect(mock.setRateCallCount == 0)
   }
 
-  @Test("PlayNow setRate uses correct seek time")
-  func testPlayNowSetRateSeekTime() async {
+  @Test("PlayNow seeks to correct position")
+  func testPlayNowSeeksToCorrectPosition() async {
     let mock = MockAVPlayer()
     let ctx = createPlayer(mockPlayer: mock)
 
@@ -724,8 +738,8 @@ struct StreamingSpinPlayerTests {
     ctx.player.playNow(from: 12.5)
     try? await Task.sleep(for: .milliseconds(50))
 
-    #expect(mock.setRateCallCount == 1)
     let expectedTime = CMTime(seconds: 12.5, preferredTimescale: 600)
-    #expect(mock.lastSetRateTime == expectedTime)
+    #expect(mock.seekTarget == expectedTime)
+    #expect(mock.playCallCount == 1)
   }
 }

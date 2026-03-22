@@ -94,10 +94,13 @@ struct ContentView: View {
   }
 
   private var loadingProgress: Float? {
-    if case .download = playerMode,
-      case .loading(let progress) = downloadPlayer.state
-    {
-      return progress
+    switch playerMode {
+    case .streaming:
+      return nil
+    case .download:
+      if case .loading(let progress) = downloadPlayer.state {
+        return progress
+      }
     }
     return nil
   }

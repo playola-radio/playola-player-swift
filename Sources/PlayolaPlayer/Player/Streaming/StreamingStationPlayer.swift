@@ -197,7 +197,7 @@ final public class StreamingStationPlayer: ObservableObject {
         player.playNow(from: elapsedSeconds)
         self.state = .playing(spin)
       case .future:
-        player.schedulePlay(at: spin.airtime)
+        await player.schedulePlay(at: spin.airtime)
       case .tooLateToStart, .past:
         player.clear()
         spinPlayers.removeValue(forKey: spin.id)
