@@ -362,7 +362,12 @@ public class SpinPlayer {
       )
       // Record that we're starting mid-file so fades can be shifted appropriately
       self.playbackStartOffset = from
-      // Audio session must be configured before this call — see handleSuccessfulDownload
+      // Callers must await ensureAudioSessionConfigured() before calling playNow.
+      // The fire-and-forget fallback avoids a crash but may still race.
+      assert(
+        playolaMainMixer.audioSessionManager.isConfigured,
+        "Audio session must be configured before calling playNow — call ensureAudioSessionConfigured() first"
+      )
       playolaMainMixer.configureAudioSession()
       try engine.start()
 
@@ -516,7 +521,14 @@ public class SpinPlayer {
       await self.loadFile(with: localUrl)
 
       // Ensure audio session is configured before starting the engine
-      try? await self.playolaMainMixer.ensureAudioSessionConfigured()
+      do {
+        try await self.playolaMainMixer.ensureAudioSessionConfigured()
+      } catch {
+        // ensureAudioSessionConfigured already reported to Sentry; skip playback
+        self.clear()
+        continuation.resume(returning: .failure(error))
+        return
+      }
 
       // Determine what to do based on the spin's timing state
       switch spin.playbackTiming {
@@ -853,7 +865,11 @@ public class SpinPlayer {
       ISO8601DateFormatter().string(from: scheduledDate)
     )
 
-    // Audio session must be configured before this call — see handleSuccessfulDownload
+    // Callers must await ensureAudioSessionConfigured() before calling schedulePlay.
+    assert(
+      playolaMainMixer.audioSessionManager.isConfigured,
+      "Audio session must be configured before calling schedulePlay — call ensureAudioSessionConfigured() first"
+    )
     playolaMainMixer.configureAudioSession()
     try engine.start()
   }
