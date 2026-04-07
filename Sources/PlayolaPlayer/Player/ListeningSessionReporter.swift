@@ -54,7 +54,6 @@ public class ListeningSessionReporter {
   var currentSessionStationId: String?
   var disposeBag = Set<AnyCancellable>()
   weak var stationPlayer: PlayolaStationPlayer?
-  private let stationIdGetter: () -> String?
   var currentListeningSessionID: String?
   private let errorReporter = PlayolaErrorReporter.shared
   private let authProvider: PlayolaAuthenticationProvider?
@@ -74,29 +73,8 @@ public class ListeningSessionReporter {
     self.authProvider = authProvider
     self.urlSession = urlSession
     self.baseURL = baseURL
-    self.stationIdGetter = { [weak stationPlayer] in stationPlayer?.stationId }
 
-    subscribeToStationId(stationPlayer.$stationId.eraseToAnyPublisher())
-  }
-
-  init(
-    stationIdPublisher: AnyPublisher<String?, Never>,
-    stationIdGetter: @escaping () -> String?,
-    authProvider: PlayolaAuthenticationProvider? = nil,
-    urlSession: URLSessionProtocol = URLSession.shared,
-    baseURL: URL = URL(string: "https://admin-api.playola.fm")!
-  ) {
-    self.stationPlayer = nil
-    self.authProvider = authProvider
-    self.urlSession = urlSession
-    self.baseURL = baseURL
-    self.stationIdGetter = stationIdGetter
-
-    subscribeToStationId(stationIdPublisher)
-  }
-
-  private func subscribeToStationId(_ publisher: AnyPublisher<String?, Never>) {
-    publisher.sink { [weak self] stationId in
+    stationPlayer.$stationId.sink { [weak self] stationId in
       guard let self else { return }
       if let stationId {
         Task {
@@ -119,6 +97,7 @@ public class ListeningSessionReporter {
             try await self.endListeningSession()
             self.stopPeriodicNotifications()
           } catch {
+            // Just log the error but don't fail critically since this is cleanup
             Task {
               await self.errorReporter.reportError(
                 error,
@@ -216,7 +195,7 @@ public class ListeningSessionReporter {
       withTimeInterval: 10.0, repeats: true,
       block: { [weak self] _ in
         guard let self else { return }
-        guard let stationId = self.stationIdGetter() else {
+        guard let stationId = self.stationPlayer?.stationId else {
           let error = ListeningSessionError.invalidResponse(
             "Missing stationId in periodic notification")
           Task {
@@ -324,6 +303,7 @@ public class ListeningSessionReporter {
     return request
   }
 
+  // TODO: Find a better way of doing this.  Protocols + ObservableObject has issues.
   #if DEBUG
     internal init(
       authProvider: PlayolaAuthenticationProvider? = nil,
@@ -331,7 +311,6 @@ public class ListeningSessionReporter {
       baseURL: URL = URL(string: "https://admin-api.playola.fm")!
     ) {
       self.stationPlayer = nil
-      self.stationIdGetter = { nil }
       self.authProvider = authProvider
       self.urlSession = urlSession
       self.baseURL = baseURL
