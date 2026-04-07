@@ -362,7 +362,7 @@ public class SpinPlayer {
       )
       // Record that we're starting mid-file so fades can be shifted appropriately
       self.playbackStartOffset = from
-      // Make sure audio session is configured before playback
+      // Audio session must be configured before this call — see handleSuccessfulDownload
       playolaMainMixer.configureAudioSession()
       try engine.start()
 
@@ -514,6 +514,9 @@ public class SpinPlayer {
   ) {
     Task { @MainActor in
       await self.loadFile(with: localUrl)
+
+      // Ensure audio session is configured before starting the engine
+      try? await self.playolaMainMixer.ensureAudioSessionConfigured()
 
       // Determine what to do based on the spin's timing state
       switch spin.playbackTiming {
@@ -850,6 +853,7 @@ public class SpinPlayer {
       ISO8601DateFormatter().string(from: scheduledDate)
     )
 
+    // Audio session must be configured before this call — see handleSuccessfulDownload
     playolaMainMixer.configureAudioSession()
     try engine.start()
   }

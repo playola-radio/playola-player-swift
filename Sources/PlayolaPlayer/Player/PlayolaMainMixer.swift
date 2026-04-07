@@ -70,7 +70,7 @@ open class PlayolaMainMixer: NSObject {
     self.mixerNode.removeTap(onBus: 0)
   }
 
-  /// Configures the shared audio session for playback
+  /// Configures the shared audio session for playback (fire-and-forget)
   public func configureAudioSession() {
     guard !audioSessionManager.isConfigured else { return }
 
@@ -88,6 +88,28 @@ open class PlayolaMainMixer: NSObject {
             "Failed to configure audio session | Device: \(deviceName) | OS: \(systemVersion)",
           level: .critical)
       }
+    }
+  }
+
+  /// Configures the shared audio session for playback and waits for completion.
+  /// Use this before engine.start() to avoid stalling the audio engine.
+  @MainActor
+  public func ensureAudioSessionConfigured() async throws {
+    guard !audioSessionManager.isConfigured else { return }
+
+    do {
+      try await audioSessionManager.configureForPlayback()
+      try await audioSessionManager.activate()
+      os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
+    } catch {
+      let deviceName = DeviceInfoProvider.deviceName
+      let systemVersion = DeviceInfoProvider.systemVersion
+      await errorReporter.reportError(
+        error,
+        context:
+          "Failed to configure audio session | Device: \(deviceName) | OS: \(systemVersion)",
+        level: .critical)
+      throw error
     }
   }
 
@@ -118,32 +140,12 @@ open class PlayolaMainMixer: NSObject {
 extension PlayolaMainMixer {
   @MainActor
   public func start() throws {
-    let maxRetries = 3
-    var retryCount = 0
-    var lastError: Error?
-
-    while retryCount < maxRetries {
-      do {
-        try engine.start()
-        return
-      } catch {
-        lastError = error
-        retryCount += 1
-
-        if retryCount < maxRetries {
-          os_log(
-            "Audio engine start failed, retry %d of %d: %@",
-            log: PlayolaMainMixer.logger, type: .error,
-            retryCount, maxRetries, error.localizedDescription)
-          Thread.sleep(forTimeInterval: 0.1)
-        }
-      }
-    }
-
-    if let error = lastError {
+    do {
+      try engine.start()
+    } catch {
       Task {
         await errorReporter.reportError(
-          error, context: "Failed to start audio engine after \(maxRetries) attempts",
+          error, context: "Failed to start audio engine",
           level: .critical)
       }
       throw error
