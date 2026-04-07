@@ -59,7 +59,7 @@ public enum StationPlayerError: Error, LocalizedError {
 /// ```
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
-  var baseUrl = URL(string: "https://admin-api.playola.fm")!
+  var baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
   @Published public var stationId: String?
   private var interruptedStationId: String?
   var currentSchedule: Schedule?
