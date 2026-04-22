@@ -5,7 +5,7 @@
 //  Created by Brian D Keane on 1/6/25.
 //
 
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 import PlayolaCore
 import os.log
@@ -138,22 +138,32 @@ open class PlayolaMainMixer: NSObject {
 }
 
 extension PlayolaMainMixer {
-  @MainActor
-  public func start() throws {
+  /// Starts the audio engine off the main thread to avoid blocking on
+  /// AUIOClient_StartIO during cold hardware initialization (e.g. resuming
+  /// from a phone-call interruption). AVAudioEngine.start() is thread-safe.
+  public func start() async throws {
+    let engine = self.engine
     do {
-      try engine.start()
-    } catch {
-      Task {
-        await errorReporter.reportError(
-          error, context: "Failed to start audio engine",
-          level: .critical)
+      try await withCheckedThrowingContinuation {
+        (continuation: CheckedContinuation<Void, Error>) in
+        DispatchQueue.global(qos: .userInitiated).async {
+          do {
+            try engine.start()
+            continuation.resume()
+          } catch {
+            continuation.resume(throwing: error)
+          }
+        }
       }
+    } catch {
+      await errorReporter.reportError(
+        error, context: "Failed to start audio engine",
+        level: .critical)
       throw error
     }
   }
 
-  @MainActor
-  public func restartEngine() throws {
+  public func restartEngine() async throws {
     os_log("Restarting audio engine", log: PlayolaMainMixer.logger, type: .info)
 
     if engine.isRunning {
@@ -161,7 +171,7 @@ extension PlayolaMainMixer {
     }
 
     engine.prepare()
-    try start()
+    try await start()
   }
 
   public var isEngineRunning: Bool {
