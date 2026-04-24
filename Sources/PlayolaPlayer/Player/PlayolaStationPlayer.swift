@@ -739,7 +739,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       Task { @MainActor in
         do {
           try await PlayolaMainMixer.shared.audioSessionManager.activate()
-          try PlayolaMainMixer.shared.restartEngine()
+          try await PlayolaMainMixer.shared.restartEngine()
           try await self.play(stationId: stationToResume)
         } catch {
           os_log(
