@@ -140,7 +140,9 @@ open class PlayolaMainMixer: NSObject {
 extension PlayolaMainMixer {
   /// Starts the audio engine off the main thread to avoid blocking on
   /// AUIOClient_StartIO during cold hardware initialization (e.g. resuming
-  /// from a phone-call interruption). AVAudioEngine.start() is thread-safe.
+  /// from a phone-call interruption). AVAudioEngine.start() is thread-safe;
+  /// only the start call itself is dispatched off main.
+  @MainActor
   public func start() async throws {
     let engine = self.engine
     do {
@@ -163,6 +165,7 @@ extension PlayolaMainMixer {
     }
   }
 
+  @MainActor
   public func restartEngine() async throws {
     os_log("Restarting audio engine", log: PlayolaMainMixer.logger, type: .info)
 
