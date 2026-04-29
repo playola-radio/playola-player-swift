@@ -21,7 +21,6 @@ import os.log
 /// with support for:
 /// - Precise scheduling at specific timestamps
 /// - Volume fading and crossfading
-/// - Audio normalization
 /// - Notifying delegates of playback events
 @MainActor
 public class SpinPlayer {
@@ -97,9 +96,6 @@ public class SpinPlayer {
   private let engine: AVAudioEngine! = PlayolaMainMixer.shared.engine
   /// The node responsible for playing the audio file
   private let playerNode = AVAudioPlayerNode()
-  /// Per-file loudness normalization stage. We use an EQ solely for its `globalGain` which
-  /// supports boosts up to +24 dB (unlike AVAudioMixerNode which tops out at 1.0 and cannot boost).
-  private let normalizationEQ = AVAudioUnitEQ(numberOfBands: 0)  // use only globalGain
   /// Insert a per-player track mixer so we can automate volume on the audio thread
   private var trackMixer = AVAudioMixerNode()
 
@@ -114,7 +110,6 @@ public class SpinPlayer {
   private var didCaptureStart = false
 
   // MARK: - File Management
-  private var normalizationCalculator: AudioNormalizationCalculator?
   /// The currently playing audio file
   private var currentFile: AVAudioFile? {
     didSet {
@@ -152,17 +147,11 @@ public class SpinPlayer {
 
     /// Make connections
     engine.attach(playerNode)
-    engine.attach(normalizationEQ)
     engine.attach(trackMixer)
 
-    // Graph: playerNode -> normalizationEQ (globalGain) -> per-track mixer -> main mixer
+    // Graph: playerNode -> per-track mixer -> main mixer
     engine.connect(
       playerNode,
-      to: normalizationEQ,
-      format: TapProperties.default.format
-    )
-    engine.connect(
-      normalizationEQ,
       to: trackMixer,
       format: TapProperties.default.format
     )
@@ -173,7 +162,6 @@ public class SpinPlayer {
     )
 
     // Baselines
-    normalizationEQ.globalGain = 0.0  // dB; set per-file on load when normalization is applied
     trackMixer.outputVolume = 1.0
     // Always keep the player node at unity gain
     playerNode.volume = 1.0
@@ -231,9 +219,9 @@ public class SpinPlayer {
     trackMixer = newMixer
     engine.attach(newMixer)
 
-    // Reconnect normalizationEQ -> trackMixer -> main mixer
+    // Reconnect playerNode -> trackMixer -> main mixer
     engine.connect(
-      normalizationEQ,
+      playerNode,
       to: newMixer,
       format: TapProperties.default.format
     )
@@ -1028,16 +1016,6 @@ public class SpinPlayer {
   private func createAudioFileFromValidatedURL(_ url: URL, fileSize: Int) async throws {
     do {
       currentFile = try AVAudioFile(forReading: url)
-      normalizationCalculator = await AudioNormalizationCalculator.create(currentFile!)
-      // Use calculator's dB helper; clamp to a practical range for safety
-      let rawDb = Double(self.normalizationCalculator?.requiredDbOffsetDb ?? 0)
-      let gainDb = min(24.0, max(-24.0, rawDb))
-      self.normalizationEQ.globalGain = Float(gainDb)
-      os_log(
-        "🎚️ Set normalizationEQ.globalGain = %.2f dB for %@",
-        log: SpinPlayer.logger, type: .info,
-        gainDb, url.lastPathComponent
-      )
       logSuccessfulLoad(url)
     } catch let audioError as NSError {
       await handleAudioFileCreationError(audioError, url: url, fileSize: fileSize)
