@@ -5,7 +5,6 @@
 - Build example app for simulator: `cd PlayolaPlayerExample && xcodebuild -project PlayolaPlayerExample.xcodeproj -scheme PlayolaPlayerExample -destination 'platform=iOS Simulator,id=F8C70EF6-2658-40DE-ABB2-13B4EA4CFBD3' build -quiet`
 - Run all tests: `swift test`
 - Run specific test: `swift test --filter PlayolaPlayerTests/testName`
-- Run specific test suite: `swift test --filter AudioNormalizationCalculatorTests`
 - Generate Xcode project: `swift package generate-xcodeproj`
 
 ## Code Style Guidelines
