@@ -18,6 +18,7 @@ import Foundation
 // a supported opt-out for the post-quantum hybrid key share so we can keep TLS 1.3.
 internal func makeTLS12Configuration() -> URLSessionConfiguration {
   let configuration = URLSessionConfiguration.default
+  configuration.tlsMinimumSupportedProtocolVersion = .TLSv12
   configuration.tlsMaximumSupportedProtocolVersion = .TLSv12
   return configuration
 }
