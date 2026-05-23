@@ -66,7 +66,7 @@ public class ListeningSessionReporter {
 
   init(
     stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil,
-    urlSession: URLSessionProtocol = URLSession.shared,
+    urlSession: URLSessionProtocol = tls12Session,
     baseURL: URL = URL(string: "https://admin-api.playola.fm")!
   ) {
     self.stationPlayer = stationPlayer
@@ -307,7 +307,7 @@ public class ListeningSessionReporter {
   #if DEBUG
     internal init(
       authProvider: PlayolaAuthenticationProvider? = nil,
-      urlSession: URLSessionProtocol = URLSession.shared,
+      urlSession: URLSessionProtocol = tls12Session,
       baseURL: URL = URL(string: "https://admin-api.playola.fm")!
     ) {
       self.stationPlayer = nil
