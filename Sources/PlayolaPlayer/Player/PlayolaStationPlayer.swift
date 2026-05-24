@@ -59,7 +59,7 @@ public enum StationPlayerError: Error, LocalizedError {
 /// ```
 @MainActor
 final public class PlayolaStationPlayer: ObservableObject {
-  var baseUrl = URL(string: "https://admin-api.playola.fm/v1")!
+  var baseUrl = URL(string: "https://admin-api.playola.fm")!
   @Published public var stationId: String?
   private var interruptedStationId: String?
   var currentSchedule: Schedule?
@@ -402,7 +402,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     let url = createScheduleURL(for: stationId)
 
     do {
-      let (data, response) = try await URLSession.shared.data(from: url)
+      let (data, response) = try await tls12Session.data(from: url)
       let httpResponse = try validateHTTPResponse(response, url: url)
       try await validateStatusCode(httpResponse, data: data, stationId: stationId)
 
@@ -739,7 +739,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       Task { @MainActor in
         do {
           try await PlayolaMainMixer.shared.audioSessionManager.activate()
-          try PlayolaMainMixer.shared.restartEngine()
+          try await PlayolaMainMixer.shared.restartEngine()
           try await self.play(stationId: stationToResume)
         } catch {
           os_log(

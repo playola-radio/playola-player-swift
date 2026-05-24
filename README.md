@@ -11,7 +11,6 @@ PlayolaPlayer is a Swift Package Manager library that handles audio streaming, s
 - Stream audio from Playola radio stations
 - Schedule audio files to play at specific times
 - Cache files locally with automatic cleanup
-- Normalize audio volume levels
 - Smooth transitions and crossfades between audio files
 - Error reporting and logging
 - Swift Concurrency (async/await)
@@ -592,7 +591,6 @@ File management ensures smooth playback:
 Built on AVAudioEngine for audio processing:
 - Real-time mixing of multiple audio sources
 - Volume control and fading between tracks
-- Audio normalization for consistent volume levels
 - Session management for handling interruptions and route changes
 
 ### How Separate Files Become Continuous Radio
@@ -1137,7 +1135,7 @@ swift package generate-xcodeproj
 swift test
 
 # Run specific test suite
-swift test --filter AudioNormalizationCalculatorTests
+swift test --filter PlayolaStationPlayerTests
 
 # Run specific test
 swift test --filter PlayolaPlayerTests/testSpecificFunction
