@@ -357,7 +357,9 @@ public class SpinPlayer {
         "Audio session must be configured before calling playNow — call ensureAudioSessionConfigured() first"
       )
       playolaMainMixer.configureAudioSession()
-      try engine.start()
+      if !engine.isRunning {
+        try engine.start()
+      }
 
       guard let audioFile = validateAndGetCurrentFile() else { return }
       scheduleAndPlaySegment(audioFile: audioFile, from: from)
@@ -508,11 +510,14 @@ public class SpinPlayer {
     Task { @MainActor in
       await self.loadFile(with: localUrl)
 
-      // Ensure audio session is configured before starting the engine
+      // Ensure audio session is configured and engine is started before playback.
+      // Starting the engine here (off-main via playolaMainMixer.start) avoids the
+      // AUIOClient_StartIO main-thread hang on cold first-play.
       do {
         try await self.playolaMainMixer.ensureAudioSessionConfigured()
+        try await self.playolaMainMixer.start()
       } catch {
-        // ensureAudioSessionConfigured already reported to Sentry; skip playback
+        // ensureAudioSessionConfigured / start already reported to Sentry; skip playback
         self.clear()
         continuation.resume(returning: .failure(error))
         return
@@ -859,7 +864,9 @@ public class SpinPlayer {
       "Audio session must be configured before calling schedulePlay — call ensureAudioSessionConfigured() first"
     )
     playolaMainMixer.configureAudioSession()
-    try engine.start()
+    if !engine.isRunning {
+      try engine.start()
+    }
   }
 
   private func validateAudioFile() throws {
