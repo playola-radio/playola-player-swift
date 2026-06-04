@@ -402,7 +402,8 @@ final public class PlayolaStationPlayer: ObservableObject {
     let url = createScheduleURL(for: stationId)
 
     do {
-      let (data, response) = try await tls12Session.data(from: url)
+      let loggingSession = PlayolaNetworkLoggingSession(wrapping: tls12Session)
+      let (data, response) = try await loggingSession.data(for: URLRequest(url: url))
       let httpResponse = try validateHTTPResponse(response, url: url)
       try await validateStatusCode(httpResponse, data: data, stationId: stationId)
 
