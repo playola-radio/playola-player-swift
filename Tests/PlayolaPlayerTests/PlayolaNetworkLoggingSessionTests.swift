@@ -30,7 +30,7 @@ private final class QueueDateProvider: Sendable, DateProviderProtocol {
 
 /// A session that always throws, to verify error pass-through.
 private struct ThrowingURLSession: URLSessionProtocol {
-  let error: Error
+  let error: any Error & Sendable
   func data(for request: URLRequest) async throws -> (Data, URLResponse) { throw error }
 }
 

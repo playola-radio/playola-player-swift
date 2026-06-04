@@ -8,7 +8,7 @@ import Foundation
 
 @testable import PlayolaPlayer
 
-class MockURLSession: URLSessionProtocol {
+final class MockURLSession: URLSessionProtocol, @unchecked Sendable {
   var responses: [(Data, URLResponse)] = []
   var requestCallCount = 0
   var lastRequest: URLRequest?

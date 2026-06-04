@@ -14,12 +14,12 @@ import Foundation
 /// session returns and rethrows any error unchanged — it never swallows or
 /// alters the result. When ``PlayolaNetworkLogger/handler`` is `nil` no event
 /// is built and the wrapper adds negligible overhead.
-public struct PlayolaNetworkLoggingSession: URLSessionProtocol {
-  private let base: URLSessionProtocol
+public struct PlayolaNetworkLoggingSession: URLSessionProtocol, Sendable {
+  private let base: any URLSessionProtocol & Sendable
   private let dateProvider: DateProviderProtocol
 
   public init(
-    wrapping base: URLSessionProtocol,
+    wrapping base: any URLSessionProtocol & Sendable,
     dateProvider: DateProviderProtocol = DateProvider.shared
   ) {
     self.base = base
