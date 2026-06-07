@@ -424,6 +424,9 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// transient failures (server 5xx and connectivity errors). Permanent
   /// failures (404, decode errors, empty schedules) fail fast. The error
   /// thrown to callers is the same public error a single fetch would throw.
+  ///
+  /// Intentionally `internal` (not `private`) for test access, matching
+  /// `scheduleRetryBaseDelay`; not part of the public API.
   func getUpdatedScheduleWithRetry(stationId: String) async throws -> Schedule {
     let maxRetries = 3
     var attempt = 0
@@ -463,9 +466,14 @@ final public class PlayolaStationPlayer: ObservableObject {
 
       return try await decodeSchedule(from: data, stationId: stationId)
     } catch let classified as ClassifiedScheduleError {
-      await reportScheduleFetchError(classified.publicError, stationId: stationId)
+      // HTTP-status failures are already reported once by validateStatusCode.
       throw classified
+    } catch let stationError as StationPlayerError {
+      // validateHTTPResponse and decodeSchedule already reported these once.
+      throw classifyScheduleFetchError(stationError)
     } catch {
+      // Raw transport error (e.g. URLError) — not reported by any inner step,
+      // so report it here exactly once.
       await reportScheduleFetchError(error, stationId: stationId)
       throw classifyScheduleFetchError(error)
     }
