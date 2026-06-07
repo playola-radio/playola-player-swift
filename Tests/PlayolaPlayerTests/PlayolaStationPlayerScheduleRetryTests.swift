@@ -110,6 +110,18 @@ struct PlayolaStationPlayerScheduleRetryTests {
 
     #expect(lingering.isCancelled)
   }
+
+  @Test("A cancelled download is treated as cancellation, not a terminal error")
+  func testDownloadCancelledIsNotTerminalError() async throws {
+    let player = makePlayer(session: MockURLSession())
+
+    // Thrown by scheduleSpin when stop() cancels an in-flight download during a
+    // station switch — must not flip the new play()'s .loading state to .error.
+    #expect(player.isCancellation(FileDownloadError.downloadCancelled))
+    #expect(player.isCancellation(CancellationError()))
+    #expect(player.isCancellation(URLError(.cancelled)))
+    #expect(!player.isCancellation(StationPlayerError.networkError("HTTP error: 500")))
+  }
 }
 
 /// Records the sequence of state transitions reported via the delegate.

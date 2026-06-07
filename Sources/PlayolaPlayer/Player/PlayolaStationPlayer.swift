@@ -684,9 +684,17 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
-  private func isCancellation(_ error: Error) -> Bool {
+  // Internal for testability. Kept consistent with `shouldSkipRetry`: a
+  // cancelled in-flight download (thrown by scheduleSpin when stop() runs) is a
+  // cancellation, not a terminal error, and must not flip state to .error.
+  func isCancellation(_ error: Error) -> Bool {
     if error is CancellationError { return true }
     if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+    if let fileDownloadError = error as? FileDownloadError,
+      case .downloadCancelled = fileDownloadError
+    {
+      return true
+    }
     return false
   }
 
