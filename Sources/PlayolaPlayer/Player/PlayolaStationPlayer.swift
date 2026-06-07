@@ -12,7 +12,7 @@ import Foundation
 import os.log
 
 /// Errors specific to the station player
-public enum StationPlayerError: Error, LocalizedError {
+public enum StationPlayerError: Error, LocalizedError, Sendable {
   case networkError(String)
   case scheduleError(String)
   case playbackError(String)
@@ -67,6 +67,11 @@ final public class PlayolaStationPlayer: ObservableObject {
   var listeningSessionReporter: ListeningSessionReporter?
   private let errorReporter = PlayolaErrorReporter.shared
   private var authProvider: PlayolaAuthenticationProvider?
+  private let urlSession: URLSessionProtocol
+
+  /// Base delay (seconds) for the initial schedule-fetch exponential backoff.
+  /// Internal so tests can disable the wait; not part of the public API.
+  var scheduleRetryBaseDelay: TimeInterval = 0.5
 
   /// Time offset for playing station from a different point in time
   private var scheduleOffset: TimeInterval?
@@ -118,6 +123,10 @@ final public class PlayolaStationPlayer: ObservableObject {
     case loading(Float)
     case playing(Spin)
     case idle
+    /// Emitted when a playback attempt fails terminally (e.g. the schedule
+    /// fetch exhausted its retries). Lets consumers render a recoverable
+    /// error instead of being stuck in a prior state.
+    case error(StationPlayerError)
   }
 
   @Published public var state: PlayolaStationPlayer.State = .idle {
@@ -136,8 +145,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   @MainActor
-  internal init(fileDownloadManager: FileDownloadManaging? = nil) {
+  internal init(
+    fileDownloadManager: FileDownloadManaging? = nil,
+    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session)
+  ) {
     self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
+    self.urlSession = urlSession
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
@@ -398,20 +411,75 @@ final public class PlayolaStationPlayer: ObservableObject {
       scheduledSpinsCount)
   }
 
+  /// Internal classification so the retry layer can tell transient failures
+  /// (5xx, connectivity) apart from permanent ones (4xx, decode errors)
+  /// without widening the public error surface. `publicError` is what callers
+  /// ultimately receive — the public error API is unchanged.
+  private struct ClassifiedScheduleError: Error {
+    let isTransient: Bool
+    let publicError: Error
+  }
+
+  /// Fetches the schedule with bounded exponential backoff, retrying only
+  /// transient failures (server 5xx and connectivity errors). Permanent
+  /// failures (404, decode errors, empty schedules) fail fast. The error
+  /// thrown to callers is the same public error a single fetch would throw.
+  func getUpdatedScheduleWithRetry(stationId: String) async throws -> Schedule {
+    let maxRetries = 3
+    var attempt = 0
+    while true {
+      do {
+        return try await fetchScheduleOnce(stationId: stationId)
+      } catch let classified as ClassifiedScheduleError {
+        guard classified.isTransient, attempt < maxRetries else {
+          throw classified.publicError
+        }
+        let delay = scheduleRetryBaseDelay * pow(2.0, Double(attempt))
+        if delay > 0 {
+          try await Task.sleep(for: .seconds(delay))
+        }
+        attempt += 1
+      }
+    }
+  }
+
+  /// Single, non-retrying schedule fetch. Used directly by the polling loop;
+  /// re-throws the public error so existing callers see an unchanged surface.
   private func getUpdatedSchedule(stationId: String) async throws -> Schedule {
+    do {
+      return try await fetchScheduleOnce(stationId: stationId)
+    } catch let classified as ClassifiedScheduleError {
+      throw classified.publicError
+    }
+  }
+
+  private func fetchScheduleOnce(stationId: String) async throws -> Schedule {
     let url = createScheduleURL(for: stationId)
 
     do {
-      let loggingSession = PlayolaNetworkLoggingSession(wrapping: tls12Session)
-      let (data, response) = try await loggingSession.data(for: URLRequest(url: url))
+      let (data, response) = try await urlSession.data(for: URLRequest(url: url))
       let httpResponse = try validateHTTPResponse(response, url: url)
       try await validateStatusCode(httpResponse, data: data, stationId: stationId)
 
       return try await decodeSchedule(from: data, stationId: stationId)
+    } catch let classified as ClassifiedScheduleError {
+      await reportScheduleFetchError(classified.publicError, stationId: stationId)
+      throw classified
     } catch {
       await reportScheduleFetchError(error, stationId: stationId)
-      throw error
+      throw classifyScheduleFetchError(error)
     }
+  }
+
+  private func classifyScheduleFetchError(_ error: Error) -> ClassifiedScheduleError {
+    if error is CancellationError {
+      return ClassifiedScheduleError(isTransient: false, publicError: error)
+    }
+    if let urlError = error as? URLError {
+      return ClassifiedScheduleError(
+        isTransient: urlError.code != .cancelled, publicError: error)
+    }
+    return ClassifiedScheduleError(isTransient: false, publicError: error)
   }
 
   private func createScheduleURL(for stationId: String) -> URL {
@@ -446,7 +514,8 @@ final public class PlayolaStationPlayer: ObservableObject {
       await reportHTTPError(
         error, statusCode: httpResponse.statusCode, stationId: stationId, responseText: responseText
       )
-      throw error
+      throw ClassifiedScheduleError(
+        isTransient: (500...599).contains(httpResponse.statusCode), publicError: error)
     }
   }
 
@@ -552,34 +621,58 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     self.stationId = stationId
 
-    // Get the schedule
-    self.currentSchedule = try await getUpdatedSchedule(stationId: stationId)
+    // Emit a terminal-trackable state from the start so consumers observing
+    // $state always see the attempt begin and (below) its success or failure.
+    self.state = .loading(0)
 
-    guard let spinToPlay = currentSchedule?.current(offsetTimeInterval: scheduleOffset).first else {
-      let error = StationPlayerError.scheduleError("No available spins to play")
-      Task {
-        await errorReporter.reportError(
-          error,
-          context:
-            "Schedule for station \(stationId) contains no current spins | "
-            + "Total spins: \(currentSchedule?.spins.count ?? 0)",
-          level: .error)
+    do {
+      // Get the schedule (with bounded backoff for transient outages)
+      self.currentSchedule = try await getUpdatedScheduleWithRetry(stationId: stationId)
+
+      guard
+        let spinToPlay = currentSchedule?.current(offsetTimeInterval: scheduleOffset).first
+      else {
+        let error = StationPlayerError.scheduleError("No available spins to play")
+        Task {
+          await errorReporter.reportError(
+            error,
+            context:
+              "Schedule for station \(stationId) contains no current spins | "
+              + "Total spins: \(currentSchedule?.spins.count ?? 0)",
+            level: .error)
+        }
+        throw error
+      }
+
+      // Log success with context
+      os_log(
+        "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info,
+        stationId)
+
+      // Schedule the first spin with progress shown
+      try await scheduleSpin(spin: spinToPlay, showProgress: true)
+
+      // Schedule upcoming spins
+      schedulingTask?.cancel()
+      schedulingTask = Task {
+        await scheduleUpcomingSpins()
+      }
+    } catch {
+      // Emit a terminal error state so consumers can render a recoverable
+      // error instead of being stuck in .loading. Cancellation is not an error.
+      if !isCancellation(error) {
+        let stationError =
+          (error as? StationPlayerError) ?? .scheduleError(error.localizedDescription)
+        self.state = .error(stationError)
       }
       throw error
     }
+  }
 
-    // Log success with context
-    os_log(
-      "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info, stationId)
-
-    // Schedule the first spin with progress shown
-    try await scheduleSpin(spin: spinToPlay, showProgress: true)
-
-    // Schedule upcoming spins
-    schedulingTask?.cancel()
-    schedulingTask = Task {
-      await scheduleUpcomingSpins()
-    }
+  private func isCancellation(_ error: Error) -> Bool {
+    if error is CancellationError { return true }
+    if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+    return false
   }
 
   /// Stops the current playback and releases associated resources.

@@ -129,6 +129,18 @@ struct ContentView: View {
                   .font(.caption)
                   .foregroundColor(.white.opacity(0.6))
               }
+            } else if case .error(let error) = player.state {
+              VStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                  .foregroundColor(.yellow)
+                Text(error.errorDescription ?? "Couldn't start the station")
+                  .font(.subheadline)
+                  .multilineTextAlignment(.center)
+                  .foregroundColor(.white.opacity(0.8))
+                Text("Tap play to try again")
+                  .font(.caption)
+                  .foregroundColor(.white.opacity(0.6))
+              }
             } else {
               Text("Ready to Play")
                 .font(.title3)
@@ -237,12 +249,13 @@ struct ContentView: View {
       case .playing:
         // Stop playing
         await player.stop()
-      case .idle:
-        // Start playing
+      case .idle, .error:
+        // Start (or retry after a failed start)
         do {
           try await player.play(stationId: selectedStationId)
         } catch {
-          // Handle errors gracefully (including cancellation during loading)
+          // Handle errors gracefully (including cancellation during loading).
+          // The terminal .error state is surfaced via player.state above.
           print("Failed to start playback: \(error)")
         }
       }
@@ -493,6 +506,8 @@ func buttonColor(for state: PlayolaStationPlayer.State) -> Color {
     return Color.red
   case .idle:
     return Color.green
+  case .error:
+    return Color.green
   }
 }
 
@@ -504,6 +519,8 @@ func buttonIcon(for state: PlayolaStationPlayer.State) -> String {
     return "stop.fill"
   case .idle:
     return "play.fill"
+  case .error:
+    return "arrow.clockwise"
   }
 }
 

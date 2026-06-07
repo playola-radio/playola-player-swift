@@ -4,6 +4,34 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Versions correspond to git tags,
 which Swift Package Manager consumers pin to.
 
+## 0.19.0
+
+### Added
+
+- **Bounded retry/backoff on the initial schedule fetch.** `play(stationId:)`
+  now retries a failed initial `GET /v1/stations/{id}/schedule` up to 3 times
+  with exponential backoff (0.5s / 1s / 2s) before giving up, matching the
+  recovery behavior the player already used for spin loading and the ongoing
+  schedule poll. Only transient failures are retried — server `5xx` responses
+  and connectivity `URLError`s. Permanent failures (`404`, decode errors, empty
+  schedules) still fail fast. This means a transient backend outage no longer
+  instantly fails a station start with no automatic recovery.
+
+### Changed
+
+- **`PlayolaStationPlayer.State` gained a terminal `.error(StationPlayerError)`
+  case.** A failed `play(...)` now emits `.loading(0)` when the attempt begins
+  and `.error(_)` when it fails terminally (instead of throwing without ever
+  changing `state`, which could leave consumers stuck on a loading spinner with
+  no signal). `play(...)` still `throws` as before — the new state is emitted
+  *in addition to* the thrown error. Cancellation does not produce an `.error`
+  state.
+
+  **Source-breaking for consumers** that `switch` exhaustively over `State`:
+  add a `case .error` (or `default`) arm. A typical handler treats `.error` as
+  a recoverable, retry-able state (show the message, let the user tap play
+  again). `StationPlayerError` is now `Sendable`.
+
 ## 0.18.0
 
 ### Added
