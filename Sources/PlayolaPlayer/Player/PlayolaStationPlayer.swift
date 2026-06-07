@@ -78,7 +78,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   private var activeDownloadIds: [String: UUID] = [:]
 
-  private var schedulingTask: Task<Void, Never>?
+  // Internal (not private) so tests can observe scheduling-task lifecycle.
+  var schedulingTask: Task<Void, Never>?
   private var playTask: Task<Void, Error>?
 
   // Audio interruption state
@@ -666,6 +667,12 @@ final public class PlayolaStationPlayer: ObservableObject {
         await scheduleUpcomingSpins()
       }
     } catch {
+      // Cancel any scheduling loop left running by a prior successful play().
+      // Otherwise it keeps polling and a completing spin would flip the state
+      // we set below back to .playing, masking the failure.
+      schedulingTask?.cancel()
+      schedulingTask = nil
+
       // Emit a terminal error state so consumers can render a recoverable
       // error instead of being stuck in .loading. Cancellation is not an error.
       if !isCancellation(error) {

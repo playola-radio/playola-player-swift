@@ -87,6 +87,29 @@ struct PlayolaStationPlayerScheduleRetryTests {
       Issue.record("Expected player.state to be .error, got \(player.state)")
     }
   }
+
+  @Test("A lingering schedulingTask is cancelled when play() fails terminally")
+  func testFailedPlayCancelsLingeringSchedulingTask() async throws {
+    let session = MockURLSession()
+    for _ in 0..<10 { session.addResponse(statusCode: 404) }
+    let player = makePlayer(session: session)
+
+    // Simulate a poll loop left running by a prior successful session. If it
+    // survives a failed play(), it can re-schedule a spin and flip .error
+    // back to .playing.
+    let lingering = Task<Void, Never> {
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: 50_000_000)
+      }
+    }
+    player.schedulingTask = lingering
+
+    await #expect(throws: (any Error).self) {
+      try await player.play(stationId: "station-1")
+    }
+
+    #expect(lingering.isCancelled)
+  }
 }
 
 /// Records the sequence of state transitions reported via the delegate.
