@@ -5,11 +5,16 @@
 //  Created by Brian D Keane on 1/6/25.
 //
 // swiftlint:disable file_length
-import AVFoundation
+// `@preconcurrency` lets us hand AVAudioPlayerNode / AVAudioFile (not Sendable)
+// to the serial `audioControlQueue` closures. Threading contract: only the
+// node/engine *control* calls run off-main, always on that one serial queue,
+// and the closures capture node locals — never main-actor `self` state. Mirrors
+// PlayolaMainMixer.start().
+@preconcurrency import AVFoundation
 import AudioToolbox
 import Foundation
 import PlayolaCore
-import os.log
+import os
 
 #if os(iOS)
   import QuartzCore
@@ -61,6 +66,9 @@ public class SpinPlayer {
   public var spin: Spin? {
     didSet { setClearTimer(spin) }
   }
+  /// The PlayolaStationPlayer play() generation that scheduled this player.
+  /// Used to ignore playback callbacks from a superseded session.
+  var playGeneration: Int = 0
   public weak var delegate: SpinPlayerDelegate?
   public var localUrl: URL? { return currentFile?.url }
 
@@ -75,6 +83,61 @@ public class SpinPlayer {
 
   // MARK: - Download State
   private var activeDownloadId: UUID?
+
+  // MARK: - Audio Control Threading
+  /// Serial queue for blocking AVAudioEngine / AVAudioPlayerNode control-plane
+  /// calls (start/stop/scheduleSegment/play). Running them off the main thread
+  /// avoids the App Hangs caused by `awaitIOCycle` blocking the main thread;
+  /// keeping them on a single serial queue preserves play-vs-stop ordering now
+  /// that they no longer share the main actor's implicit serialization.
+  private let audioControlQueue = DispatchQueue(
+    label: "fm.playola.spinplayer.audio-control", qos: .userInitiated)
+
+  /// Monotonic token bumped whenever playback is superseded (a new play starts
+  /// or the player is cleared/stopped). Captured before an off-main `await` and
+  /// re-checked after, so a continuation resumed from a superseded session never
+  /// mutates state or notifies the delegate.
+  private var playbackEpoch: Int = 0
+
+  /// Thread-safe mirror of `playbackEpoch` so a queued audio-control block can
+  /// check, off-main, whether it was superseded before it actually starts the
+  /// node — preventing a play() that was queued behind a long IO wait from
+  /// restarting audio after a clear()/stop().
+  private let atomicEpoch = OSAllocatedUnfairLock(initialState: 0)
+
+  /// Bumps the playback epoch (main-actor truth + thread-safe mirror).
+  @discardableResult
+  private func bumpEpoch() -> Int {
+    playbackEpoch += 1
+    let newEpoch = playbackEpoch
+    atomicEpoch.withLock { $0 = newEpoch }
+    return newEpoch
+  }
+
+  /// Marks the start of a new playback attempt, superseding any prior in-flight
+  /// (possibly suspended) playback on this player. Returns the epoch to re-check
+  /// after each subsequent `await`.
+  private func beginPlayback() -> Int {
+    bumpEpoch()
+  }
+
+  /// Runs a blocking AVAudioPlayerNode/AVAudioEngine control operation on the
+  /// serial audio-control queue, off the main thread, and suspends until it
+  /// completes. The op is skipped if `epoch` is no longer current by the time
+  /// the block runs (a clear()/stop()/newer play superseded it). Capture node
+  /// references into locals before calling — do not touch main-actor `self`
+  /// state inside `operation`.
+  private func runAudioControl(
+    epoch: Int, _ operation: @escaping @Sendable () -> Void
+  ) async {
+    let epochLock = atomicEpoch
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      audioControlQueue.async {
+        if epochLock.withLock({ $0 }) == epoch { operation() }
+        continuation.resume()
+      }
+    }
+  }
 
   // MARK: - Playback State
   private var currentVolume: Float = 1.0
@@ -270,8 +333,24 @@ public class SpinPlayer {
   private func stopAudio() {
     // Only stop if the engine is running - no need to start it just to stop
     guard engine.isRunning else { return }
-    playerNode.stop()
-    playerNode.reset()
+    // Enqueue on the serial audio-control queue so this stop is mutually
+    // exclusive with — and ordered after — any in-flight off-main play()/
+    // scheduleSegment for the same node. That ordering is what prevents a play
+    // that was queued behind a long IO wait from leaving orphaned audio after
+    // clear()/stop(). Fire-and-forget: teardown needn't be awaited, and the
+    // epoch bump in clear() already blocks stale main-actor state writes.
+    //
+    // Residual (accepted Option-A scope): hardResetTrackMixer() still runs on
+    // the main actor in clear(), so its graph surgery is not serialized against
+    // these queue blocks. playerNode itself is never detached there (only the
+    // trackMixer is recreated), and AVAudioEngine supports node ops / graph
+    // reconfiguration while running, so this is safe; full serialization of the
+    // graph teardown would be the Option-B follow-up.
+    let node = playerNode
+    audioControlQueue.async {
+      node.stop()
+      node.reset()
+    }
   }
 
   private func clear() {
@@ -281,6 +360,11 @@ public class SpinPlayer {
       type: .debug,
       self.id.uuidString
     )
+
+    // Supersede any in-flight (possibly suspended) playback so a resumed
+    // continuation can't write state or notify, and any queued audio-control
+    // block skips its play(), after we've cleared.
+    bumpEpoch()
 
     stopAudio()
 
@@ -340,40 +424,34 @@ public class SpinPlayer {
   ///   - to: Optional end position in seconds (not implemented in current version)
   ///
   /// If this method is called on a spin that is not loaded, playback will not start.
-  public func playNow(from: Double, to: Double? = nil) {
+  public func playNow(from: Double, to: Double? = nil) async {
+    let epoch = beginPlayback()
+    os_log(
+      "Starting playback from position %f",
+      log: SpinPlayer.logger,
+      type: .info,
+      from
+    )
+    // Record that we're starting mid-file so fades can be shifted appropriately
+    self.playbackStartOffset = from
+    // Callers must await ensureAudioSessionConfigured() before calling playNow.
+    // The fire-and-forget fallback avoids a crash but may still race.
+    assert(
+      playolaMainMixer.audioSessionManager.isConfigured,
+      "Audio session must be configured before calling playNow — call ensureAudioSessionConfigured() first"
+    )
+    playolaMainMixer.configureAudioSession()
+
     do {
-      os_log(
-        "Starting playback from position %f",
-        log: SpinPlayer.logger,
-        type: .info,
-        from
-      )
-      // Record that we're starting mid-file so fades can be shifted appropriately
-      self.playbackStartOffset = from
-      // Callers must await ensureAudioSessionConfigured() before calling playNow.
-      // The fire-and-forget fallback avoids a crash but may still race.
-      assert(
-        playolaMainMixer.audioSessionManager.isConfigured,
-        "Audio session must be configured before calling playNow — call ensureAudioSessionConfigured() first"
-      )
-      playolaMainMixer.configureAudioSession()
+      // Start the engine off the main thread (AUIOClient_StartIO blocks the
+      // caller on cold hardware init). No-op if already running.
       if !engine.isRunning {
-        try engine.start()
+        try await playolaMainMixer.start()
       }
-
-      guard let audioFile = validateAndGetCurrentFile() else { return }
-      scheduleAndPlaySegment(audioFile: audioFile, from: from)
-
-      self.state = .playing
-      if let spin {
-        delegate?.player(self, startedPlaying: spin)
-      }
-      os_log(
-        "Successfully started playback",
-        log: SpinPlayer.logger,
-        type: .info
-      )
     } catch {
+      // If superseded, a stop()/clear() likely caused this failure (e.g. session
+      // torn down) — don't report stale noise or overwrite the new state.
+      guard epoch == playbackEpoch else { return }
       Task {
         await errorReporter.reportError(
           error,
@@ -382,7 +460,26 @@ public class SpinPlayer {
         )
       }
       self.state = .available
+      return
     }
+
+    // A stop()/clear() (or newer play) may have superseded us while the engine
+    // started off-main.
+    guard epoch == playbackEpoch else { return }
+    guard let audioFile = validateAndGetCurrentFile() else { return }
+
+    await scheduleAndPlaySegment(audioFile: audioFile, from: from, epoch: epoch)
+
+    guard epoch == playbackEpoch else { return }
+    self.state = .playing
+    if let spin {
+      delegate?.player(self, startedPlaying: spin)
+    }
+    os_log(
+      "Successfully started playback",
+      log: SpinPlayer.logger,
+      type: .info
+    )
   }
 
   private func validateAndGetCurrentFile() -> AVAudioFile? {
@@ -398,23 +495,30 @@ public class SpinPlayer {
     return currentFile
   }
 
-  private func scheduleAndPlaySegment(audioFile: AVAudioFile, from: Double) {
-    // calculate segment info
-    let sampleRate = playerNode.outputFormat(forBus: 0).sampleRate
-    let newSampleTime = AVAudioFramePosition(sampleRate * from)
-    let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(duration))
+  private func scheduleAndPlaySegment(audioFile: AVAudioFile, from: Double, epoch: Int) async {
+    // Capture main-actor state into locals so the off-main block never touches
+    // `self`. `playerNode.outputFormat`/`stop`/`play` can each block on the
+    // audio IO cycle, so the whole sequence runs on the serial control queue.
+    let node = playerNode
+    let fileDuration = duration
 
-    // stop the player, schedule the segment, restart the player
-    // Volume is already set before playNow is called
-    playerNode.stop()
-    playerNode.scheduleSegment(
-      audioFile,
-      startingFrame: newSampleTime,
-      frameCount: framesToPlay,
-      at: nil,
-      completionHandler: nil
-    )
-    playerNode.play()
+    await runAudioControl(epoch: epoch) {
+      let sampleRate = node.outputFormat(forBus: 0).sampleRate
+      let newSampleTime = AVAudioFramePosition(sampleRate * from)
+      let framesToPlay = AVAudioFrameCount(Float(sampleRate) * Float(fileDuration))
+
+      // stop the player, schedule the segment, restart the player
+      // Volume is already set before playNow is called
+      node.stop()
+      node.scheduleSegment(
+        audioFile,
+        startingFrame: newSampleTime,
+        frameCount: framesToPlay,
+        at: nil,
+        completionHandler: nil
+      )
+      node.play()
+    }
   }
 
   // MARK: - Loading and Download Management
@@ -523,12 +627,20 @@ public class SpinPlayer {
         return
       }
 
+      // A stop()/clear() or a newer load() may have superseded this download
+      // while we were suspended on the awaits above. If the player no longer
+      // owns this spin, abandon playback so we don't drive stale audio.
+      guard self.spin?.id == spin.id else {
+        continuation.resume(returning: .success(localUrl))
+        return
+      }
+
       // Determine what to do based on the spin's timing state
       switch spin.playbackTiming {
       case .future:
         // Spin is in the future - schedule it
         self.volume = spin.startingVolume
-        self.schedulePlay(at: spin.airtime)
+        await self.schedulePlay(at: spin.airtime)
 
       case .playing:
         // Spin should be currently playing - start from current position
@@ -536,7 +648,7 @@ public class SpinPlayer {
         self.volume = spin.volumeAtDate(currentDate)
 
         let currentTimeInSeconds = currentDate.timeIntervalSince(spin.airtime)
-        self.playNow(from: currentTimeInSeconds)
+        await self.playNow(from: currentTimeInSeconds)
 
       case .tooLateToStart, .past:
         // Spin has already finished or has too little time left - skip it entirely
@@ -549,6 +661,13 @@ public class SpinPlayer {
         )
         // Clean up everything since we're not going to play this spin
         self.clear()
+        continuation.resume(returning: .success(localUrl))
+        return
+      }
+
+      // schedulePlay/playNow may have suspended on their own off-main awaits;
+      // re-check ownership before the final (unguarded) state writes.
+      guard self.spin?.id == spin.id else {
         continuation.resume(returning: .success(localUrl))
         return
       }
@@ -650,13 +769,23 @@ public class SpinPlayer {
 
   private func ensureEngineRunning() {
     guard !engine.isRunning else { return }
-    do {
-      playolaMainMixer.configureAudioSession()
-      try engine.start()
-    } catch {
-      os_log(
-        "⚠️ Could not start engine before installing tap: %{public}@",
-        log: SpinPlayer.logger, type: .error, String(describing: error))
+    playolaMainMixer.configureAudioSession()
+    // Start off the main thread (fire-and-forget) so we never block on
+    // AUIOClient_StartIO here. Installing the tap below doesn't require the
+    // engine to already be running — buffers flow once the async start lands.
+    // Kept synchronous (no await) on purpose: adding a suspension point between
+    // `startTapInstalled = true` and installTap would let a clear() interleave
+    // and orphan the tap. This path is only hit if the engine was reset (e.g. an
+    // audio-session interruption) after playNow/schedulePlay started it off-main.
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        try await self.playolaMainMixer.start()
+      } catch {
+        os_log(
+          "⚠️ Could not start engine before installing tap: %{public}@",
+          log: SpinPlayer.logger, type: .error, String(describing: error))
+      }
     }
   }
 
@@ -795,62 +924,118 @@ public class SpinPlayer {
     })
   }
 
-  private func avAudioTimeFromDate(date: Date) -> AVAudioTime {
-    let outputFormat = playerNode.outputFormat(forBus: 0)
-    guard let lastRenderTime = playerNode.lastRenderTime else {
-      // Handle missing render time
-      let error = NSError(
-        domain: "fm.playola.PlayolaPlayer",
-        code: 500,
-        userInfo: [
-          NSLocalizedDescriptionKey:
-            "Could not get last render time from player node"
-        ]
+  /// Result of converting a wall-clock airtime into the player node's sample
+  /// timeline. `missingRenderTime` is true when the node had no `lastRenderTime`
+  /// (the caller reports it from the main actor).
+  private struct ScheduledTime {
+    let avAudioTime: AVAudioTime
+    let missingRenderTime: Bool
+  }
+
+  /// Pure conversion safe to run off the main thread. `outputFormat`/
+  /// `lastRenderTime` reads can block on the audio IO cycle, so this runs on the
+  /// serial control queue. Does no error reporting — see `ScheduledTime`.
+  private nonisolated static func scheduledTime(for date: Date, node: AVAudioPlayerNode)
+    -> ScheduledTime
+  {
+    let outputFormat = node.outputFormat(forBus: 0)
+    guard let lastRenderTime = node.lastRenderTime else {
+      return ScheduledTime(
+        avAudioTime: AVAudioTime(sampleTime: 0, atRate: outputFormat.sampleRate),
+        missingRenderTime: true
       )
-      Task {
-        await errorReporter.reportError(
-          error,
-          context: "Missing render time",
-          level: .warning
-        )
-      }
-      // Fallback to a reasonable default
-      return AVAudioTime(sampleTime: 0, atRate: outputFormat.sampleRate)
     }
 
     let now = lastRenderTime.sampleTime
     let secsUntilDate = date.timeIntervalSinceNow
-    return AVAudioTime(
-      sampleTime: now + Int64(secsUntilDate * outputFormat.sampleRate),
-      atRate: outputFormat.sampleRate
+    return ScheduledTime(
+      avAudioTime: AVAudioTime(
+        sampleTime: now + Int64(secsUntilDate * outputFormat.sampleRate),
+        atRate: outputFormat.sampleRate
+      ),
+      missingRenderTime: false
     )
+  }
+
+  /// Outcome of `playFuture`: either the play was skipped because the epoch was
+  /// superseded before the queue block ran, or it played (and we know whether
+  /// the node was missing a render time). Keeping these distinct avoids
+  /// conflating "skipped" with "played successfully" at the call site.
+  private enum FuturePlayOutcome {
+    case skipped
+    case played(missingRenderTime: Bool)
+  }
+
+  /// Schedules `playerNode.play(at:)` for a future airtime, computing the sample
+  /// time and issuing the (potentially blocking) play off the main thread.
+  /// Skips the play if `epoch` was superseded before the block ran.
+  private func playFuture(at scheduledDate: Date, epoch: Int) async -> FuturePlayOutcome {
+    let node = playerNode
+    let epochLock = atomicEpoch
+    return await withCheckedContinuation {
+      (continuation: CheckedContinuation<FuturePlayOutcome, Never>) in
+      audioControlQueue.async {
+        guard epochLock.withLock({ $0 }) == epoch else {
+          continuation.resume(returning: .skipped)
+          return
+        }
+        let scheduled = SpinPlayer.scheduledTime(for: scheduledDate, node: node)
+        node.play(at: scheduled.avAudioTime)
+        continuation.resume(returning: .played(missingRenderTime: scheduled.missingRenderTime))
+      }
+    }
+  }
+
+  private func reportMissingRenderTime() {
+    let error = NSError(
+      domain: "fm.playola.PlayolaPlayer",
+      code: 500,
+      userInfo: [
+        NSLocalizedDescriptionKey:
+          "Could not get last render time from player node"
+      ]
+    )
+    Task {
+      await errorReporter.reportError(
+        error,
+        context: "Missing render time",
+        level: .warning
+      )
+    }
   }
 
   // MARK: - Scheduled Playback
 
   /// schedule a future play from the beginning of the file
   /// Schedule playback to start at a specific time
-  public func schedulePlay(at scheduledDate: Date) {
+  public func schedulePlay(at scheduledDate: Date) async {
+    let epoch = beginPlayback()
     do {
-      try prepareAudioEngine(scheduledDate: scheduledDate)
+      try await prepareAudioEngine(scheduledDate: scheduledDate)
+      guard epoch == playbackEpoch else { return }
       try validateAudioFile()
-
-      // Scheduled plays always start from the top of the file
-      self.playbackStartOffset = 0
-
-      let avAudiotime = avAudioTimeFromDate(date: scheduledDate)
-      let scheduledSpinId = spin?.id
-
-      playerNode.play(at: avAudiotime)
-      setupNotificationTimer(scheduledDate: scheduledDate, scheduledSpinId: scheduledSpinId)
-
-      logScheduleComplete(scheduledDate: scheduledDate)
     } catch {
-      reportScheduleError(error)
+      if epoch == playbackEpoch { reportScheduleError(error) }
+      return
     }
+
+    // Scheduled plays always start from the top of the file
+    self.playbackStartOffset = 0
+
+    let scheduledSpinId = spin?.id
+    let outcome = await playFuture(at: scheduledDate, epoch: epoch)
+
+    // A stop()/clear() (or newer play) may have superseded us off-main.
+    guard epoch == playbackEpoch else { return }
+    if case .played(let missingRenderTime) = outcome, missingRenderTime {
+      reportMissingRenderTime()
+    }
+
+    setupNotificationTimer(scheduledDate: scheduledDate, scheduledSpinId: scheduledSpinId)
+    logScheduleComplete(scheduledDate: scheduledDate)
   }
 
-  private func prepareAudioEngine(scheduledDate: Date) throws {
+  private func prepareAudioEngine(scheduledDate: Date) async throws {
     os_log(
       "Scheduling play at %@",
       log: SpinPlayer.logger,
@@ -864,8 +1049,9 @@ public class SpinPlayer {
       "Audio session must be configured before calling schedulePlay — call ensureAudioSessionConfigured() first"
     )
     playolaMainMixer.configureAudioSession()
+    // Start the engine off the main thread to avoid blocking on AUIOClient_StartIO.
     if !engine.isRunning {
-      try engine.start()
+      try await playolaMainMixer.start()
     }
   }
 
