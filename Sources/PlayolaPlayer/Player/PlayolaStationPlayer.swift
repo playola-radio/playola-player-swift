@@ -214,14 +214,19 @@ final public class PlayolaStationPlayer: ObservableObject {
       retryCount)
 
     try validateSpinForScheduling(spin)
+    // Capture the generation immutably for this scheduling work. Async
+    // callbacks below compare against this local rather than reading it back
+    // off the reusable SpinPlayer, whose tag could be overwritten if the player
+    // is recycled by a newer attempt.
+    let generation = playGeneration
     let spinPlayer = getAvailableSpinPlayer()
-    spinPlayer.playGeneration = playGeneration
+    spinPlayer.playGeneration = generation
     cancelExistingDownload(for: spin.id)
 
     do {
-      let result = await loadSpinWithProgress(spin, spinPlayer, showProgress)
+      let result = await loadSpinWithProgress(spin, spinPlayer, generation, showProgress)
       try await handleLoadResult(
-        result, spin: spin, spinPlayer: spinPlayer, showProgress: showProgress,
+        result, spin: spin, generation: generation, showProgress: showProgress,
         retryCount: retryCount)
     } catch {
       try await handleSchedulingError(
@@ -261,26 +266,24 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   private func loadSpinWithProgress(
-    _ spin: Spin, _ spinPlayer: SpinPlayer, _ showProgress: Bool
+    _ spin: Spin, _ spinPlayer: SpinPlayer, _ generation: Int, _ showProgress: Bool
   ) async -> Result<URL, Error> {
     return await spinPlayer.load(
       spin,
       onDownloadProgress: { [weak self] progress in
-        guard let self = self, showProgress,
-          spinPlayer.playGeneration == self.playGeneration
-        else { return }
+        guard let self = self, showProgress, self.isCurrentGeneration(generation) else { return }
         self.state = .loading(progress)
       }
     )
   }
 
   private func handleLoadResult(
-    _ result: Result<URL, Error>, spin: Spin, spinPlayer: SpinPlayer, showProgress: Bool,
+    _ result: Result<URL, Error>, spin: Spin, generation: Int, showProgress: Bool,
     retryCount: Int
   ) async throws {
     switch result {
     case .success:
-      if showProgress, spinPlayer.playGeneration == playGeneration {
+      if showProgress, isCurrentGeneration(generation) {
         self.state = .playing(spin)
       }
     case .failure(let error):
