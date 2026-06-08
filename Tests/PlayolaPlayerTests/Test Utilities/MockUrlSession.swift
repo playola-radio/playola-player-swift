@@ -13,9 +13,17 @@ final class MockURLSession: URLSessionProtocol, @unchecked Sendable {
   var requestCallCount = 0
   var lastRequest: URLRequest?
 
+  /// When set, every call throws this error (simulating a transport-level
+  /// failure such as a `URLError`) instead of returning a response.
+  var errorToThrow: Error?
+
   func data(for request: URLRequest) async throws -> (Data, URLResponse) {
     requestCallCount += 1
     lastRequest = request
+
+    if let errorToThrow {
+      throw errorToThrow
+    }
 
     if responses.isEmpty {
       // Default successful response
