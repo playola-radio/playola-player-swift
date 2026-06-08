@@ -206,7 +206,9 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   @MainActor
-  private func scheduleSpin(spin: Spin, showProgress: Bool = false, retryCount: Int = 0)
+  private func scheduleSpin(
+    spin: Spin, generation: Int, showProgress: Bool = false, retryCount: Int = 0
+  )
     async throws
   {
     os_log(
@@ -214,11 +216,9 @@ final public class PlayolaStationPlayer: ObservableObject {
       retryCount)
 
     try validateSpinForScheduling(spin)
-    // Capture the generation immutably for this scheduling work. Async
-    // callbacks below compare against this local rather than reading it back
-    // off the reusable SpinPlayer, whose tag could be overwritten if the player
-    // is recycled by a newer attempt.
-    let generation = playGeneration
+    // The generation is threaded in from the caller (play() or the scheduling
+    // loop), not re-read from the mutable global, so a caller that has already
+    // been superseded can't tag a player as the current attempt.
     let spinPlayer = getAvailableSpinPlayer()
     spinPlayer.playGeneration = generation
     cancelExistingDownload(for: spin.id)
@@ -230,7 +230,8 @@ final public class PlayolaStationPlayer: ObservableObject {
         retryCount: retryCount)
     } catch {
       try await handleSchedulingError(
-        error, spin: spin, showProgress: showProgress, retryCount: retryCount)
+        error, spin: spin, generation: generation, showProgress: showProgress,
+        retryCount: retryCount)
     }
   }
 
@@ -288,11 +289,14 @@ final public class PlayolaStationPlayer: ObservableObject {
       }
     case .failure(let error):
       try await handleLoadFailure(
-        error, spin: spin, showProgress: showProgress, retryCount: retryCount)
+        error, spin: spin, generation: generation, showProgress: showProgress,
+        retryCount: retryCount)
     }
   }
 
-  private func handleLoadFailure(_ error: Error, spin: Spin, showProgress: Bool, retryCount: Int)
+  private func handleLoadFailure(
+    _ error: Error, spin: Spin, generation: Int, showProgress: Bool, retryCount: Int
+  )
     async throws
   {
     if shouldSkipRetry(for: error) {
@@ -305,18 +309,20 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
 
     try await retryIfPossible(
-      spin: spin, showProgress: showProgress, retryCount: retryCount, fallbackError: error)
+      spin: spin, generation: generation, showProgress: showProgress, retryCount: retryCount,
+      fallbackError: error)
   }
 
   private func handleSchedulingError(
-    _ error: Error, spin: Spin, showProgress: Bool, retryCount: Int
+    _ error: Error, spin: Spin, generation: Int, showProgress: Bool, retryCount: Int
   ) async throws {
     if shouldSkipRetry(for: error) {
       throw error
     }
 
     try await retryIfPossible(
-      spin: spin, showProgress: showProgress, retryCount: retryCount, fallbackError: error)
+      spin: spin, generation: generation, showProgress: showProgress, retryCount: retryCount,
+      fallbackError: error)
   }
 
   private func shouldSkipRetry(for error: Error) -> Bool {
@@ -338,14 +344,17 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   private func retryIfPossible(
-    spin: Spin, showProgress: Bool, retryCount: Int, fallbackError: Error
+    spin: Spin, generation: Int, showProgress: Bool, retryCount: Int, fallbackError: Error
   ) async throws {
     let maxRetries = 3
     if retryCount < maxRetries {
       let delay = TimeInterval(0.5 * pow(2.0, Double(retryCount)))
       try await Task.sleep(for: .seconds(delay))
+      // A newer play()/stop() superseded us during backoff — abandon the retry
+      // rather than reviving a stale session's spin.
+      guard isCurrentGeneration(generation) else { return }
       try await self.scheduleSpin(
-        spin: spin, showProgress: showProgress, retryCount: retryCount + 1)
+        spin: spin, generation: generation, showProgress: showProgress, retryCount: retryCount + 1)
     } else {
       let finalError =
         fallbackError is StationPlayerError
@@ -377,7 +386,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     // task hasn't hit a cooperative cancellation point yet.
     while !Task.isCancelled && generation == playGeneration {
       do {
-        try await performScheduleUpdate(stationId: stationId)
+        try await performScheduleUpdate(stationId: stationId, generation: generation)
       } catch is CancellationError {
         os_log("📛 Schedule update cancelled", log: PlayolaStationPlayer.logger, type: .info)
         return
@@ -400,8 +409,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   @MainActor
-  private func performScheduleUpdate(stationId: String) async throws {
+  private func performScheduleUpdate(stationId: String, generation: Int) async throws {
     let updatedSchedule = try await getUpdatedSchedule(stationId: stationId)
+
+    // A newer play()/stop() superseded this loop while the fetch was in flight —
+    // don't schedule the old session's spins into the new attempt.
+    guard isCurrentGeneration(generation) else { return }
 
     os_log(
       "Retrieved schedule: %d total, %d current", log: PlayolaStationPlayer.logger, type: .info,
@@ -420,11 +433,14 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     for spin in spinsToLoad {
       try Task.checkCancellation()
+      // Re-check between spins: scheduleSpin awaits a download, during which a
+      // newer attempt can supersede us.
+      guard isCurrentGeneration(generation) else { return }
       if !isScheduled(spin: spin) {
         os_log(
           "Scheduling new spin: %@ at %@", log: PlayolaStationPlayer.logger, type: .info,
           spin.id, ISO8601DateFormatter().string(from: spin.airtime))
-        try await scheduleSpin(spin: spin)
+        try await scheduleSpin(spin: spin, generation: generation)
       }
     }
 
@@ -673,11 +689,12 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     do {
       // Get the schedule (with bounded backoff for transient outages)
-      self.currentSchedule = try await getUpdatedScheduleWithRetry(stationId: stationId)
+      let schedule = try await getUpdatedScheduleWithRetry(stationId: stationId)
 
-      // A newer play()/stop() superseded us mid-fetch — abandon quietly so we
-      // don't write into a session we no longer own.
+      // A newer play()/stop() superseded us mid-fetch — abandon quietly without
+      // writing the stale schedule into the shared field we no longer own.
       guard generation == playGeneration else { return }
+      self.currentSchedule = schedule
 
       guard
         let spinToPlay = currentSchedule?.current(offsetTimeInterval: scheduleOffset).first
@@ -700,7 +717,7 @@ final public class PlayolaStationPlayer: ObservableObject {
         stationId)
 
       // Schedule the first spin with progress shown
-      try await scheduleSpin(spin: spinToPlay, showProgress: true)
+      try await scheduleSpin(spin: spinToPlay, generation: generation, showProgress: true)
 
       // Superseded while loading the first spin — don't start a scheduling loop.
       guard generation == playGeneration else { return }
