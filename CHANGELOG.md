@@ -43,6 +43,11 @@ which Swift Package Manager consumers pin to.
   previous session immediately, so a *failed* station switch lands on `.error`
   rather than rolling back to the previously-playing station.
 
+- **`playNow(from:to:)` and `schedulePlay(at:)` are now `async`.** Both `public`
+  methods changed from synchronous to `async` so their audio work can run off
+  the main thread. **Source-breaking for direct callers**: add `await` at the
+  call site (callers must already be in an `async` context, e.g. a `Task`).
+
 ## 0.18.0
 
 ### Added
