@@ -93,7 +93,6 @@ final public class PlayolaStationPlayer: ObservableObject {
   func isCurrentGeneration(_ generation: Int) -> Bool {
     generation == playGeneration
   }
-  private var playTask: Task<Void, Error>?
 
   // Audio interruption state
   private var isSuspended = false
@@ -511,9 +510,14 @@ final public class PlayolaStationPlayer: ObservableObject {
       // validateHTTPResponse and decodeSchedule already reported these once.
       throw classifyScheduleFetchError(stationError)
     } catch {
-      // Raw transport error (e.g. URLError) — not reported by any inner step,
-      // so report it here exactly once.
-      await reportScheduleFetchError(error, stationId: stationId)
+      // A cancellation (a routine stop() during an in-flight fetch) is not a
+      // reportable failure — skip the production error event but still
+      // propagate so the caller treats it as a cancellation, not an error.
+      if !isCancellation(error) {
+        // Raw transport error (e.g. URLError) — not reported by any inner step,
+        // so report it here exactly once.
+        await reportScheduleFetchError(error, stationId: stationId)
+      }
       throw classifyScheduleFetchError(error)
     }
   }
@@ -669,9 +673,6 @@ final public class PlayolaStationPlayer: ObservableObject {
     wasPlayingBeforeInterruption = false
     interruptedStationId = nil
 
-    // Cancel any existing play task
-    playTask?.cancel()
-
     // Calculate schedule offset if atDate is provided
     self.scheduleOffset = atDate?.timeIntervalSinceNow
 
@@ -783,12 +784,6 @@ final public class PlayolaStationPlayer: ObservableObject {
       os_log("Cancelling scheduling task", log: PlayolaStationPlayer.logger, type: .info)
       schedulingTask?.cancel()
       schedulingTask = nil
-    }
-
-    if playTask != nil {
-      os_log("Cancelling play task", log: PlayolaStationPlayer.logger, type: .info)
-      playTask?.cancel()
-      playTask = nil
     }
 
     // Stop all players (this will cancel their individual downloads)

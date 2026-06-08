@@ -171,6 +171,23 @@ struct PlayolaStationPlayerScheduleRetryTests {
 
     #expect(session.requestCallCount == 1)
   }
+
+  // A cancellation thrown by the transport (a routine stop() during the
+  // in-flight initial fetch) takes the cancellation branch in fetchScheduleOnce:
+  // it is not reported as a production error and is not retried — it fails fast
+  // and propagates so play() can treat it as a cancellation, not a terminal error.
+  @Test("A cancelled URLError fails fast without retrying")
+  func testCancelledURLErrorFailsFast() async throws {
+    let session = MockURLSession()
+    session.errorToThrow = URLError(.cancelled)
+    let player = makePlayer(session: session)
+
+    await #expect(throws: (any Error).self) {
+      _ = try await player.getUpdatedScheduleWithRetry(stationId: "station-1")
+    }
+
+    #expect(session.requestCallCount == 1)
+  }
 }
 
 /// Records the sequence of state transitions reported via the delegate.
