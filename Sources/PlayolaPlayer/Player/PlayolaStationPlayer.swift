@@ -86,6 +86,13 @@ final public class PlayolaStationPlayer: ObservableObject {
   // scheduling loop, or a spin whose audio starts after a newer attempt began —
   // must not publish state into the current generation. Internal for tests.
   var playGeneration: Int = 0
+
+  /// Whether work tagged with `generation` belongs to the current play attempt.
+  /// The gate that stops a superseded session from publishing state. Internal
+  /// so tests can assert it without constructing a CoreAudio-backed SpinPlayer.
+  func isCurrentGeneration(_ generation: Int) -> Bool {
+    generation == playGeneration
+  }
   private var playTask: Task<Void, Error>?
 
   // Audio interruption state
@@ -920,7 +927,7 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
   public func player(_ player: SpinPlayer, startedPlaying spin: Spin) {
     // Ignore callbacks from a superseded session — otherwise a spin scheduled by
     // a prior play() could flip a newer .loading/.error/.idle state to .playing.
-    guard player.playGeneration == playGeneration else {
+    guard isCurrentGeneration(player.playGeneration) else {
       os_log(
         "Ignoring startedPlaying from superseded generation: %@",
         log: PlayolaStationPlayer.logger, type: .info, spin.id)
