@@ -672,7 +672,7 @@ public class SpinPlayer {
         return
       }
 
-      self.scheduleFades(spin)
+      await self.scheduleFades(spin)
       self.state = .loaded
       continuation.resume(returning: .success(localUrl))
     }
@@ -755,10 +755,10 @@ public class SpinPlayer {
 
   /// Install a one-shot tap to capture the first non-silent render on `trackMixer`,
   /// establishing `scheduledStartSample` so fades can be scheduled in the audio sample domain.
-  private func installStartTapIfNeeded(pendingFades: [(offset: Double, to: Float)]) {
+  private func installStartTapIfNeeded(pendingFades: [(offset: Double, to: Float)]) async {
     guard !startTapInstalled else { return }
     startTapInstalled = true
-    ensureEngineRunning()
+    await ensureEngineRunning()
     didCaptureStart = false
 
     trackMixer.installTap(onBus: 0, bufferSize: Constants.tapBufferSize, format: nil) {
@@ -767,11 +767,14 @@ public class SpinPlayer {
     }
   }
 
-  private func ensureEngineRunning() {
+  private func ensureEngineRunning() async {
     guard !engine.isRunning else { return }
+    playolaMainMixer.configureAudioSession()
     do {
-      playolaMainMixer.configureAudioSession()
-      try engine.start()
+      // Start off the main thread to avoid blocking on AUIOClient_StartIO if the
+      // engine was reset (e.g. by an audio-session interruption) since the
+      // off-main start in playNow/schedulePlay.
+      try await playolaMainMixer.start()
     } catch {
       os_log(
         "⚠️ Could not start engine before installing tap: %{public}@",
@@ -947,22 +950,31 @@ public class SpinPlayer {
     )
   }
 
+  /// Outcome of `playFuture`: either the play was skipped because the epoch was
+  /// superseded before the queue block ran, or it played (and we know whether
+  /// the node was missing a render time). Keeping these distinct avoids
+  /// conflating "skipped" with "played successfully" at the call site.
+  private enum FuturePlayOutcome {
+    case skipped
+    case played(missingRenderTime: Bool)
+  }
+
   /// Schedules `playerNode.play(at:)` for a future airtime, computing the sample
   /// time and issuing the (potentially blocking) play off the main thread.
-  /// Skips the play if `epoch` was superseded before the block ran. Returns
-  /// whether the node was missing a render time so the caller can report.
-  private func playFuture(at scheduledDate: Date, epoch: Int) async -> Bool {
+  /// Skips the play if `epoch` was superseded before the block ran.
+  private func playFuture(at scheduledDate: Date, epoch: Int) async -> FuturePlayOutcome {
     let node = playerNode
     let epochLock = atomicEpoch
-    return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+    return await withCheckedContinuation {
+      (continuation: CheckedContinuation<FuturePlayOutcome, Never>) in
       audioControlQueue.async {
         guard epochLock.withLock({ $0 }) == epoch else {
-          continuation.resume(returning: false)
+          continuation.resume(returning: .skipped)
           return
         }
         let scheduled = SpinPlayer.scheduledTime(for: scheduledDate, node: node)
         node.play(at: scheduled.avAudioTime)
-        continuation.resume(returning: scheduled.missingRenderTime)
+        continuation.resume(returning: .played(missingRenderTime: scheduled.missingRenderTime))
       }
     }
   }
@@ -1004,11 +1016,13 @@ public class SpinPlayer {
     self.playbackStartOffset = 0
 
     let scheduledSpinId = spin?.id
-    let missingRenderTime = await playFuture(at: scheduledDate, epoch: epoch)
+    let outcome = await playFuture(at: scheduledDate, epoch: epoch)
 
     // A stop()/clear() (or newer play) may have superseded us off-main.
     guard epoch == playbackEpoch else { return }
-    if missingRenderTime { reportMissingRenderTime() }
+    if case .played(let missingRenderTime) = outcome, missingRenderTime {
+      reportMissingRenderTime()
+    }
 
     setupNotificationTimer(scheduledDate: scheduledDate, scheduledSpinId: scheduledSpinId)
     logScheduleComplete(scheduledDate: scheduledDate)
@@ -1262,7 +1276,7 @@ public class SpinPlayer {
     self.state = .available
   }
 
-  public func scheduleFades(_ spin: Spin) {
+  public func scheduleFades(_ spin: Spin) async {
     // Convert Spin fades to offsets (seconds) relative to *this* playback start
     // If we started mid-file (playNow(from:)), shift fades left by that offset and drop past ones
     let fades: [(offset: Double, to: Float)] = spin.fades.compactMap { fade in
@@ -1280,7 +1294,7 @@ public class SpinPlayer {
     }
 
     // Otherwise, install a one-shot tap to capture the true start and then schedule.
-    installStartTapIfNeeded(pendingFades: fades)
+    await installStartTapIfNeeded(pendingFades: fades)
   }
 
   // MARK: - Timer Management
