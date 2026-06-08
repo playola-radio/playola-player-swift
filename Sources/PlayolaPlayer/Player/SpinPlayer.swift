@@ -672,7 +672,7 @@ public class SpinPlayer {
         return
       }
 
-      await self.scheduleFades(spin)
+      self.scheduleFades(spin)
       self.state = .loaded
       continuation.resume(returning: .success(localUrl))
     }
@@ -755,10 +755,10 @@ public class SpinPlayer {
 
   /// Install a one-shot tap to capture the first non-silent render on `trackMixer`,
   /// establishing `scheduledStartSample` so fades can be scheduled in the audio sample domain.
-  private func installStartTapIfNeeded(pendingFades: [(offset: Double, to: Float)]) async {
+  private func installStartTapIfNeeded(pendingFades: [(offset: Double, to: Float)]) {
     guard !startTapInstalled else { return }
     startTapInstalled = true
-    await ensureEngineRunning()
+    ensureEngineRunning()
     didCaptureStart = false
 
     trackMixer.installTap(onBus: 0, bufferSize: Constants.tapBufferSize, format: nil) {
@@ -767,18 +767,25 @@ public class SpinPlayer {
     }
   }
 
-  private func ensureEngineRunning() async {
+  private func ensureEngineRunning() {
     guard !engine.isRunning else { return }
     playolaMainMixer.configureAudioSession()
-    do {
-      // Start off the main thread to avoid blocking on AUIOClient_StartIO if the
-      // engine was reset (e.g. by an audio-session interruption) since the
-      // off-main start in playNow/schedulePlay.
-      try await playolaMainMixer.start()
-    } catch {
-      os_log(
-        "⚠️ Could not start engine before installing tap: %{public}@",
-        log: SpinPlayer.logger, type: .error, String(describing: error))
+    // Start off the main thread (fire-and-forget) so we never block on
+    // AUIOClient_StartIO here. Installing the tap below doesn't require the
+    // engine to already be running — buffers flow once the async start lands.
+    // Kept synchronous (no await) on purpose: adding a suspension point between
+    // `startTapInstalled = true` and installTap would let a clear() interleave
+    // and orphan the tap. This path is only hit if the engine was reset (e.g. an
+    // audio-session interruption) after playNow/schedulePlay started it off-main.
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        try await self.playolaMainMixer.start()
+      } catch {
+        os_log(
+          "⚠️ Could not start engine before installing tap: %{public}@",
+          log: SpinPlayer.logger, type: .error, String(describing: error))
+      }
     }
   }
 
@@ -1276,7 +1283,7 @@ public class SpinPlayer {
     self.state = .available
   }
 
-  public func scheduleFades(_ spin: Spin) async {
+  public func scheduleFades(_ spin: Spin) {
     // Convert Spin fades to offsets (seconds) relative to *this* playback start
     // If we started mid-file (playNow(from:)), shift fades left by that offset and drop past ones
     let fades: [(offset: Double, to: Float)] = spin.fades.compactMap { fade in
@@ -1294,7 +1301,7 @@ public class SpinPlayer {
     }
 
     // Otherwise, install a one-shot tap to capture the true start and then schedule.
-    await installStartTapIfNeeded(pendingFades: fades)
+    installStartTapIfNeeded(pendingFades: fades)
   }
 
   // MARK: - Timer Management
