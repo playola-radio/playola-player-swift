@@ -15,7 +15,6 @@ import AudioToolbox
 import Foundation
 import PlayolaCore
 import os
-import os.log
 
 #if os(iOS)
   import QuartzCore
