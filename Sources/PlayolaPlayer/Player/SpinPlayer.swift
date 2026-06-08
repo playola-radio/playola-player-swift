@@ -61,6 +61,9 @@ public class SpinPlayer {
   public var spin: Spin? {
     didSet { setClearTimer(spin) }
   }
+  /// The PlayolaStationPlayer play() generation that scheduled this player.
+  /// Used to ignore playback callbacks from a superseded session.
+  var playGeneration: Int = 0
   public weak var delegate: SpinPlayerDelegate?
   public var localUrl: URL? { return currentFile?.url }
 

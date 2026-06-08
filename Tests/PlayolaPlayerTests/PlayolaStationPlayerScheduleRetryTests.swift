@@ -88,27 +88,52 @@ struct PlayolaStationPlayerScheduleRetryTests {
     }
   }
 
-  @Test("A lingering schedulingTask is cancelled when play() fails terminally")
-  func testFailedPlayCancelsLingeringSchedulingTask() async throws {
+  @Test("A failed play() does not tear down a prior session's scheduling loop")
+  func testFailedPlayDoesNotCancelPriorSchedulingTask() async throws {
     let session = MockURLSession()
     for _ in 0..<10 { session.addResponse(statusCode: 404) }
     let player = makePlayer(session: session)
 
-    // Simulate a poll loop left running by a prior successful session. If it
-    // survives a failed play(), it can re-schedule a spin and flip .error
-    // back to .playing.
-    let lingering = Task<Void, Never> {
+    // A poll loop owned by a prior successful session. A failed later play()
+    // must not reach across and cancel work it did not start (Marge #3); the
+    // generation token — not a force-cancel — is what protects the new state.
+    let priorLoop = Task<Void, Never> {
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 50_000_000)
       }
     }
-    player.schedulingTask = lingering
+    player.schedulingTask = priorLoop
 
     await #expect(throws: (any Error).self) {
       try await player.play(stationId: "station-1")
     }
 
-    #expect(lingering.isCancelled)
+    #expect(!priorLoop.isCancelled)
+    priorLoop.cancel()
+  }
+
+  @Test("A stale spin's startedPlaying does not override a newer terminal state")
+  func testStaleSpinDoesNotOverrideState() async throws {
+    let session = MockURLSession()
+    for _ in 0..<10 { session.addResponse(statusCode: 404) }
+    let player = makePlayer(session: session)
+
+    // Land on .error as the current generation.
+    await #expect(throws: (any Error).self) {
+      try await player.play(stationId: "station-1")
+    }
+
+    // A spin player scheduled by an OLDER generation reports it started.
+    // Cooperative cancellation can't prevent this callback, so the generation
+    // token must (Marge #1).
+    let staleSpinPlayer = SpinPlayer(delegate: player)
+    staleSpinPlayer.playGeneration = player.playGeneration - 1
+    player.player(staleSpinPlayer, startedPlaying: Spin.mock)
+
+    if case .error = player.state {
+    } else {
+      Issue.record("Stale spin overrode terminal state: \(player.state)")
+    }
   }
 
   @Test("A cancelled download is treated as cancellation, not a terminal error")
@@ -121,6 +146,34 @@ struct PlayolaStationPlayerScheduleRetryTests {
     #expect(player.isCancellation(CancellationError()))
     #expect(player.isCancellation(URLError(.cancelled)))
     #expect(!player.isCancellation(StationPlayerError.networkError("HTTP error: 500")))
+  }
+
+  // MARK: - Marge #2: retry classification limited to connectivity errors
+
+  @Test("A connectivity URLError (timed out) is retried with backoff")
+  func testConnectivityURLErrorIsRetried() async throws {
+    let session = MockURLSession()
+    session.errorToThrow = URLError(.timedOut)
+    let player = makePlayer(session: session)
+
+    await #expect(throws: (any Error).self) {
+      _ = try await player.getUpdatedScheduleWithRetry(stationId: "station-1")
+    }
+
+    #expect(session.requestCallCount == 4)  // initial + 3 retries
+  }
+
+  @Test("A non-connectivity URLError (bad URL) fails fast without retrying")
+  func testNonConnectivityURLErrorFailsFast() async throws {
+    let session = MockURLSession()
+    session.errorToThrow = URLError(.badURL)
+    let player = makePlayer(session: session)
+
+    await #expect(throws: (any Error).self) {
+      _ = try await player.getUpdatedScheduleWithRetry(stationId: "station-1")
+    }
+
+    #expect(session.requestCallCount == 1)
   }
 }
 

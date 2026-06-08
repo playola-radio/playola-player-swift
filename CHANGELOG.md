@@ -13,9 +13,11 @@ which Swift Package Manager consumers pin to.
   with exponential backoff (0.5s / 1s / 2s) before giving up, matching the
   recovery behavior the player already used for spin loading and the ongoing
   schedule poll. Only transient failures are retried — server `5xx` responses
-  and connectivity `URLError`s. Permanent failures (`404`, decode errors, empty
-  schedules) still fail fast. This means a transient backend outage no longer
-  instantly fails a station start with no automatic recovery.
+  and an explicit allow-list of connectivity `URLError`s (timeouts, host/DNS,
+  connection-lost, etc.). Permanent failures (`404`, decode errors, empty
+  schedules, and non-connectivity `URLError`s such as `.badURL`) still fail
+  fast. This means a transient backend outage no longer instantly fails a
+  station start with no automatic recovery.
 
 ### Changed
 
@@ -31,6 +33,15 @@ which Swift Package Manager consumers pin to.
   add a `case .error` (or `default`) arm. A typical handler treats `.error` as
   a recoverable, retry-able state (show the message, let the user tap play
   again). `StationPlayerError` is now `Sendable`.
+
+- **State transitions are now supersession-safe (last `play()` wins).** Each
+  `play(...)`/`stop()` takes a new internal generation; work from a prior
+  attempt (its scheduling loop, or a spin whose audio starts later) can no
+  longer publish state into a newer attempt. This closes a race where a
+  lingering session could overwrite a freshly-emitted `.error` (or `.idle`)
+  with `.playing`. Behavioral note: starting a new `play()` supersedes the
+  previous session immediately, so a *failed* station switch lands on `.error`
+  rather than rolling back to the previously-playing station.
 
 ## 0.18.0
 

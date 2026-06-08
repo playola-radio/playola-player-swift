@@ -80,6 +80,12 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   // Internal (not private) so tests can observe scheduling-task lifecycle.
   var schedulingTask: Task<Void, Never>?
+
+  // Monotonic token identifying the current play() attempt. Bumped on every
+  // play() and stop(). Work started by an older generation — a prior session's
+  // scheduling loop, or a spin whose audio starts after a newer attempt began —
+  // must not publish state into the current generation. Internal for tests.
+  var playGeneration: Int = 0
   private var playTask: Task<Void, Error>?
 
   // Audio interruption state
@@ -202,12 +208,14 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     try validateSpinForScheduling(spin)
     let spinPlayer = getAvailableSpinPlayer()
+    spinPlayer.playGeneration = playGeneration
     cancelExistingDownload(for: spin.id)
 
     do {
       let result = await loadSpinWithProgress(spin, spinPlayer, showProgress)
       try await handleLoadResult(
-        result, spin: spin, showProgress: showProgress, retryCount: retryCount)
+        result, spin: spin, spinPlayer: spinPlayer, showProgress: showProgress,
+        retryCount: retryCount)
     } catch {
       try await handleSchedulingError(
         error, spin: spin, showProgress: showProgress, retryCount: retryCount)
@@ -251,19 +259,21 @@ final public class PlayolaStationPlayer: ObservableObject {
     return await spinPlayer.load(
       spin,
       onDownloadProgress: { [weak self] progress in
-        guard let self = self, showProgress else { return }
+        guard let self = self, showProgress,
+          spinPlayer.playGeneration == self.playGeneration
+        else { return }
         self.state = .loading(progress)
       }
     )
   }
 
   private func handleLoadResult(
-    _ result: Result<URL, Error>, spin: Spin, showProgress: Bool,
+    _ result: Result<URL, Error>, spin: Spin, spinPlayer: SpinPlayer, showProgress: Bool,
     retryCount: Int
   ) async throws {
     switch result {
     case .success:
-      if showProgress {
+      if showProgress, spinPlayer.playGeneration == playGeneration {
         self.state = .playing(spin)
       }
     case .failure(let error):
@@ -346,14 +356,16 @@ final public class PlayolaStationPlayer: ObservableObject {
   private let schedulePollingInterval: UInt64 = 20_000_000_000  // 20 seconds in nanoseconds
 
   @MainActor
-  private func scheduleUpcomingSpins() async {
+  private func scheduleUpcomingSpins(generation: Int) async {
     guard let stationId else {
       let error = StationPlayerError.invalidStationId("No station ID available")
       Task { await errorReporter.reportError(error, level: .warning) }
       return
     }
 
-    while !Task.isCancelled {
+    // Stop as soon as a newer play()/stop() supersedes this loop, even if this
+    // task hasn't hit a cooperative cancellation point yet.
+    while !Task.isCancelled && generation == playGeneration {
       do {
         try await performScheduleUpdate(stationId: stationId)
       } catch is CancellationError {
@@ -480,13 +492,22 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
+  /// Connectivity-related `URLError`s that a retry can plausibly recover from.
+  /// Non-connectivity failures (e.g. `.badURL`, `.unsupportedURL`) are permanent
+  /// and must fail fast instead of burning the backoff budget.
+  private static let retryableURLErrorCodes: Set<URLError.Code> = [
+    .timedOut, .cannotConnectToHost, .cannotFindHost, .networkConnectionLost,
+    .notConnectedToInternet, .dnsLookupFailed, .resourceUnavailable,
+    .secureConnectionFailed,
+  ]
+
   private func classifyScheduleFetchError(_ error: Error) -> ClassifiedScheduleError {
     if error is CancellationError {
       return ClassifiedScheduleError(isTransient: false, publicError: error)
     }
     if let urlError = error as? URLError {
-      return ClassifiedScheduleError(
-        isTransient: urlError.code != .cancelled, publicError: error)
+      let isTransient = Self.retryableURLErrorCodes.contains(urlError.code)
+      return ClassifiedScheduleError(isTransient: isTransient, publicError: error)
     }
     return ClassifiedScheduleError(isTransient: false, publicError: error)
   }
@@ -630,6 +651,12 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     self.stationId = stationId
 
+    // Take over as the current play attempt. Any in-flight work from a prior
+    // attempt (its scheduling loop, late spin callbacks) belongs to an older
+    // generation and will no longer publish into state.
+    playGeneration += 1
+    let generation = playGeneration
+
     // Emit a terminal-trackable state from the start so consumers observing
     // $state always see the attempt begin and (below) its success or failure.
     self.state = .loading(0)
@@ -637,6 +664,10 @@ final public class PlayolaStationPlayer: ObservableObject {
     do {
       // Get the schedule (with bounded backoff for transient outages)
       self.currentSchedule = try await getUpdatedScheduleWithRetry(stationId: stationId)
+
+      // A newer play()/stop() superseded us mid-fetch — abandon quietly so we
+      // don't write into a session we no longer own.
+      guard generation == playGeneration else { return }
 
       guard
         let spinToPlay = currentSchedule?.current(offsetTimeInterval: scheduleOffset).first
@@ -661,17 +692,20 @@ final public class PlayolaStationPlayer: ObservableObject {
       // Schedule the first spin with progress shown
       try await scheduleSpin(spin: spinToPlay, showProgress: true)
 
-      // Schedule upcoming spins
+      // Superseded while loading the first spin — don't start a scheduling loop.
+      guard generation == playGeneration else { return }
+
+      // Take over the scheduling loop from any prior session and start our own.
       schedulingTask?.cancel()
-      schedulingTask = Task {
-        await scheduleUpcomingSpins()
+      schedulingTask = Task { [generation] in
+        await scheduleUpcomingSpins(generation: generation)
       }
     } catch {
-      // Cancel any scheduling loop left running by a prior successful play().
-      // Otherwise it keeps polling and a completing spin would flip the state
-      // we set below back to .playing, masking the failure.
-      schedulingTask?.cancel()
-      schedulingTask = nil
+      // Only publish the failure if we're still the current attempt. A newer
+      // play()/stop() owns state now, and a prior session's still-running loop
+      // is gated by generation rather than force-cancelled here (it would
+      // otherwise tear down a live session this failed attempt never started).
+      guard generation == playGeneration else { throw error }
 
       // Emit a terminal error state so consumers can render a recoverable
       // error instead of being stuck in .loading. Cancellation is not an error.
@@ -707,6 +741,10 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 4. Reports the end of the listening session
   public func stop() {
     os_log("🛑 STOP called", log: PlayolaStationPlayer.logger, type: .info)
+
+    // Supersede any in-flight play()/scheduling work so it can't publish state
+    // after we go idle.
+    playGeneration += 1
 
     // Log current state before stopping
     os_log(
@@ -880,14 +918,23 @@ final public class PlayolaStationPlayer: ObservableObject {
 
 extension PlayolaStationPlayer: SpinPlayerDelegate {
   public func player(_ player: SpinPlayer, startedPlaying spin: Spin) {
+    // Ignore callbacks from a superseded session — otherwise a spin scheduled by
+    // a prior play() could flip a newer .loading/.error/.idle state to .playing.
+    guard player.playGeneration == playGeneration else {
+      os_log(
+        "Ignoring startedPlaying from superseded generation: %@",
+        log: PlayolaStationPlayer.logger, type: .info, spin.id)
+      return
+    }
+
     os_log("Started playing: %@", log: PlayolaStationPlayer.logger, type: .info, spin.id)
 
     self.state = .playing(spin)
 
     schedulingTask?.cancel()
-    schedulingTask = Task {
+    schedulingTask = Task { [generation = playGeneration] in
       do {
-        await self.scheduleUpcomingSpins()
+        await self.scheduleUpcomingSpins(generation: generation)
 
         // Get a list of active file paths to exclude from pruning
         let activePaths = self._spinPlayers
