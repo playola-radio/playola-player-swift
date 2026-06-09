@@ -121,4 +121,52 @@ struct AudioSessionOwnershipTests {
       #expect(player.schedulingTask?.isCancelled == false)
     }
   #endif
+
+  @Test("pauseForInterruption bumps generation, publishes .paused, keeps station id")
+  func pauseForInterruptionBumpsGenerationPublishesPausedAndKeepsStationId() {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    player.setStateForTesting(.playing(.mock), stationId: "station-1")
+    let generationBefore = player.playGeneration
+
+    player.pauseForInterruption()
+
+    #expect(player.playGeneration == generationBefore + 1)
+    #expect(player.stationId == "station-1")
+    #expect(player.isCurrentGeneration(generationBefore) == false)
+    if case .paused(let spin) = player.state {
+      #expect(spin.id == Spin.mock.id)
+    } else {
+      Issue.record("pause must publish .paused, got \(player.state)")
+    }
+  }
+
+  @Test("resumeAfterInterruption without prior pause is a no-op")
+  func resumeWithoutPriorPauseIsNoOp() async throws {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    try await player.resumeAfterInterruption()
+    #expect(player.isPlaying == false)
+  }
+
+  @Test("pause while not playing does not arm resume")
+  func pauseWhileNotPlayingDoesNotArmResume() async throws {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    player.setStateForTesting(.idle, stationId: "station-1")
+
+    player.pauseForInterruption()
+    try await player.resumeAfterInterruption()
+
+    #expect(player.isPlaying == false)
+  }
 }

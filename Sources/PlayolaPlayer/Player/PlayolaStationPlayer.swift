@@ -155,6 +155,10 @@ final public class PlayolaStationPlayer: ObservableObject {
     /// fetch exhausted its retries). Lets consumers render a recoverable
     /// error instead of being stuck in a prior state.
     case error(StationPlayerError)
+    /// Playback suspended by an interruption (host- or legacy-driven). The spin
+    /// is the one that was playing at pause time — display metadata only; it
+    /// will be re-fetched and re-synced on resume.
+    case paused(Spin)
   }
 
   @Published public var state: PlayolaStationPlayer.State = .idle {
@@ -841,6 +845,48 @@ final public class PlayolaStationPlayer: ObservableObject {
     os_log("✅ STOP completed", log: PlayolaStationPlayer.logger, type: .info)
   }
 
+  /// Host-driven interruption pause. Silences playback and cancels scheduling,
+  /// preserving ONLY the station id; the schedule is wall-clock-stale by resume
+  /// time, so resume re-fetches. Bumps playGeneration so in-flight work from
+  /// before the pause cannot publish state after it.
+  public func pauseForInterruption() {
+    playGeneration += 1
+    isSuspended = true
+    wasPlayingBeforeInterruption = isPlaying
+    interruptedStationId = stationId
+    schedulingTask?.cancel()
+    schedulingTask = nil
+    for player in _spinPlayers { player.stop() }
+    for (_, downloadId) in activeDownloadIds {
+      _ = fileDownloadManager.cancelDownload(id: downloadId)
+    }
+    activeDownloadIds.removeAll()
+    if case .playing(let spin) = state { state = .paused(spin) }
+  }
+
+  /// Host-driven resume. Re-activates the session via the manager seam (no-op
+  /// in .hostOwned — the host must have activated already), restarts the engine,
+  /// and replays the interrupted station re-synced to the current wall clock.
+  /// Throws so the host coordinator can render failures. No-op if nothing was
+  /// interrupted OR if playback wasn't active when the pause happened.
+  public func resumeAfterInterruption() async throws {
+    guard let stationToResume = interruptedStationId,
+      wasPlayingBeforeInterruption
+    else { return }
+    isSuspended = false
+    defer {
+      interruptedStationId = nil
+      wasPlayingBeforeInterruption = false
+    }
+    try await mainMixer.audioSessionManager.activate()
+    // restartEngine() before play(): after an interruption the engine may be in
+    // a stopped-but-stale CoreAudio state; play()'s lazy engine start does not
+    // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is the
+    // existing legacy-resume behavior and is idempotent when healthy.
+    try await mainMixer.restartEngine()
+    try await play(stationId: stationToResume)
+  }
+
   #if os(iOS) || os(tvOS)
     // `object: nil` is intentional and name-scoped: it removes only these two
     // named registrations, not the AVAudioEngineConfigurationChange observer.
@@ -922,7 +968,7 @@ final public class PlayolaStationPlayer: ObservableObject {
         let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
 
         if options.contains(.shouldResume) && wasPlayingBeforeInterruption {
-          resumeAfterInterruption()
+          resumeAfterInterruptionFromNotification()
         }
 
       @unknown default:
@@ -942,31 +988,16 @@ final public class PlayolaStationPlayer: ObservableObject {
       }
 
       if wasPlayingBeforeInterruption {
-        resumeAfterInterruption()
+        resumeAfterInterruptionFromNotification()
       }
     }
 
-    private func resumeAfterInterruption() {
-      guard let stationToResume = interruptedStationId else { return }
-
-      os_log("Resuming playback after interruption", log: PlayolaStationPlayer.logger, type: .info)
-
+    private func resumeAfterInterruptionFromNotification() {
       Task { @MainActor in
-        do {
-          try await mainMixer.audioSessionManager.activate()
-          try await mainMixer.restartEngine()
-          try await self.play(stationId: stationToResume)
-        } catch {
-          os_log(
-            "Failed to resume after interruption: %@",
-            log: PlayolaStationPlayer.logger, type: .error,
-            error.localizedDescription)
+        do { try await resumeAfterInterruption() } catch {
           await errorReporter.reportError(
             error, context: "Failed to resume playback after interruption", level: .error)
         }
-
-        self.interruptedStationId = nil
-        self.wasPlayingBeforeInterruption = false
       }
     }
   #endif
