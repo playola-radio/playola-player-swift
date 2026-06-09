@@ -68,6 +68,11 @@ final public class PlayolaStationPlayer: ObservableObject {
   private let errorReporter = PlayolaErrorReporter.shared
   private var authProvider: PlayolaAuthenticationProvider?
   private let urlSession: URLSessionProtocol
+  /// Injectable for tests; production uses .shared.
+  let mainMixer: PlayolaMainMixer
+  private var audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
+  /// Whether the SDK reacts to AVAudioSession interruption/route events itself.
+  var handlesSessionEventsInternally: Bool { audioSessionOwnership == .sdkOwned }
 
   /// Base delay (seconds) for the initial schedule-fetch exponential backoff.
   /// Internal so tests can disable the wait; not part of the public API.
@@ -122,11 +127,18 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// - Parameters:
   ///   - authProvider: Provider for JWT tokens
   ///   - baseURL: Base URL for API endpoints. Defaults to production URL.
+  ///   - audioSessionOwnership: Who owns AVAudioSession. Defaults to `.sdkOwned`.
   public func configure(
     authProvider: PlayolaAuthenticationProvider,
-    baseURL: URL = URL(string: "https://admin-api.playola.fm")!
+    baseURL: URL = URL(string: "https://admin-api.playola.fm")!,
+    audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
   ) {
     self.authProvider = authProvider
+    self.audioSessionOwnership = audioSessionOwnership
+    mainMixer.applyOwnership(audioSessionOwnership)
+    #if os(iOS) || os(tvOS)
+      if audioSessionOwnership == .hostOwned { removeAudioSessionObservers() }
+    #endif
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
     self.baseUrl = baseURL
@@ -160,10 +172,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   @MainActor
   internal init(
     fileDownloadManager: FileDownloadManaging? = nil,
-    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session)
+    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session),
+    mainMixer: PlayolaMainMixer? = nil
   ) {
     self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.urlSession = urlSession
+    self.mainMixer = mainMixer ?? .shared
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
@@ -186,7 +200,7 @@ final public class PlayolaStationPlayer: ObservableObject {
         self,
         selector: #selector(handleAudioEngineConfigurationChange(_:)),
         name: .AVAudioEngineConfigurationChange,
-        object: PlayolaMainMixer.shared.engine
+        object: self.mainMixer.engine
       )
     #endif
   }
@@ -760,6 +774,16 @@ final public class PlayolaStationPlayer: ObservableObject {
     return false
   }
 
+  // MARK: - Internal test seams
+
+  func setStateForTesting(_ state: State, stationId: String?) {
+    self.state = state
+    self.stationId = stationId
+  }
+
+  var isSuspendedForTesting: Bool { isSuspended }
+  var interruptedStationIdForTesting: String? { interruptedStationId }
+
   /// Stops the current playback and releases associated resources.
   ///
   /// This method:
@@ -815,7 +839,15 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   #if os(iOS) || os(tvOS)
+    private func removeAudioSessionObservers() {
+      NotificationCenter.default.removeObserver(
+        self, name: AVAudioSession.interruptionNotification, object: nil)
+      NotificationCenter.default.removeObserver(
+        self, name: AVAudioSession.routeChangeNotification, object: nil)
+    }
+
     @objc public func handleAudioRouteChange(_ notification: Notification) {
+      guard handlesSessionEventsInternally else { return }  // host owns policy
       guard let userInfo = notification.userInfo,
         let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
         let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue)
@@ -855,6 +887,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
 
     @objc public func handleAudioSessionInterruption(_ notification: Notification) {
+      guard handlesSessionEventsInternally else { return }  // host owns policy
       guard let userInfo = notification.userInfo,
         let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
         let type = AVAudioSession.InterruptionType(rawValue: typeValue)
@@ -915,8 +948,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
       Task { @MainActor in
         do {
-          try await PlayolaMainMixer.shared.audioSessionManager.activate()
-          try await PlayolaMainMixer.shared.restartEngine()
+          try await mainMixer.audioSessionManager.activate()
+          try await mainMixer.restartEngine()
           try await self.play(stationId: stationToResume)
         } catch {
           os_log(

@@ -1,6 +1,7 @@
 //  AudioSessionOwnershipTests.swift
 //  PlayolaPlayer
 
+import AVFAudio
 import Testing
 
 @testable import PlayolaPlayer
@@ -54,4 +55,48 @@ struct AudioSessionOwnershipTests {
     await Task.yield()  // let any (incorrectly) spawned Task run
     #expect(spy.configureCount == 0)
   }
+
+  // MARK: - PlayolaStationPlayer ownership wiring
+
+  @Test("Host mode disables internal session-event handling; default keeps it")
+  func hostModeDisablesInternalSessionHandling() {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    #expect(player.handlesSessionEventsInternally == false)
+
+    let legacy = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+    legacy.configure(authProvider: MockAuthProvider())  // default .sdkOwned
+    #expect(legacy.handlesSessionEventsInternally == true)
+  }
+
+  #if os(iOS) || os(tvOS)
+    @Test("Host mode ignores interruption notifications")
+    func hostModeIgnoresInterruptionNotifications() {
+      let player = PlayolaStationPlayer(
+        fileDownloadManager: MockFileDownloadManager(),
+        urlSession: MockURLSession(),
+        mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+      player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+      player.setStateForTesting(.playing(.mock), stationId: "station-1")
+      player.schedulingTask = Task {}  // sentinel: must survive the notification
+
+      let note = Notification(
+        name: AVAudioSession.interruptionNotification, object: nil,
+        userInfo: [
+          AVAudioSessionInterruptionTypeKey:
+            AVAudioSession.InterruptionType.began.rawValue
+        ])
+      player.handleAudioSessionInterruption(note)
+
+      #expect(player.isSuspendedForTesting == false)
+      #expect(player.interruptedStationIdForTesting == nil)
+      #expect(player.schedulingTask?.isCancelled == false)
+    }
+  #endif
 }
