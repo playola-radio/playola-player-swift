@@ -790,6 +790,7 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   var isSuspendedForTesting: Bool { isSuspended }
   var interruptedStationIdForTesting: String? { interruptedStationId }
+  var wasPlayingBeforeInterruptionForTesting: Bool { wasPlayingBeforeInterruption }
 
   /// Stops the current playback and releases associated resources.
   ///
@@ -851,9 +852,22 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// before the pause cannot publish state after it.
   public func pauseForInterruption() {
     playGeneration += 1
+    // Loading counts as "playing" for resume purposes: if the user started a
+    // station and a call interrupts the load, they expect it back afterward.
+    let wasActive: Bool = {
+      switch state {
+      case .playing, .loading: return true
+      case .idle, .paused, .error: return false
+      }
+    }()
+    // A repeated pause (e.g. interruption + route change for the same outage)
+    // must not overwrite the armed resume state. Pausing while inactive arms
+    // nothing — there is no playback to bring back.
+    if !isSuspended {
+      wasPlayingBeforeInterruption = wasActive
+      interruptedStationId = wasActive ? stationId : nil
+    }
     isSuspended = true
-    wasPlayingBeforeInterruption = isPlaying
-    interruptedStationId = stationId
     schedulingTask?.cancel()
     schedulingTask = nil
     for player in _spinPlayers { player.stop() }
@@ -861,7 +875,11 @@ final public class PlayolaStationPlayer: ObservableObject {
       _ = fileDownloadManager.cancelDownload(id: downloadId)
     }
     activeDownloadIds.removeAll()
-    if case .playing(let spin) = state { state = .paused(spin) }
+    switch state {
+    case .playing(let spin): state = .paused(spin)
+    case .loading: state = .idle  // no spin to show; resume re-fetches and republishes .loading
+    default: break
+    }
   }
 
   /// Host-driven resume. Re-activates the session via the manager seam (no-op

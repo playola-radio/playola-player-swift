@@ -153,6 +153,7 @@ struct AudioSessionOwnershipTests {
     player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
     try await player.resumeAfterInterruption()
     #expect(player.isPlaying == false)
+    #expect(player.interruptedStationIdForTesting == nil)
   }
 
   @Test("pause while not playing does not arm resume")
@@ -168,5 +169,42 @@ struct AudioSessionOwnershipTests {
     try await player.resumeAfterInterruption()
 
     #expect(player.isPlaying == false)
+    #expect(player.interruptedStationIdForTesting == nil)
+  }
+
+  @Test("Double pause keeps resume armed")
+  func doublePauseKeepsResumeArmed() {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    player.setStateForTesting(.playing(.mock), stationId: "station-1")
+
+    player.pauseForInterruption()
+    player.pauseForInterruption()
+
+    #expect(player.isSuspendedForTesting == true)
+    #expect(player.interruptedStationIdForTesting == "station-1")
+    #expect(player.wasPlayingBeforeInterruptionForTesting == true)
+  }
+
+  @Test("Pause during loading arms resume and clears the spinner state")
+  func pauseDuringLoadingArmsResumeAndClearsSpinner() {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager()))
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    player.setStateForTesting(.loading(0.5), stationId: "station-1")
+
+    player.pauseForInterruption()
+
+    if case .idle = player.state {
+    } else {
+      Issue.record("pause during loading must clear the spinner, got \(player.state)")
+    }
+    #expect(player.wasPlayingBeforeInterruptionForTesting == true)
+    #expect(player.interruptedStationIdForTesting == "station-1")
   }
 }
