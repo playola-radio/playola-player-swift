@@ -4,7 +4,7 @@
 //
 //  Created by Brian D Keane on 12/29/24.
 //
-
+// swiftlint:disable file_length
 import AVFAudio
 import Combine
 import Foundation
@@ -69,6 +69,10 @@ final public class PlayolaStationPlayer: ObservableObject {
   private var authProvider: PlayolaAuthenticationProvider?
   private let urlSession: URLSessionProtocol
   private let injectedMainMixer: PlayolaMainMixer?
+  /// Whether a configure() call has already pushed ownership into the mixer.
+  /// Once true, every re-configure must go through applyOwnership so conflicts
+  /// keep being detected (and the mirror stays honest).
+  private var hasAppliedOwnershipToMixer = false
   /// Resolved lazily so merely constructing a station player (e.g. in headless
   /// macOS test runs) does not build the shared CoreAudio graph — matching
   /// pre-ownership behavior, where init only touched the mixer on iOS/tvOS.
@@ -137,12 +141,24 @@ final public class PlayolaStationPlayer: ObservableObject {
     audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
   ) {
     self.authProvider = authProvider
-    mainMixer.applyOwnership(audioSessionOwnership)
-    // Mirror what the mixer actually latched. If the latch was rejected (late
-    // .hostOwned after the session was touched — asserted in debug, ignored in
-    // release), fall back to .sdkOwned: keeping legacy handling active is safe;
-    // pretending host mode is active while the SDK still owns the session is not.
-    self.audioSessionOwnership = mainMixer.appliedOwnership ?? .sdkOwned
+    // Resolve the mixer only when ownership work actually requires it. The
+    // default path (.sdkOwned, no injected mixer) keeps init's manager anyway,
+    // and resolving `.shared` here would construct the CoreAudio graph — which
+    // hangs headless CI runs that merely construct + configure a player
+    // (develop's configure never touched the mixer; preserve that).
+    if audioSessionOwnership != .sdkOwned || injectedMainMixer != nil
+      || hasAppliedOwnershipToMixer
+    {
+      mainMixer.applyOwnership(audioSessionOwnership)
+      hasAppliedOwnershipToMixer = true
+      // Mirror what the mixer actually latched. If the latch was rejected (late
+      // .hostOwned after the session was touched — asserted in debug, ignored in
+      // release), fall back to .sdkOwned: keeping legacy handling active is safe;
+      // pretending host mode is active while the SDK still owns the session is not.
+      self.audioSessionOwnership = mainMixer.appliedOwnership ?? .sdkOwned
+    } else {
+      self.audioSessionOwnership = .sdkOwned
+    }
     #if os(iOS) || os(tvOS)
       if self.audioSessionOwnership == .hostOwned { removeAudioSessionObservers() }
     #endif
@@ -877,6 +893,10 @@ final public class PlayolaStationPlayer: ObservableObject {
     isSuspended = true
     schedulingTask?.cancel()
     schedulingTask = nil
+    // Symmetry with stop(): playTask is currently never assigned a live task,
+    // but cancel it anyway so pause keeps fencing it if that ever changes.
+    playTask?.cancel()
+    playTask = nil
     for player in _spinPlayers { player.stop() }
     for (_, downloadId) in activeDownloadIds {
       _ = fileDownloadManager.cancelDownload(id: downloadId)
@@ -1006,6 +1026,12 @@ final public class PlayolaStationPlayer: ObservableObject {
     @objc public func handleAudioEngineConfigurationChange(_ notification: Notification) {
       os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
 
+      // The auto-resume below is interruption POLICY, not engine bookkeeping —
+      // in host mode the app owns that policy and drives resume explicitly,
+      // and an unguarded auto-resume here could race a host-initiated
+      // resumeAfterInterruption() (double play()).
+      guard handlesSessionEventsInternally else { return }
+
       guard !isSuspended else {
         os_log(
           "Ignoring config change while suspended", log: PlayolaStationPlayer.logger, type: .info)
@@ -1086,3 +1112,4 @@ public protocol PlayolaStationPlayerDelegate: AnyObject {
     _ player: PlayolaStationPlayer,
     playerStateDidChange state: PlayolaStationPlayer.State)
 }
+// swiftlint:enable file_length

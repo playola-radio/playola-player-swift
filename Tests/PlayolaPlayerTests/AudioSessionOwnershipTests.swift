@@ -2,6 +2,7 @@
 //  PlayolaPlayer
 
 import AVFAudio
+import Foundation
 import Testing
 
 @testable import PlayolaPlayer
@@ -14,7 +15,17 @@ final class SpyAudioSessionManager: AudioSessionManaging {
   func deactivate() async throws {}
 }
 
+/// Headless CI macOS runners hang when a real AVAudioEngine graph is
+/// constructed (no audio HAL session) — the same failure class as the
+/// SpinPlayer CI hang fixed in e8604a5. The tests in this suite construct
+/// PlayolaMainMixer (directly or injected into a station player), so the
+/// suite runs only where CoreAudio is available (local dev machines).
+private var coreAudioGraphAvailable: Bool {
+  ProcessInfo.processInfo.environment["CI"] == nil
+}
+
 @MainActor
+@Suite(.enabled(if: coreAudioGraphAvailable))
 struct AudioSessionOwnershipTests {
   @Test("NoOp manager is inert and reports isConfigured = true in host mode")
   func noOpManagerIsInertAndReportsConfigured() async throws {
