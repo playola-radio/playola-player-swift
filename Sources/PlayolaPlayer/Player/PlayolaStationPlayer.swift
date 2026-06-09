@@ -134,10 +134,13 @@ final public class PlayolaStationPlayer: ObservableObject {
     audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
   ) {
     self.authProvider = authProvider
-    self.audioSessionOwnership = audioSessionOwnership
     mainMixer.applyOwnership(audioSessionOwnership)
+    // Mirror what the mixer actually latched — a conflicting re-configure is
+    // asserted in debug and silently ignored in release; mirroring keeps the
+    // notification-handler gate consistent with the real session manager.
+    self.audioSessionOwnership = mainMixer.appliedOwnership ?? audioSessionOwnership
     #if os(iOS) || os(tvOS)
-      if audioSessionOwnership == .hostOwned { removeAudioSessionObservers() }
+      if self.audioSessionOwnership == .hostOwned { removeAudioSessionObservers() }
     #endif
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
@@ -839,6 +842,8 @@ final public class PlayolaStationPlayer: ObservableObject {
   }
 
   #if os(iOS) || os(tvOS)
+    // `object: nil` is intentional and name-scoped: it removes only these two
+    // named registrations, not the AVAudioEngineConfigurationChange observer.
     private func removeAudioSessionObservers() {
       NotificationCenter.default.removeObserver(
         self, name: AVAudioSession.interruptionNotification, object: nil)

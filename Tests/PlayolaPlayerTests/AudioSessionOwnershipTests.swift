@@ -75,6 +75,28 @@ struct AudioSessionOwnershipTests {
     #expect(legacy.handlesSessionEventsInternally == true)
   }
 
+  @Test("Conflicting re-configure keeps player ownership consistent with mixer")
+  func conflictingReconfigureStaysConsistent() {
+    // Only the same-value re-configure path is exercised: a conflicting value
+    // would trip applyOwnership's assertionFailure in debug test builds (the
+    // conflict path stays a documented debug tripwire, like sessionTouched).
+    // configure mirrors mixer.appliedOwnership, so even a release-mode
+    // conflicting re-configure cannot reopen the notification-handler gate.
+    let mixer = PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager())
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(),
+      urlSession: MockURLSession(),
+      mainMixer: mixer)
+
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    #expect(player.handlesSessionEventsInternally == false)
+    #expect(mixer.appliedOwnership == .hostOwned)
+
+    player.configure(authProvider: MockAuthProvider(), audioSessionOwnership: .hostOwned)
+    #expect(player.handlesSessionEventsInternally == false)
+    #expect(mixer.appliedOwnership == .hostOwned)
+  }
+
   #if os(iOS) || os(tvOS)
     @Test("Host mode ignores interruption notifications")
     func hostModeIgnoresInterruptionNotifications() {

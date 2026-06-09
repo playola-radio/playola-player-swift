@@ -41,7 +41,10 @@ open class PlayolaMainMixer: NSObject {
   open var delegate: PlayolaMainMixerDelegate?
   private let errorReporter = PlayolaErrorReporter.shared
   private(set) var audioSessionManager: any AudioSessionManaging
-  private var appliedOwnership: PlayolaAudioSessionOwnership?
+  /// The ownership actually latched by the first applyOwnership call.
+  /// Internal so PlayolaStationPlayer.configure can stay consistent with it
+  /// even when a conflicting re-configure is silently ignored in release.
+  private(set) var appliedOwnership: PlayolaAudioSessionOwnership?
   /// True once any session-touching call has run (configure/ensure/deactivate).
   /// Used to fail loudly when ownership arrives too late.
   private var sessionTouched = false
