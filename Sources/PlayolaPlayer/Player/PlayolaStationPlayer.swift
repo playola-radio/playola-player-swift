@@ -68,8 +68,11 @@ final public class PlayolaStationPlayer: ObservableObject {
   private let errorReporter = PlayolaErrorReporter.shared
   private var authProvider: PlayolaAuthenticationProvider?
   private let urlSession: URLSessionProtocol
-  /// Injectable for tests; production uses .shared.
-  let mainMixer: PlayolaMainMixer
+  private let injectedMainMixer: PlayolaMainMixer?
+  /// Resolved lazily so merely constructing a station player (e.g. in headless
+  /// macOS test runs) does not build the shared CoreAudio graph — matching
+  /// pre-ownership behavior, where init only touched the mixer on iOS/tvOS.
+  var mainMixer: PlayolaMainMixer { injectedMainMixer ?? .shared }
   private var audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
   /// Whether the SDK reacts to AVAudioSession interruption/route events itself.
   var handlesSessionEventsInternally: Bool { audioSessionOwnership == .sdkOwned }
@@ -135,10 +138,11 @@ final public class PlayolaStationPlayer: ObservableObject {
   ) {
     self.authProvider = authProvider
     mainMixer.applyOwnership(audioSessionOwnership)
-    // Mirror what the mixer actually latched — a conflicting re-configure is
-    // asserted in debug and silently ignored in release; mirroring keeps the
-    // notification-handler gate consistent with the real session manager.
-    self.audioSessionOwnership = mainMixer.appliedOwnership ?? audioSessionOwnership
+    // Mirror what the mixer actually latched. If the latch was rejected (late
+    // .hostOwned after the session was touched — asserted in debug, ignored in
+    // release), fall back to .sdkOwned: keeping legacy handling active is safe;
+    // pretending host mode is active while the SDK still owns the session is not.
+    self.audioSessionOwnership = mainMixer.appliedOwnership ?? .sdkOwned
     #if os(iOS) || os(tvOS)
       if self.audioSessionOwnership == .hostOwned { removeAudioSessionObservers() }
     #endif
@@ -184,7 +188,7 @@ final public class PlayolaStationPlayer: ObservableObject {
   ) {
     self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.urlSession = urlSession
-    self.mainMixer = mainMixer ?? .shared
+    self.injectedMainMixer = mainMixer
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
 
@@ -220,6 +224,9 @@ final public class PlayolaStationPlayer: ObservableObject {
     let availablePlayers = _spinPlayers.filter({ $0.state == .available })
     if let available = availablePlayers.first { return available }
 
+    // Note: SpinPlayer currently couples to PlayolaMainMixer.shared internally
+    // (it ignores an injected mixer). Fine in production where everything uses
+    // .shared; threading injection through SpinPlayer is a known follow-up.
     let newPlayer = SpinPlayer(delegate: self)
     _spinPlayers.append(newPlayer)
     return newPlayer

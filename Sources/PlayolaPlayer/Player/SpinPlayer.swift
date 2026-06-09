@@ -612,6 +612,15 @@ public class SpinPlayer {
     continuation: CheckedContinuation<Result<URL, Error>, Never>
   ) {
     Task { @MainActor in
+      // A stop()/pauseForInterruption() between download completion and this hop
+      // clears `spin`. Bail before touching the engine or scheduling playback —
+      // otherwise a stale download starts audio the station player already
+      // silenced (state stays .paused/.idle while sound plays).
+      guard self.spin?.id == spin.id else {
+        continuation.resume(returning: .failure(FileDownloadError.downloadCancelled))
+        return
+      }
+
       await self.loadFile(with: localUrl)
 
       // Ensure audio session is configured and engine is started before playback.
