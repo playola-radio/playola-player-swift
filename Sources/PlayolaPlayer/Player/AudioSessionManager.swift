@@ -17,6 +17,30 @@ protocol AudioSessionManaging {
   var isConfigured: Bool { get }
 }
 
+/// Inert session manager used when the HOST APP owns the process-global
+/// AVAudioSession (see `PlayolaAudioSessionOwnership.hostOwned`).
+///
+/// Reports `isConfigured == true` so SDK guards that gate on configuration
+/// become pass-throughs. HOST CONTRACT: the app must configure (.playback)
+/// and activate the session before play()/resumeAfterInterruption(); if it
+/// doesn't, engine.start() throws and surfaces through the SDK error path.
+final class NoOpAudioSessionManager: AudioSessionManaging {
+  var isConfigured: Bool { true }
+  init() {}
+  func configureForPlayback() async throws {}
+  func activate() async throws {}
+  func deactivate() async throws {}
+}
+
+/// Who owns the process-global AVAudioSession.
+public enum PlayolaAudioSessionOwnership: Sendable, Equatable {
+  /// SDK configures/activates the session itself (legacy default).
+  case sdkOwned
+  /// Host app owns the session; the SDK never touches it and registers no
+  /// AVAudioSession observers. See host-mode contract in README.
+  case hostOwned
+}
+
 #if os(iOS) || os(tvOS)
   /// iOS/tvOS implementation using AVAudioSession
   class AudioSessionManager: AudioSessionManaging {
