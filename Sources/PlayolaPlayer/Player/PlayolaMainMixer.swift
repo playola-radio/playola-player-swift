@@ -75,6 +75,7 @@ open class PlayolaMainMixer: NSObject {
   }
 
   /// Configures the shared audio session for playback (fire-and-forget)
+  @MainActor
   public func configureAudioSession() {
     sessionTouched = true
     guard !audioSessionManager.isConfigured else { return }
@@ -120,6 +121,7 @@ open class PlayolaMainMixer: NSObject {
   }
 
   /// Deactivates the audio session when it's no longer needed
+  @MainActor
   public func deactivateAudioSession() {
     sessionTouched = true
     guard audioSessionManager.isConfigured else { return }

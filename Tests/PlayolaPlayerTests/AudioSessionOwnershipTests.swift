@@ -5,6 +5,14 @@ import Testing
 
 @testable import PlayolaPlayer
 
+final class SpyAudioSessionManager: AudioSessionManaging {
+  var isConfigured: Bool { true }  // simulates host mode / already-configured
+  private(set) var configureCount = 0
+  func configureForPlayback() async throws { configureCount += 1 }
+  func activate() async throws {}
+  func deactivate() async throws {}
+}
+
 @MainActor
 struct AudioSessionOwnershipTests {
   @Test("NoOp manager is inert and reports isConfigured = true in host mode")
@@ -36,5 +44,14 @@ struct AudioSessionOwnershipTests {
   func applyOwnershipDefaultsToSdkOwned() {
     let mixer = PlayolaMainMixer()
     #expect(mixer.audioSessionManager is AudioSessionManager)
+  }
+
+  @Test("configureAudioSession is a no-op when the manager reports configured")
+  func configureIsNoOpWhenManagerReportsConfigured() async {
+    let spy = SpyAudioSessionManager()
+    let mixer = PlayolaMainMixer(audioSessionManager: spy)
+    mixer.configureAudioSession()
+    await Task.yield()  // let any (incorrectly) spawned Task run
+    #expect(spy.configureCount == 0)
   }
 }
