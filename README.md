@@ -178,6 +178,12 @@ class PlayerViewModel: ObservableObject {
                 case .playing(let spin):
                     self?.nowPlaying = "\(spin.audioBlock.title) by \(spin.audioBlock.artist)"
                     self?.isLoading = false
+                case .paused(let spin):
+                    self?.nowPlaying = "\(spin.audioBlock.title) by \(spin.audioBlock.artist) (paused)"
+                    self?.isLoading = false
+                case .error(let error):
+                    self?.nowPlaying = "Error: \(error.localizedDescription)"
+                    self?.isLoading = false
                 }
             }
             .store(in: &cancellables)
@@ -249,6 +255,20 @@ struct PlayerView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                case .paused(let spin):
+                    VStack(spacing: 5) {
+                        Text(spin.audioBlock.title)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                        Text(spin.audioBlock.artist)
+                            .foregroundColor(.secondary)
+                        Text("Paused")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                case .error(let error):
+                    Text("Error: \(error.localizedDescription)")
+                        .foregroundColor(.red)
                 }
             }
             .padding()
@@ -309,14 +329,14 @@ extension PlayerViewController: PlayolaStationPlayerDelegate {
                 self?.updateUI(title: spin.audioBlock.title, 
                              subtitle: spin.audioBlock.artist)
                 
-                // Access additional metadata
-                if let duration = spin.audioBlock.durationMS {
-                    print("Duration: \(duration / 1000) seconds")
-                }
-                
                 if let imageUrl = spin.audioBlock.imageUrl {
                     self?.loadAlbumArt(from: imageUrl)
                 }
+            case .paused(let spin):
+                self?.updateUI(title: spin.audioBlock.title,
+                             subtitle: "\(spin.audioBlock.artist) (paused)")
+            case .error(let error):
+                self?.updateUI(title: "Error", subtitle: error.localizedDescription)
             }
         }
     }
@@ -476,7 +496,9 @@ error.playolaReport(context: "Custom operation failed", level: .warning)
 
 ### Audio Session Management
 
-PlayolaPlayer automatically manages audio sessions, but you can customize the behavior:
+In the default `.sdkOwned` mode, PlayolaPlayer automatically manages the `AVAudioSession` — configuring it, handling interruptions, and reacting to route changes. For apps that need to own the session themselves, see [Host Audio-Session Ownership](#host-audio-session-ownership) below.
+
+In `.sdkOwned` mode you can forward system notifications to the SDK if you prefer to handle the registration yourself:
 
 ```swift
 import AVFoundation
@@ -499,6 +521,107 @@ NotificationCenter.default.addObserver(
     PlayolaStationPlayer.shared.handleAudioRouteChange(notification)
 }
 ```
+
+### Host Audio-Session Ownership
+
+By default the SDK owns the process-global `AVAudioSession`: it configures the `.playback` category, activates and deactivates the session, and self-handles interruptions and route changes. This is the right choice for apps where PlayolaPlayer is the only audio subsystem.
+
+If your app manages multiple audio subsystems (e.g. it mixes VoIP, music, and radio layers), you can transfer session ownership to the host with the `.hostOwned` mode:
+
+```swift
+PlayolaStationPlayer.shared.configure(
+    authProvider: myAuthProvider,
+    audioSessionOwnership: .hostOwned
+)
+```
+
+#### Ownership modes
+
+| Mode | Who configures/activates `AVAudioSession` | SDK observes interruptions? |
+|---|---|---|
+| `.sdkOwned` (default) | SDK | Yes — auto-stops and auto-resumes |
+| `.hostOwned` | Host app | No — host is responsible for all policy |
+
+#### Host-mode contract
+
+When using `.hostOwned` the host app is responsible for the following:
+
+1. **Configure and activate the session before calling `play(stationId:)` or `resumeAfterInterruption()`.** The SDK does not validate this precondition. If the session is not ready when the AVAudioEngine starts, the engine throws; the error surfaces through the normal error path (`.error` state / thrown error from `play(stationId:)`), not a crash.
+
+2. **Own all interruption and route-change policy.** The SDK removes its `AVAudioSession` observers in `.hostOwned` mode and never auto-stops or auto-resumes playback. Your app decides when to pause and resume.
+
+3. **The SDK still observes `AVAudioEngineConfigurationChange`.** This notification is engine-internal and ownership-independent; the SDK handles it in both modes.
+
+#### Interruption handling in host-owned mode
+
+Call `pauseForInterruption()` synchronously when an interruption begins and `resumeAfterInterruption()` asynchronously when it ends:
+
+```swift
+import AVFoundation
+import PlayolaPlayer
+
+// Register in your audio coordinator's init
+NotificationCenter.default.addObserver(
+    forName: AVAudioSession.interruptionNotification,
+    object: nil,
+    queue: .main
+) { notification in
+    guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+          let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+    else { return }
+
+    switch type {
+    case .began:
+        // Silence the engine immediately; preserves stationId for resume
+        PlayolaStationPlayer.shared.pauseForInterruption()
+
+    case .ended:
+        guard let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+              AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
+        else { return }
+
+        Task {
+            do {
+                // Host must reactivate the session before resuming the SDK
+                try AVAudioSession.sharedInstance().setActive(true)
+                try await PlayolaStationPlayer.shared.resumeAfterInterruption()
+            } catch {
+                print("Resume failed: \(error)")
+            }
+        }
+
+    @unknown default:
+        break
+    }
+}
+```
+
+#### Pause semantics for wall-clock radio
+
+PlayolaPlayer streams a live wall-clock schedule — there is no "frozen" playback position. `pauseForInterruption()` preserves only the station identity; `resumeAfterInterruption()` re-fetches the current schedule and re-syncs to the live wall clock. The station resumes at the correct "right now" position, not where it left off before the interruption.
+
+While paused, the player publishes `.paused(Spin)` state (the `Spin` carries the display metadata — title, artist, artwork URL — of the track that was playing at pause time). Update your UI accordingly:
+
+```swift
+PlayolaStationPlayer.shared.$state
+    .sink { state in
+        switch state {
+        case .idle:
+            updateUI(title: "Not playing")
+        case .loading:
+            updateUI(title: "Loading...")
+        case .playing(let spin):
+            updateUI(title: spin.audioBlock.title, artist: spin.audioBlock.artist)
+        case .paused(let spin):
+            updateUI(title: spin.audioBlock.title, artist: spin.audioBlock.artist, paused: true)
+        case .error(let error):
+            updateUI(title: "Error", subtitle: error.localizedDescription)
+        }
+    }
+    .store(in: &cancellables)
+```
+
+> **Note:** If your code has an exhaustive `switch` over `PlayolaStationPlayer.State`, add a `.paused` case — it was introduced alongside this feature.
 
 ### File Download Management
 
@@ -708,11 +831,19 @@ final public class PlayolaStationPlayer: ObservableObject {
     @Published public var state: State
     
     // Configuration
-    public func configure(authProvider: PlayolaAuthenticationProvider, baseURL: URL = default)
+    public func configure(
+        authProvider: PlayolaAuthenticationProvider,
+        baseURL: URL = default,
+        audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
+    )
     
     // Playback control
     public func play(stationId: String, atDate: Date? = nil) async throws
     public func stop()
+    
+    // Interruption handling (host-owned mode)
+    public func pauseForInterruption()
+    public func resumeAfterInterruption() async throws
     
     // Status checking
     public var isPlaying: Bool { get }
@@ -720,15 +851,22 @@ final public class PlayolaStationPlayer: ObservableObject {
     // Delegate support
     public weak var delegate: PlayolaStationPlayerDelegate?
     
-    // Audio session handling (iOS only)
+    // Audio session handling (iOS only, .sdkOwned mode)
     public func handleAudioSessionInterruption(_ notification: Notification)
     public func handleAudioRouteChange(_ notification: Notification)
 }
 
 public enum State: Sendable {
     case idle
-    case loading(Float)  // Progress 0.0-1.0
+    case loading(Float)   // Progress 0.0-1.0
     case playing(Spin)
+    case paused(Spin)     // Interrupted; Spin is display metadata only
+    case error(StationPlayerError)
+}
+
+public enum PlayolaAudioSessionOwnership: Sendable, Equatable {
+    case sdkOwned   // SDK manages AVAudioSession (default)
+    case hostOwned  // Host app manages AVAudioSession
 }
 ```
 
