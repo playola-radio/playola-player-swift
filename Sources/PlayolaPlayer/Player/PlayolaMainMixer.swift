@@ -42,6 +42,8 @@ open class PlayolaMainMixer: NSObject {
   private let errorReporter = PlayolaErrorReporter.shared
   private(set) var audioSessionManager: any AudioSessionManaging
   private var appliedOwnership: PlayolaAudioSessionOwnership?
+  /// True once any session-touching call has run (configure/ensure/deactivate).
+  /// Used to fail loudly when ownership arrives too late.
   private var sessionTouched = false
 
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
