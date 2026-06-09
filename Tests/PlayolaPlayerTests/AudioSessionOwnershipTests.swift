@@ -7,7 +7,7 @@ import Testing
 
 @MainActor
 struct AudioSessionOwnershipTests {
-  @Test
+  @Test("NoOp manager is inert and reports isConfigured = true in host mode")
   func noOpManagerIsInertAndReportsConfigured() async throws {
     let manager = NoOpAudioSessionManager()
     #expect(manager.isConfigured == true)  // SDK guards/asserts must pass in host mode
