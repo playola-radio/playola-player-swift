@@ -17,4 +17,24 @@ struct AudioSessionOwnershipTests {
     // Inert by construction: bodies are empty. The seam invariant test below
     // guarantees no other SDK code can reach AVAudioSession around this manager.
   }
+
+  @Test("Mixer accepts an injected session manager")
+  func mixerAcceptsInjectedManager() {
+    let mixer = PlayolaMainMixer(audioSessionManager: NoOpAudioSessionManager())
+    #expect(mixer.audioSessionManager is NoOpAudioSessionManager)
+  }
+
+  @Test("applyOwnership is idempotent for repeated same-value calls")
+  func applyOwnershipIsIdempotentForSameValue() {
+    let mixer = PlayolaMainMixer()  // fresh instance — never .shared in tests
+    mixer.applyOwnership(.hostOwned)
+    mixer.applyOwnership(.hostOwned)  // must not trap
+    #expect(mixer.audioSessionManager is NoOpAudioSessionManager)
+  }
+
+  @Test("Default manager is the real AudioSessionManager (sdkOwned)")
+  func applyOwnershipDefaultsToSdkOwned() {
+    let mixer = PlayolaMainMixer()
+    #expect(mixer.audioSessionManager is AudioSessionManager)
+  }
 }

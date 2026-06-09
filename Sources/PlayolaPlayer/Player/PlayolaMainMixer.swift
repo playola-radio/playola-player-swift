@@ -40,14 +40,16 @@ open class PlayolaMainMixer: NSObject {
 
   open var delegate: PlayolaMainMixerDelegate?
   private let errorReporter = PlayolaErrorReporter.shared
-  let audioSessionManager: AudioSessionManager
+  private(set) var audioSessionManager: any AudioSessionManaging
+  private var appliedOwnership: PlayolaAudioSessionOwnership?
+  private var sessionTouched = false
 
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
 
-  override init() {
+  init(audioSessionManager: (any AudioSessionManaging)? = nil) {
     self.mixerNode = AVAudioMixerNode()
     self.engine = AVAudioEngine()
-    self.audioSessionManager = AudioSessionManager()
+    self.audioSessionManager = audioSessionManager ?? AudioSessionManager()
 
     super.init()
     self.engine.attach(self.mixerNode)
@@ -72,6 +74,7 @@ open class PlayolaMainMixer: NSObject {
 
   /// Configures the shared audio session for playback (fire-and-forget)
   public func configureAudioSession() {
+    sessionTouched = true
     guard !audioSessionManager.isConfigured else { return }
 
     Task { @MainActor in
@@ -95,6 +98,7 @@ open class PlayolaMainMixer: NSObject {
   /// Use this before engine.start() to avoid stalling the audio engine.
   @MainActor
   public func ensureAudioSessionConfigured() async throws {
+    sessionTouched = true
     guard !audioSessionManager.isConfigured else { return }
 
     do {
@@ -115,6 +119,7 @@ open class PlayolaMainMixer: NSObject {
 
   /// Deactivates the audio session when it's no longer needed
   public func deactivateAudioSession() {
+    sessionTouched = true
     guard audioSessionManager.isConfigured else { return }
 
     Task { @MainActor in
@@ -131,6 +136,39 @@ open class PlayolaMainMixer: NSObject {
   /// Handles the audio tap
   private func onTap(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime) {
     self.delegate?.player(self, didPlayBuffer: buffer)
+  }
+
+  /// Applies the ownership choice made in PlayolaStationPlayer.configure.
+  /// Idempotent for repeated same-value calls. Programmer errors fail loudly in
+  /// debug (assertionFailure) and are ignored in release:
+  ///  - conflicting values,
+  ///  - any call after the engine has started,
+  ///  - switching to .hostOwned after the SDK already touched the session
+  ///    (e.g. a SpinPlayer was constructed before configure — SpinPlayer.init
+  ///    calls configureAudioSession()).
+  @MainActor
+  func applyOwnership(_ ownership: PlayolaAudioSessionOwnership) {
+    if let applied = appliedOwnership {
+      if applied != ownership {
+        assertionFailure("Conflicting audio-session ownership: \(applied) -> \(ownership)")
+      }
+      return
+    }
+    guard !engine.isRunning else {
+      assertionFailure("applyOwnership must be called before the engine starts")
+      return
+    }
+    if ownership == .hostOwned && sessionTouched {
+      assertionFailure(
+        "applyOwnership(.hostOwned) after the SDK already configured the session — "
+          + "call configure(audioSessionOwnership:) before creating any playback objects")
+      return
+    }
+    appliedOwnership = ownership
+    switch ownership {
+    case .sdkOwned: break  // keep the AudioSessionManager from init
+    case .hostOwned: audioSessionManager = NoOpAudioSessionManager()
+    }
   }
 
   @MainActor
