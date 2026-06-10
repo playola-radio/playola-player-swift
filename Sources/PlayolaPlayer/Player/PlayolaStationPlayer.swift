@@ -4,6 +4,7 @@
 //
 //  Created by Brian D Keane on 12/29/24.
 //
+// swiftlint:disable file_length
 import AVFAudio
 import Combine
 import Foundation
@@ -847,6 +848,12 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.stationId = nil
     self.currentSchedule = nil
     self.state = .idle
+    // stop() means "forget everything", including any armed interruption. Without
+    // this, a later resumeAfterInterruption() (or a resume retry) could revive a
+    // station the host explicitly stopped.
+    self.isSuspended = false
+    self.wasPlayingBeforeInterruption = false
+    self.interruptedStationId = nil
 
     os_log("✅ STOP completed", log: PlayolaStationPlayer.logger, type: .info)
   }
@@ -889,25 +896,49 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   /// Host-driven resume. Restarts the engine and replays the interrupted station
   /// re-synced to the current wall clock. The host owns the `AVAudioSession` and
-  /// MUST have re-activated it before calling this. Throws so the host
-  /// coordinator can render failures. No-op if nothing was interrupted OR if
-  /// playback wasn't active when the pause happened.
+  /// MUST have re-activated it before calling this. No-op if nothing was
+  /// interrupted OR if playback wasn't active when the pause happened.
+  ///
+  /// Consumes the interruption up-front: this is a one-shot attempt. On failure
+  /// it both throws AND publishes `.error` state (so a host driving UI from
+  /// `$state` sees the failure without catching the throw). **To retry, call
+  /// `play(stationId:)`** — the station is available as the player's `stationId`
+  /// (still set after a failed resume; only `stop()` clears it). The resume is
+  /// abandoned cleanly if the host starts or stops playback while it's in flight.
   public func resumeAfterInterruption() async throws {
     guard let stationToResume = interruptedStationId,
       wasPlayingBeforeInterruption
     else { return }
+    // Consume the armed interruption now — this attempt owns it. (play() would
+    // clear these at its first lines anyway; clearing here keeps the failure
+    // path honest: retry is via play(), not a second resume call.)
     isSuspended = false
+    interruptedStationId = nil
+    wasPlayingBeforeInterruption = false
+
     // restartEngine() before play(): after an interruption the engine may be in
     // a stopped-but-stale CoreAudio state; play()'s lazy engine start does not
     // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is
     // idempotent when healthy.
-    try await mainMixer.restartEngine()
+    let generation = playGeneration
+    do {
+      try await mainMixer.restartEngine()
+    } catch {
+      // Mirror play()'s error path so a host observing $state isn't left on a
+      // stale .paused with no working resume — but only if a host stop()/play()
+      // hasn't superseded us during the restart.
+      if generation == playGeneration {
+        state = .error(
+          .playbackError("Failed to restart audio engine on resume: \(error.localizedDescription)"))
+      }
+      throw error
+    }
+    // A host stop()/play() during restartEngine bumped the generation — abandon
+    // the resume so we don't revive a station the host stopped or override a
+    // station it just started. (Supersession during play()'s own awaits is
+    // handled by play()'s generation gate.)
+    guard generation == playGeneration else { return }
     try await play(stationId: stationToResume)
-    // Disarm only after a successful resume. If restartEngine()/play() throws
-    // (e.g. the host hasn't reactivated the session yet), the armed state is
-    // preserved so a later resumeAfterInterruption() retry still works.
-    interruptedStationId = nil
-    wasPlayingBeforeInterruption = false
   }
 
   /// Recovers the SDK's own engine graph when AVAudioEngine reconfigures itself
@@ -915,7 +946,10 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// session ownership: it touches no AVAudioSession API. Skipped while the host
   /// has paused for an interruption (the host drives resume then). Only acts
   /// while actively playing; re-syncs to the live wall clock via play().
-  @objc public func handleAudioEngineConfigurationChange(_ notification: Notification) {
+  ///
+  /// Internal (not public): it's a notification selector target, not host API —
+  /// the host never calls it. `@objc` is required for `#selector`.
+  @objc func handleAudioEngineConfigurationChange(_ notification: Notification) {
     os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
     guard !isSuspended, isPlaying, let stationToRecover = stationId else { return }
     Task { @MainActor in
@@ -988,3 +1022,4 @@ public protocol PlayolaStationPlayerDelegate: AnyObject {
     _ player: PlayolaStationPlayer,
     playerStateDidChange state: PlayolaStationPlayer.State)
 }
+// swiftlint:enable file_length
