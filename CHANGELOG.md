@@ -2,7 +2,63 @@
 
 All notable changes to PlayolaPlayer are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Versions correspond to git tags,
-which Swift Package Manager consumers pin to.
+which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
+minor version.
+
+## 0.20.0
+
+This release makes the **host app the sole owner of the `AVAudioSession`.** The
+SDK previously configured/activated the session and self-handled interruptions
+and route changes; it no longer touches `AVAudioSession` at all. This lets the
+SDK coexist cleanly with other audio subsystems in your app (URL streaming,
+recording, VoIP) instead of fighting them for the process-global session.
+
+### Removed
+
+- **The SDK no longer manages the `AVAudioSession`.** `AudioSessionManager` is
+  gone, `PlayolaMainMixer` no longer exposes `configureAudioSession()` /
+  `ensureAudioSessionConfigured()` / `deactivateAudioSession()`, and
+  `PlayolaStationPlayer` no longer registers `AVAudioSession.interruptionNotification`
+  / `routeChangeNotification` observers. The `handleAudioSessionInterruption(_:)`
+  and `handleAudioRouteChange(_:)` methods are removed.
+
+  **Source-breaking — required host changes:**
+
+  1. **Own the session.** Configure and activate it before `play(stationId:)`:
+     `try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])`
+     then `setActive(true)`. The SDK no longer does this; without it,
+     `play(stationId:)` fails when the engine starts (surfaced as `.error`).
+
+  2. **Drive interruptions yourself.** Observe `AVAudioSession.interruptionNotification`
+     (and route changes as needed) and call the new `pauseForInterruption()` /
+     `resumeAfterInterruption()` (below). Reactivate the session before calling
+     resume.
+
+  See the [Audio session](README.md#audio-session) and migration sections of the
+  README for copy-paste host setup and a full interruption-handling example.
+
+### Added
+
+- **Host-driven interruption transport.**
+  - `PlayolaStationPlayer.pauseForInterruption()` — silences playback,
+    cancels scheduling/downloads, and is generation-fenced so in-flight work
+    from before the pause can't publish state afterward. Preserves only the
+    station identity (wall-clock radio has no frozen position). Idempotent
+    across a double-pause.
+  - `PlayolaStationPlayer.resumeAfterInterruption() async throws` — restarts the
+    engine and replays the interrupted station re-synced to the live wall clock.
+    Disarms only on success, so a failed resume (e.g. the host hasn't
+    reactivated the session yet) stays retryable.
+
+- **`PlayolaStationPlayer.State` gained a `.paused(Spin)` case.** Published while
+  paused for an interruption; the `Spin` carries display metadata (title,
+  artist, artwork URL) for the track that was playing. **Source-breaking for
+  consumers** that `switch` exhaustively over `State`: add a `case .paused` arm.
+
+- **Engine self-recovery.** The SDK now restarts and re-syncs its own engine
+  graph on `AVAudioEngineConfigurationChange` (scoped to the SDK's own engine,
+  so a host running a separate `AVAudioEngine` is unaffected). This is engine
+  ownership, not session ownership — it touches no `AVAudioSession` API.
 
 ## 0.19.0
 

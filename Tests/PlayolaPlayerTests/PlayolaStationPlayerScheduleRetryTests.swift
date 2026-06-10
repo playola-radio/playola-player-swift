@@ -205,6 +205,7 @@ private final class StateRecorder: PlayolaStationPlayerDelegate {
     case .playing: tag = "playing"
     case .idle: tag = "idle"
     case .error: tag = "error"
+    case .paused: tag = "paused"
     }
     MainActor.assumeIsolated { tags.append(tag) }
   }

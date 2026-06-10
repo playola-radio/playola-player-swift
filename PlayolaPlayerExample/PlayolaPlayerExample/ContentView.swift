@@ -129,6 +129,16 @@ struct ContentView: View {
                   .font(.caption)
                   .foregroundColor(.white.opacity(0.6))
               }
+            } else if case .paused(let spin) = player.state {
+              Text(spin.audioBlock.title)
+                .font(.title2)
+                .fontWeight(.semibold)
+                .foregroundColor(.white.opacity(0.7))
+                .lineLimit(1)
+
+              Text("Paused")
+                .font(.headline)
+                .foregroundColor(.white.opacity(0.5))
             } else if case .error(let error) = player.state {
               VStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -249,8 +259,9 @@ struct ContentView: View {
       case .playing:
         // Stop playing
         await player.stop()
-      case .idle, .error:
-        // Start (or retry after a failed start)
+      case .idle, .error, .paused:
+        // Start (or retry after a failed start / resume after a pause —
+        // play() re-fetches the schedule and re-syncs to now)
         do {
           try await player.play(stationId: selectedStationId)
         } catch {
@@ -508,6 +519,8 @@ func buttonColor(for state: PlayolaStationPlayer.State) -> Color {
     return Color.green
   case .error:
     return Color.green
+  case .paused:
+    return Color.green
   }
 }
 
@@ -521,14 +534,19 @@ func buttonIcon(for state: PlayolaStationPlayer.State) -> String {
     return "play.fill"
   case .error:
     return "arrow.clockwise"
+  case .paused:
+    return "play.fill"
   }
 }
 
 func shouldOffsetIcon(for state: PlayolaStationPlayer.State) -> Bool {
-  if case .idle = state {
+  // Offset centers the play triangle; .paused shows play.fill like .idle.
+  switch state {
+  case .idle, .paused:
     return true
+  default:
+    return false
   }
-  return false
 }
 
 // Custom button style for offset buttons
