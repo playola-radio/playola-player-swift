@@ -899,10 +899,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// MUST have re-activated it before calling this. No-op if nothing was
   /// interrupted OR if playback wasn't active when the pause happened.
   ///
-  /// Consumes the interruption up-front: this is a one-shot attempt. It throws
-  /// on failure so the host knows; **to retry, call `play(stationId:)`** with the
-  /// station you were resuming (the host holds it). The resume is abandoned
-  /// cleanly if the host starts or stops playback while it's in flight.
+  /// Consumes the interruption up-front: this is a one-shot attempt. On failure
+  /// it both throws AND publishes `.error` state (so a host driving UI from
+  /// `$state` sees the failure without catching the throw). **To retry, call
+  /// `play(stationId:)`** — the station is available as the player's `stationId`
+  /// (still set after a failed resume; only `stop()` clears it). The resume is
+  /// abandoned cleanly if the host starts or stops playback while it's in flight.
   public func resumeAfterInterruption() async throws {
     guard let stationToResume = interruptedStationId,
       wasPlayingBeforeInterruption
@@ -919,7 +921,18 @@ final public class PlayolaStationPlayer: ObservableObject {
     // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is
     // idempotent when healthy.
     let generation = playGeneration
-    try await mainMixer.restartEngine()
+    do {
+      try await mainMixer.restartEngine()
+    } catch {
+      // Mirror play()'s error path so a host observing $state isn't left on a
+      // stale .paused with no working resume — but only if a host stop()/play()
+      // hasn't superseded us during the restart.
+      if generation == playGeneration {
+        state = .error(
+          .playbackError("Failed to restart audio engine on resume: \(error.localizedDescription)"))
+      }
+      throw error
+    }
     // A host stop()/play() during restartEngine bumped the generation — abandon
     // the resume so we don't revive a station the host stopped or override a
     // station it just started. (Supersession during play()'s own awaits is
