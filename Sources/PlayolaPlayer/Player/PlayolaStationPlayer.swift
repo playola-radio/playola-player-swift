@@ -178,9 +178,23 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.urlSession = urlSession
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
-    // The SDK does not observe AVAudioSession interruptions or route changes —
+
+    // The SDK does NOT observe AVAudioSession interruptions or route changes —
     // the host owns that policy and drives pauseForInterruption() /
     // resumeAfterInterruption() explicitly.
+    //
+    // It DOES recover its own engine graph: AVAudioEngine stops itself on a
+    // hardware/format/route reconfiguration and posts this notification. Only
+    // the SDK can observe this for its own engine, so it must self-heal — this
+    // is engine ownership, not session ownership, and touches no AVAudioSession
+    // API. `object: nil` avoids resolving the shared mixer (and building the
+    // CoreAudio graph) at construction time.
+    NotificationCenter.default.addObserver(
+      self,
+      selector: #selector(handleAudioEngineConfigurationChange(_:)),
+      name: .AVAudioEngineConfigurationChange,
+      object: nil
+    )
   }
 
   private static let logger = OSLog(
@@ -866,16 +880,36 @@ final public class PlayolaStationPlayer: ObservableObject {
       wasPlayingBeforeInterruption
     else { return }
     isSuspended = false
-    defer {
-      interruptedStationId = nil
-      wasPlayingBeforeInterruption = false
-    }
     // restartEngine() before play(): after an interruption the engine may be in
     // a stopped-but-stale CoreAudio state; play()'s lazy engine start does not
     // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is
     // idempotent when healthy.
     try await mainMixer.restartEngine()
     try await play(stationId: stationToResume)
+    // Disarm only after a successful resume. If restartEngine()/play() throws
+    // (e.g. the host hasn't reactivated the session yet), the armed state is
+    // preserved so a later resumeAfterInterruption() retry still works.
+    interruptedStationId = nil
+    wasPlayingBeforeInterruption = false
+  }
+
+  /// Recovers the SDK's own engine graph when AVAudioEngine reconfigures itself
+  /// (hardware/format/route change) and stops. This is engine ownership, not
+  /// session ownership: it touches no AVAudioSession API. Skipped while the host
+  /// has paused for an interruption (the host drives resume then). Only acts
+  /// while actively playing; re-syncs to the live wall clock via play().
+  @objc public func handleAudioEngineConfigurationChange(_ notification: Notification) {
+    os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
+    guard !isSuspended, isPlaying, let stationToRecover = stationId else { return }
+    Task { @MainActor in
+      do {
+        try await mainMixer.restartEngine()
+        try await play(stationId: stationToRecover)
+      } catch {
+        await errorReporter.reportError(
+          error, context: "Failed to recover engine after configuration change", level: .error)
+      }
+    }
   }
 
   deinit {

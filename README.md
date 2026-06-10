@@ -686,7 +686,7 @@ File management ensures smooth playback:
 Built on AVAudioEngine for audio processing:
 - Real-time mixing of multiple audio sources
 - Volume control and fading between tracks
-- Session management for handling interruptions and route changes
+- Self-recovers its own engine graph on `AVAudioEngineConfigurationChange` (the host owns the `AVAudioSession`; see [Audio session](#audio-session))
 
 ### How Separate Files Become Continuous Radio
 
