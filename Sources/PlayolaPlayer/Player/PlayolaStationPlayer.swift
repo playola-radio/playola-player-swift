@@ -189,6 +189,7 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// True once the engine-config-change observer has been registered (lazily,
   /// on first playback) so we register it exactly once.
   private var engineConfigObserverRegistered = false
+  private var engineConfigObserver: (any NSObjectProtocol)?
 
   /// Registers the AVAudioEngineConfigurationChange observer, scoped to the
   /// SDK's OWN engine. AVAudioEngine stops itself on a hardware/format/route
@@ -204,12 +205,19 @@ final public class PlayolaStationPlayer: ObservableObject {
   private func registerEngineConfigObserverIfNeeded() {
     guard !engineConfigObserverRegistered else { return }
     engineConfigObserverRegistered = true
-    NotificationCenter.default.addObserver(
-      self,
-      selector: #selector(handleAudioEngineConfigurationChange(_:)),
-      name: .AVAudioEngineConfigurationChange,
-      object: mainMixer.engine
-    )
+    // Deliver on the main queue: AVAudioEngineConfigurationChange fires on an
+    // unspecified thread, and the handler reads @MainActor state (isSuspended,
+    // isPlaying, stationId, playGeneration) synchronously before hopping into a
+    // Task. `queue: .main` guarantees those reads run on the main actor.
+    engineConfigObserver = NotificationCenter.default.addObserver(
+      forName: .AVAudioEngineConfigurationChange,
+      object: mainMixer.engine,
+      queue: .main
+    ) { [weak self] notification in
+      MainActor.assumeIsolated {
+        self?.handleAudioEngineConfigurationChange(notification)
+      }
+    }
   }
 
   private static let logger = OSLog(
@@ -947,16 +955,41 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// has paused for an interruption (the host drives resume then). Only acts
   /// while actively playing; re-syncs to the live wall clock via play().
   ///
-  /// Internal (not public): it's a notification selector target, not host API —
-  /// the host never calls it. `@objc` is required for `#selector`.
-  @objc func handleAudioEngineConfigurationChange(_ notification: Notification) {
+  /// Internal: delivered on the main queue from a block observer (see
+  /// registerEngineConfigObserverIfNeeded), so it runs on the main actor. Not
+  /// host API — the host never calls it.
+  func handleAudioEngineConfigurationChange(_ notification: Notification) {
     os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
     guard !isSuspended, isPlaying, let stationToRecover = stationId else { return }
+    // Snapshot the recovery attempt: stationToRecover + generation together. Any
+    // host stop()/play() after this point bumps playGeneration and invalidates
+    // the recovery — we must not override the host's explicit choice (same
+    // supersession discipline resumeAfterInterruption() uses).
+    let generation = playGeneration
     Task { @MainActor in
       do {
         try await mainMixer.restartEngine()
+      } catch {
+        // Surface via state (mirrors resumeAfterInterruption) so a host driving
+        // UI from $state isn't left on a stale .playing with dead audio — and
+        // report — but only if a host stop()/play() hasn't superseded us during
+        // the restart (a superseded recovery is moot; don't add Sentry noise).
+        if generation == playGeneration {
+          state = .error(
+            .playbackError(
+              "Failed to recover audio engine after configuration change: "
+                + error.localizedDescription))
+          await errorReporter.reportError(
+            error, context: "Failed to recover engine after configuration change", level: .error)
+        }
+        return
+      }
+      // A host stop()/play() during restartEngine took over — don't override it.
+      guard generation == playGeneration else { return }
+      do {
         try await play(stationId: stationToRecover)
       } catch {
+        // play() publishes .error itself on terminal failure when still current.
         await errorReporter.reportError(
           error, context: "Failed to recover engine after configuration change", level: .error)
       }
