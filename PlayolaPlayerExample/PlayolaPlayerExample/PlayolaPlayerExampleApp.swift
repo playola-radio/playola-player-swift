@@ -26,6 +26,10 @@ struct PlayolaPlayerExampleApp: App {
 /// interruption notifications. A production app would also handle route changes.
 @MainActor
 final class HostAudioSession {
+  /// Retained so the block observer can be removed in deinit and its lifetime
+  /// is explicit (NotificationCenter holds the token until removal).
+  private var interruptionObserver: (any NSObjectProtocol)?
+
   init() {
     do {
       let session = AVAudioSession.sharedInstance()
@@ -35,12 +39,18 @@ final class HostAudioSession {
       print("Failed to configure AVAudioSession: \(error)")
     }
 
-    NotificationCenter.default.addObserver(
+    interruptionObserver = NotificationCenter.default.addObserver(
       forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
     ) { notification in
       MainActor.assumeIsolated {
         Self.handleInterruption(notification)
       }
+    }
+  }
+
+  deinit {
+    if let interruptionObserver {
+      NotificationCenter.default.removeObserver(interruptionObserver)
     }
   }
 
