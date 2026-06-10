@@ -952,11 +952,34 @@ final public class PlayolaStationPlayer: ObservableObject {
   @objc func handleAudioEngineConfigurationChange(_ notification: Notification) {
     os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
     guard !isSuspended, isPlaying, let stationToRecover = stationId else { return }
+    // Snapshot the recovery attempt: stationToRecover + generation together. Any
+    // host stop()/play() after this point bumps playGeneration and invalidates
+    // the recovery — we must not override the host's explicit choice (same
+    // supersession discipline resumeAfterInterruption() uses).
+    let generation = playGeneration
     Task { @MainActor in
       do {
         try await mainMixer.restartEngine()
+      } catch {
+        // Surface via state (mirrors resumeAfterInterruption) so a host driving
+        // UI from $state isn't left on a stale .playing with dead audio — but
+        // only if a host stop()/play() hasn't superseded us during the restart.
+        if generation == playGeneration {
+          state = .error(
+            .playbackError(
+              "Failed to recover audio engine after configuration change: "
+                + error.localizedDescription))
+        }
+        await errorReporter.reportError(
+          error, context: "Failed to recover engine after configuration change", level: .error)
+        return
+      }
+      // A host stop()/play() during restartEngine took over — don't override it.
+      guard generation == playGeneration else { return }
+      do {
         try await play(stationId: stationToRecover)
       } catch {
+        // play() publishes .error itself on terminal failure when still current.
         await errorReporter.reportError(
           error, context: "Failed to recover engine after configuration change", level: .error)
       }
