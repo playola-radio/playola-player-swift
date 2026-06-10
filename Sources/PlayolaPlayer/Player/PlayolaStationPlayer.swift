@@ -4,7 +4,6 @@
 //
 //  Created by Brian D Keane on 12/29/24.
 //
-// swiftlint:disable file_length
 import AVFAudio
 import Combine
 import Foundation
@@ -68,18 +67,10 @@ final public class PlayolaStationPlayer: ObservableObject {
   private let errorReporter = PlayolaErrorReporter.shared
   private var authProvider: PlayolaAuthenticationProvider?
   private let urlSession: URLSessionProtocol
-  private let injectedMainMixer: PlayolaMainMixer?
-  /// Whether a configure() call has already pushed ownership into the mixer.
-  /// Once true, every re-configure must go through applyOwnership so conflicts
-  /// keep being detected (and the mirror stays honest).
-  private var hasAppliedOwnershipToMixer = false
   /// Resolved lazily so merely constructing a station player (e.g. in headless
-  /// macOS test runs) does not build the shared CoreAudio graph — matching
-  /// pre-ownership behavior, where init only touched the mixer on iOS/tvOS.
-  var mainMixer: PlayolaMainMixer { injectedMainMixer ?? .shared }
-  private var audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
-  /// Whether the SDK reacts to AVAudioSession interruption/route events itself.
-  var handlesSessionEventsInternally: Bool { audioSessionOwnership == .sdkOwned }
+  /// macOS test runs) does not build the shared CoreAudio graph. The SDK touches
+  /// the mixer only when playback actually starts (or resumes).
+  var mainMixer: PlayolaMainMixer { .shared }
 
   /// Base delay (seconds) for the initial schedule-fetch exponential backoff.
   /// Internal so tests can disable the wait; not part of the public API.
@@ -134,34 +125,16 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// - Parameters:
   ///   - authProvider: Provider for JWT tokens
   ///   - baseURL: Base URL for API endpoints. Defaults to production URL.
-  ///   - audioSessionOwnership: Who owns AVAudioSession. Defaults to `.sdkOwned`.
+  ///
+  /// The SDK does not own the `AVAudioSession`. The host app must configure and
+  /// activate it (category `.playback`) before calling `play(stationId:)` or
+  /// `resumeAfterInterruption()`, and owns all interruption/route-change policy.
+  /// See the README "Audio session" section.
   public func configure(
     authProvider: PlayolaAuthenticationProvider,
-    baseURL: URL = URL(string: "https://admin-api.playola.fm")!,
-    audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
+    baseURL: URL = URL(string: "https://admin-api.playola.fm")!
   ) {
     self.authProvider = authProvider
-    // Resolve the mixer only when ownership work actually requires it. The
-    // default path (.sdkOwned, no injected mixer) keeps init's manager anyway,
-    // and resolving `.shared` here would construct the CoreAudio graph — which
-    // hangs headless CI runs that merely construct + configure a player
-    // (develop's configure never touched the mixer; preserve that).
-    if audioSessionOwnership != .sdkOwned || injectedMainMixer != nil
-      || hasAppliedOwnershipToMixer
-    {
-      mainMixer.applyOwnership(audioSessionOwnership)
-      hasAppliedOwnershipToMixer = true
-      // Mirror what the mixer actually latched. If the latch was rejected (late
-      // .hostOwned after the session was touched — asserted in debug, ignored in
-      // release), fall back to .sdkOwned: keeping legacy handling active is safe;
-      // pretending host mode is active while the SDK still owns the session is not.
-      self.audioSessionOwnership = mainMixer.appliedOwnership ?? .sdkOwned
-    } else {
-      self.audioSessionOwnership = .sdkOwned
-    }
-    #if os(iOS) || os(tvOS)
-      if self.audioSessionOwnership == .hostOwned { removeAudioSessionObservers() }
-    #endif
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
     self.baseUrl = baseURL
@@ -199,37 +172,15 @@ final public class PlayolaStationPlayer: ObservableObject {
   @MainActor
   internal init(
     fileDownloadManager: FileDownloadManaging? = nil,
-    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session),
-    mainMixer: PlayolaMainMixer? = nil
+    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session)
   ) {
     self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.urlSession = urlSession
-    self.injectedMainMixer = mainMixer
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
-
-    #if os(iOS) || os(tvOS)
-      NotificationCenter.default.addObserver(
-        self,
-        selector: #selector(handleAudioSessionInterruption(_:)),
-        name: AVAudioSession.interruptionNotification,
-        object: nil
-      )
-
-      NotificationCenter.default.addObserver(
-        self,
-        selector: #selector(handleAudioRouteChange(_:)),
-        name: AVAudioSession.routeChangeNotification,
-        object: nil
-      )
-
-      NotificationCenter.default.addObserver(
-        self,
-        selector: #selector(handleAudioEngineConfigurationChange(_:)),
-        name: .AVAudioEngineConfigurationChange,
-        object: self.mainMixer.engine
-      )
-    #endif
+    // The SDK does not observe AVAudioSession interruptions or route changes —
+    // the host owns that policy and drives pauseForInterruption() /
+    // resumeAfterInterruption() explicitly.
   }
 
   private static let logger = OSLog(
@@ -893,10 +844,6 @@ final public class PlayolaStationPlayer: ObservableObject {
     isSuspended = true
     schedulingTask?.cancel()
     schedulingTask = nil
-    // Symmetry with stop(): playTask is currently never assigned a live task,
-    // but cancel it anyway so pause keeps fencing it if that ever changes.
-    playTask?.cancel()
-    playTask = nil
     for player in _spinPlayers { player.stop() }
     for (_, downloadId) in activeDownloadIds {
       _ = fileDownloadManager.cancelDownload(id: downloadId)
@@ -909,11 +856,11 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
-  /// Host-driven resume. Re-activates the session via the manager seam (no-op
-  /// in .hostOwned — the host must have activated already), restarts the engine,
-  /// and replays the interrupted station re-synced to the current wall clock.
-  /// Throws so the host coordinator can render failures. No-op if nothing was
-  /// interrupted OR if playback wasn't active when the pause happened.
+  /// Host-driven resume. Restarts the engine and replays the interrupted station
+  /// re-synced to the current wall clock. The host owns the `AVAudioSession` and
+  /// MUST have re-activated it before calling this. Throws so the host
+  /// coordinator can render failures. No-op if nothing was interrupted OR if
+  /// playback wasn't active when the pause happened.
   public func resumeAfterInterruption() async throws {
     guard let stationToResume = interruptedStationId,
       wasPlayingBeforeInterruption
@@ -923,135 +870,13 @@ final public class PlayolaStationPlayer: ObservableObject {
       interruptedStationId = nil
       wasPlayingBeforeInterruption = false
     }
-    try await mainMixer.audioSessionManager.activate()
     // restartEngine() before play(): after an interruption the engine may be in
     // a stopped-but-stale CoreAudio state; play()'s lazy engine start does not
-    // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is the
-    // existing legacy-resume behavior and is idempotent when healthy.
+    // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is
+    // idempotent when healthy.
     try await mainMixer.restartEngine()
     try await play(stationId: stationToResume)
   }
-
-  #if os(iOS) || os(tvOS)
-    // `object: nil` is intentional and name-scoped: it removes only these two
-    // named registrations, not the AVAudioEngineConfigurationChange observer.
-    private func removeAudioSessionObservers() {
-      NotificationCenter.default.removeObserver(
-        self, name: AVAudioSession.interruptionNotification, object: nil)
-      NotificationCenter.default.removeObserver(
-        self, name: AVAudioSession.routeChangeNotification, object: nil)
-    }
-
-    @objc public func handleAudioRouteChange(_ notification: Notification) {
-      guard handlesSessionEventsInternally else { return }  // host owns policy
-      guard let userInfo = notification.userInfo,
-        let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-        let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue)
-      else {
-        return
-      }
-
-      switch reason {
-      case .newDeviceAvailable:
-        os_log("New audio route device available", log: PlayolaStationPlayer.logger, type: .info)
-
-      case .oldDeviceUnavailable:
-        os_log("Audio route device disconnected", log: PlayolaStationPlayer.logger, type: .info)
-        guard
-          let previousRoute = userInfo[AVAudioSessionRouteChangePreviousRouteKey]
-            as? AVAudioSessionRouteDescription
-        else { return }
-
-        let wasUsingHeadphones = previousRoute.outputs.contains {
-          [.headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType)
-        }
-
-        if wasUsingHeadphones && isPlaying {
-          os_log(
-            "Headphones disconnected while playing - pausing", log: PlayolaStationPlayer.logger,
-            type: .info)
-          interruptedStationId = stationId
-          wasPlayingBeforeInterruption = true
-          stop()
-        }
-
-      default:
-        os_log(
-          "Audio route changed for reason: %d", log: PlayolaStationPlayer.logger, type: .info,
-          reasonValue)
-      }
-    }
-
-    @objc public func handleAudioSessionInterruption(_ notification: Notification) {
-      guard handlesSessionEventsInternally else { return }  // host owns policy
-      guard let userInfo = notification.userInfo,
-        let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-        let type = AVAudioSession.InterruptionType(rawValue: typeValue)
-      else {
-        return
-      }
-
-      switch type {
-      case .began:
-        os_log(
-          "Audio session interrupted - suspending", log: PlayolaStationPlayer.logger, type: .info)
-        isSuspended = true
-        wasPlayingBeforeInterruption = isPlaying
-        interruptedStationId = stationId
-
-        // Cancel scheduling to prevent grabbing audio back from other apps
-        schedulingTask?.cancel()
-        schedulingTask = nil
-
-      case .ended:
-        os_log("Audio session interruption ended", log: PlayolaStationPlayer.logger, type: .info)
-        isSuspended = false
-
-        guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
-          return
-        }
-        let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-
-        if options.contains(.shouldResume) && wasPlayingBeforeInterruption {
-          resumeAfterInterruptionFromNotification()
-        }
-
-      @unknown default:
-        os_log(
-          "Unknown audio session interruption type: %d", log: PlayolaStationPlayer.logger,
-          type: .error, typeValue)
-      }
-    }
-
-    @objc public func handleAudioEngineConfigurationChange(_ notification: Notification) {
-      os_log("Audio engine configuration changed", log: PlayolaStationPlayer.logger, type: .info)
-
-      // The auto-resume below is interruption POLICY, not engine bookkeeping —
-      // in host mode the app owns that policy and drives resume explicitly,
-      // and an unguarded auto-resume here could race a host-initiated
-      // resumeAfterInterruption() (double play()).
-      guard handlesSessionEventsInternally else { return }
-
-      guard !isSuspended else {
-        os_log(
-          "Ignoring config change while suspended", log: PlayolaStationPlayer.logger, type: .info)
-        return
-      }
-
-      if wasPlayingBeforeInterruption {
-        resumeAfterInterruptionFromNotification()
-      }
-    }
-
-    private func resumeAfterInterruptionFromNotification() {
-      Task { @MainActor in
-        do { try await resumeAfterInterruption() } catch {
-          await errorReporter.reportError(
-            error, context: "Failed to resume playback after interruption", level: .error)
-        }
-      }
-    }
-  #endif
 
   deinit {
     fileDownloadManager.cancelAllDownloads()
@@ -1112,4 +937,3 @@ public protocol PlayolaStationPlayerDelegate: AnyObject {
     _ player: PlayolaStationPlayer,
     playerStateDidChange state: PlayolaStationPlayer.State)
 }
-// swiftlint:enable file_length

@@ -1,16 +1,17 @@
 //  SessionSeamInvariantTests.swift
 //  PlayolaPlayer
 //
-// Structural guard: the ONLY file in the SDK allowed to reference
-// AVAudioSession.sharedInstance is AudioSessionManager.swift. This is what makes
-// "swap the manager" equivalent to "SDK never touches the session".
+// Structural guard: the SDK is host-session-owned — it must NEVER touch the
+// process-global AVAudioSession. No source file may reference
+// AVAudioSession.sharedInstance, .setCategory(, or .setActive(. The host app
+// owns session configuration, activation, and interruption/route policy.
 
 import Foundation
 import Testing
 
 struct SessionSeamInvariantTests {
-  @Test("Only AudioSessionManager.swift references AVAudioSession session-mutating APIs")
-  func onlyAudioSessionManagerTouchesSharedSession() throws {
+  @Test("No SDK source touches the process-global AVAudioSession")
+  func sdkNeverTouchesSharedSession() throws {
     let thisFile = URL(fileURLWithPath: #filePath)
     let repoRoot =
       thisFile  // Tests/PlayolaPlayerTests/<file> -> repo root
@@ -29,7 +30,6 @@ struct SessionSeamInvariantTests {
     }
     var offenders: [String] = []
     for case let url as URL in enumerator where url.pathExtension == "swift" {
-      guard url.lastPathComponent != "AudioSessionManager.swift" else { continue }
       let content = try String(contentsOf: url, encoding: .utf8)
       // Direct access AND the two session-mutating verbs (catches alias/wrapper
       // bypass). Substring match: a comment mentioning ".setCategory(" would
@@ -39,6 +39,6 @@ struct SessionSeamInvariantTests {
         offenders.append("\(url.lastPathComponent): \(needle)")
       }
     }
-    #expect(offenders.isEmpty, "Direct session access outside the seam: \(offenders)")
+    #expect(offenders.isEmpty, "SDK must not touch AVAudioSession: \(offenders)")
   }
 }

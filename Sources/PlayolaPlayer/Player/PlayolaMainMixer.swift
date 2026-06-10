@@ -40,21 +40,12 @@ open class PlayolaMainMixer: NSObject {
 
   open var delegate: PlayolaMainMixerDelegate?
   private let errorReporter = PlayolaErrorReporter.shared
-  private(set) var audioSessionManager: any AudioSessionManaging
-  /// The ownership actually latched by the first applyOwnership call.
-  /// Internal so PlayolaStationPlayer.configure can stay consistent with it
-  /// even when a conflicting re-configure is silently ignored in release.
-  private(set) var appliedOwnership: PlayolaAudioSessionOwnership?
-  /// True once any session-touching call has run (configure/ensure/deactivate).
-  /// Used to fail loudly when ownership arrives too late.
-  private var sessionTouched = false
 
   private static let logger = OSLog(subsystem: "fm.playola.playolaCore", category: "MainMixer")
 
-  init(audioSessionManager: (any AudioSessionManaging)? = nil) {
+  override init() {
     self.mixerNode = AVAudioMixerNode()
     self.engine = AVAudioEngine()
-    self.audioSessionManager = audioSessionManager ?? AudioSessionManager()
 
     super.init()
     self.engine.attach(self.mixerNode)
@@ -77,105 +68,9 @@ open class PlayolaMainMixer: NSObject {
     self.mixerNode.removeTap(onBus: 0)
   }
 
-  /// Configures the shared audio session for playback (fire-and-forget)
-  @MainActor
-  public func configureAudioSession() {
-    sessionTouched = true
-    guard !audioSessionManager.isConfigured else { return }
-
-    Task { @MainActor in
-      do {
-        try await audioSessionManager.configureForPlayback()
-        try await audioSessionManager.activate()
-        os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
-      } catch {
-        let deviceName = DeviceInfoProvider.deviceName
-        let systemVersion = DeviceInfoProvider.systemVersion
-        await errorReporter.reportError(
-          error,
-          context:
-            "Failed to configure audio session | Device: \(deviceName) | OS: \(systemVersion)",
-          level: .critical)
-      }
-    }
-  }
-
-  /// Configures the shared audio session for playback and waits for completion.
-  /// Use this before engine.start() to avoid stalling the audio engine.
-  @MainActor
-  public func ensureAudioSessionConfigured() async throws {
-    sessionTouched = true
-    guard !audioSessionManager.isConfigured else { return }
-
-    do {
-      try await audioSessionManager.configureForPlayback()
-      try await audioSessionManager.activate()
-      os_log("Audio session successfully configured", log: PlayolaMainMixer.logger, type: .info)
-    } catch {
-      let deviceName = DeviceInfoProvider.deviceName
-      let systemVersion = DeviceInfoProvider.systemVersion
-      await errorReporter.reportError(
-        error,
-        context:
-          "Failed to configure audio session | Device: \(deviceName) | OS: \(systemVersion)",
-        level: .critical)
-      throw error
-    }
-  }
-
-  /// Deactivates the audio session when it's no longer needed
-  @MainActor
-  public func deactivateAudioSession() {
-    sessionTouched = true
-    guard audioSessionManager.isConfigured else { return }
-
-    Task { @MainActor in
-      do {
-        try await audioSessionManager.deactivate()
-        os_log("Audio session deactivated", log: PlayolaMainMixer.logger, type: .info)
-      } catch {
-        await errorReporter.reportError(
-          error, context: "Failed to deactivate audio session", level: .warning)
-      }
-    }
-  }
-
   /// Handles the audio tap
   private func onTap(_ buffer: AVAudioPCMBuffer, _ time: AVAudioTime) {
     self.delegate?.player(self, didPlayBuffer: buffer)
-  }
-
-  /// Applies the ownership choice made in PlayolaStationPlayer.configure.
-  /// Idempotent for repeated same-value calls. Programmer errors fail loudly in
-  /// debug (assertionFailure) and are ignored in release:
-  ///  - conflicting values,
-  ///  - any call after the engine has started,
-  ///  - switching to .hostOwned after the SDK already touched the session
-  ///    (e.g. a SpinPlayer was constructed before configure — SpinPlayer.init
-  ///    calls configureAudioSession()).
-  @MainActor
-  func applyOwnership(_ ownership: PlayolaAudioSessionOwnership) {
-    if let applied = appliedOwnership {
-      if applied != ownership {
-        assertionFailure("Conflicting audio-session ownership: \(applied) -> \(ownership)")
-      }
-      return
-    }
-    guard !engine.isRunning else {
-      assertionFailure("applyOwnership must be called before the engine starts")
-      return
-    }
-    if ownership == .hostOwned && sessionTouched {
-      assertionFailure(
-        "applyOwnership(.hostOwned) after the SDK already configured the session — "
-          + "call configure(audioSessionOwnership:) before creating any playback objects")
-      return
-    }
-    appliedOwnership = ownership
-    switch ownership {
-    case .sdkOwned: break  // keep the AudioSessionManager from init
-    case .hostOwned: audioSessionManager = NoOpAudioSessionManager()
-    }
   }
 
   @MainActor

@@ -494,65 +494,27 @@ PlayolaErrorReporter.shared.reportingLevel = .debug // Reports everything
 error.playolaReport(context: "Custom operation failed", level: .warning)
 ```
 
-### Audio Session Management
+### Audio session
 
-In the default `.sdkOwned` mode, PlayolaPlayer automatically manages the `AVAudioSession` — configuring it, handling interruptions, and reacting to route changes. For apps that need to own the session themselves, see [Host Audio-Session Ownership](#host-audio-session-ownership) below.
+**PlayolaPlayer does not manage the `AVAudioSession`.** The host app owns it: you configure the category, activate/deactivate the session, and own all interruption and route-change policy. This keeps the SDK composable with the rest of your app's audio (URL streams, recording, VoIP) instead of fighting it for the process-global session.
 
-In `.sdkOwned` mode you can forward system notifications to the SDK if you prefer to handle the registration yourself:
+The host is responsible for:
+
+1. **Configure and activate the session before calling `play(stationId:)` or `resumeAfterInterruption()`.** The SDK does not validate this precondition. If the session is not active when the `AVAudioEngine` starts, the engine throws and the error surfaces through the normal error path (`.error` state / thrown error from `play(stationId:)`), not a crash.
+
+2. **Own all interruption and route-change policy.** The SDK registers no `AVAudioSession` observers and never auto-stops or auto-resumes. Your app decides when to pause and resume, and drives the SDK with `pauseForInterruption()` / `resumeAfterInterruption()`.
+
+Minimal launch-time setup (long-form playback, AirPlay 2 friendly):
 
 ```swift
 import AVFoundation
 
-// Handle interruptions (phone calls, alarms, etc.)
-NotificationCenter.default.addObserver(
-    forName: AVAudioSession.interruptionNotification,
-    object: nil,
-    queue: .main
-) { notification in
-    PlayolaStationPlayer.shared.handleAudioSessionInterruption(notification)
-}
-
-// Handle route changes (headphones plugged/unplugged)
-NotificationCenter.default.addObserver(
-    forName: AVAudioSession.routeChangeNotification,
-    object: nil,
-    queue: .main
-) { notification in
-    PlayolaStationPlayer.shared.handleAudioRouteChange(notification)
-}
+let session = AVAudioSession.sharedInstance()
+try session.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
+try session.setActive(true)
 ```
 
-### Host Audio-Session Ownership
-
-By default the SDK owns the process-global `AVAudioSession`: it configures the `.playback` category, activates and deactivates the session, and self-handles interruptions and route changes. This is the right choice for apps where PlayolaPlayer is the only audio subsystem.
-
-If your app manages multiple audio subsystems (e.g. it mixes VoIP, music, and radio layers), you can transfer session ownership to the host with the `.hostOwned` mode:
-
-```swift
-PlayolaStationPlayer.shared.configure(
-    authProvider: myAuthProvider,
-    audioSessionOwnership: .hostOwned
-)
-```
-
-#### Ownership modes
-
-| Mode | Who configures/activates `AVAudioSession` | SDK observes interruptions? |
-|---|---|---|
-| `.sdkOwned` (default) | SDK | Yes — auto-stops and auto-resumes |
-| `.hostOwned` | Host app | No — host is responsible for all policy |
-
-#### Host-mode contract
-
-When using `.hostOwned` the host app is responsible for the following:
-
-1. **Configure and activate the session before calling `play(stationId:)` or `resumeAfterInterruption()`.** The SDK does not validate this precondition. If the session is not ready when the AVAudioEngine starts, the engine throws; the error surfaces through the normal error path (`.error` state / thrown error from `play(stationId:)`), not a crash.
-
-2. **Own all interruption and route-change policy.** The SDK removes its `AVAudioSession` observers in `.hostOwned` mode and never auto-stops or auto-resumes playback. Your app decides when to pause and resume.
-
-3. **The SDK still observes `AVAudioEngineConfigurationChange`.** This notification is engine-internal and ownership-independent; the SDK handles it in both modes.
-
-#### Interruption handling in host-owned mode
+#### Interruption handling
 
 Call `pauseForInterruption()` synchronously when an interruption begins and `resumeAfterInterruption()` asynchronously when it ends:
 
@@ -621,7 +583,17 @@ PlayolaStationPlayer.shared.$state
     .store(in: &cancellables)
 ```
 
-> **Note:** If your code has an exhaustive `switch` over `PlayolaStationPlayer.State`, add a `.paused` case — it was introduced alongside this feature.
+### Migrating from 0.19.x to 0.20.0
+
+`0.20.0` makes the host the sole owner of the `AVAudioSession`. Earlier versions configured, activated, and self-handled interruptions for you. This is a breaking change; both steps are required.
+
+1. **Own the session.** Add the launch-time setup from [Audio session](#audio-session) above (`setCategory(.playback, …)` + `setActive(true)`). The SDK no longer does this — without it, `play(stationId:)` fails when the engine starts.
+
+2. **Drive interruptions yourself.** The SDK no longer observes `AVAudioSession.interruptionNotification` / `routeChangeNotification` and the `handleAudioSessionInterruption(_:)` / `handleAudioRouteChange(_:)` methods are removed. Register your own observers and call `pauseForInterruption()` / `resumeAfterInterruption()` as shown in [Interruption handling](#interruption-handling). Reactivate the session before calling resume.
+
+3. **Handle `.paused`.** A `.paused(Spin)` state was added to `PlayolaStationPlayer.State`. Any exhaustive `switch` over the state must add a `.paused` case (the compiler will flag every site).
+
+4. **`configure(…)` lost its `audioSessionOwnership` parameter.** Host ownership is now the only mode; remove the argument if you passed it.
 
 ### File Download Management
 
@@ -833,15 +805,14 @@ final public class PlayolaStationPlayer: ObservableObject {
     // Configuration
     public func configure(
         authProvider: PlayolaAuthenticationProvider,
-        baseURL: URL = default,
-        audioSessionOwnership: PlayolaAudioSessionOwnership = .sdkOwned
+        baseURL: URL = default
     )
     
     // Playback control
     public func play(stationId: String, atDate: Date? = nil) async throws
     public func stop()
     
-    // Interruption handling (host-owned mode)
+    // Interruption handling — the host calls these (it owns the AVAudioSession)
     public func pauseForInterruption()
     public func resumeAfterInterruption() async throws
     
@@ -850,10 +821,6 @@ final public class PlayolaStationPlayer: ObservableObject {
     
     // Delegate support
     public weak var delegate: PlayolaStationPlayerDelegate?
-    
-    // Audio session handling (iOS only, .sdkOwned mode)
-    public func handleAudioSessionInterruption(_ notification: Notification)
-    public func handleAudioRouteChange(_ notification: Notification)
 }
 
 public enum State: Sendable {
@@ -862,11 +829,6 @@ public enum State: Sendable {
     case playing(Spin)
     case paused(Spin)     // Interrupted; Spin is display metadata only
     case error(StationPlayerError)
-}
-
-public enum PlayolaAudioSessionOwnership: Sendable, Equatable {
-    case sdkOwned   // SDK manages AVAudioSession (default)
-    case hostOwned  // Host app manages AVAudioSession
 }
 ```
 
@@ -909,9 +871,8 @@ open class PlayolaMainMixer {
     public let engine: AVAudioEngine
     public weak var delegate: PlayolaMainMixerDelegate?
     
-    public func configureAudioSession()
-    public func deactivateAudioSession()
-    public func start() throws
+    public func start() async throws
+    public func restartEngine() async throws
     public func attach(_ node: AVAudioPlayerNode)
     public func connect(_ playerNode: AVAudioPlayerNode, to mixerNode: AVAudioMixerNode, format: AVAudioFormat?)
     public func prepare()

@@ -205,8 +205,10 @@ public class SpinPlayer {
       fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.delegate = delegate
 
-    // Use the centralized audio session management instead of configuring here
-    playolaMainMixer.configureAudioSession()
+    // The SDK does not own the AVAudioSession. The host app must configure and
+    // activate it before playback (see README "Audio session"). The engine is
+    // started lazily at play time; engine.start() throws if the session is not
+    // active, surfacing through the normal error path.
 
     /// Make connections
     engine.attach(playerNode)
@@ -434,17 +436,12 @@ public class SpinPlayer {
     )
     // Record that we're starting mid-file so fades can be shifted appropriately
     self.playbackStartOffset = from
-    // Callers must await ensureAudioSessionConfigured() before calling playNow.
-    // The fire-and-forget fallback avoids a crash but may still race.
-    assert(
-      playolaMainMixer.audioSessionManager.isConfigured,
-      "Audio session must be configured before calling playNow — call ensureAudioSessionConfigured() first"
-    )
-    playolaMainMixer.configureAudioSession()
 
     do {
       // Start the engine off the main thread (AUIOClient_StartIO blocks the
-      // caller on cold hardware init). No-op if already running.
+      // caller on cold hardware init). No-op if already running. The host owns
+      // the AVAudioSession and must have activated it; if not, start() throws
+      // and is handled below.
       if !engine.isRunning {
         try await playolaMainMixer.start()
       }
@@ -623,14 +620,14 @@ public class SpinPlayer {
 
       await self.loadFile(with: localUrl)
 
-      // Ensure audio session is configured and engine is started before playback.
-      // Starting the engine here (off-main via playolaMainMixer.start) avoids the
-      // AUIOClient_StartIO main-thread hang on cold first-play.
+      // Start the engine before playback. Starting off-main (via
+      // playolaMainMixer.start) avoids the AUIOClient_StartIO main-thread hang
+      // on cold first-play. The host must have activated the AVAudioSession;
+      // if not, start() throws and playback is skipped.
       do {
-        try await self.playolaMainMixer.ensureAudioSessionConfigured()
         try await self.playolaMainMixer.start()
       } catch {
-        // ensureAudioSessionConfigured / start already reported to Sentry; skip playback
+        // start() already reported to Sentry; skip playback
         self.clear()
         continuation.resume(returning: .failure(error))
         return
@@ -778,7 +775,6 @@ public class SpinPlayer {
 
   private func ensureEngineRunning() {
     guard !engine.isRunning else { return }
-    playolaMainMixer.configureAudioSession()
     // Start off the main thread (fire-and-forget) so we never block on
     // AUIOClient_StartIO here. Installing the tap below doesn't require the
     // engine to already be running — buffers flow once the async start lands.
@@ -786,6 +782,7 @@ public class SpinPlayer {
     // `startTapInstalled = true` and installTap would let a clear() interleave
     // and orphan the tap. This path is only hit if the engine was reset (e.g. an
     // audio-session interruption) after playNow/schedulePlay started it off-main.
+    // The host owns the AVAudioSession; if inactive, start() throws and is logged.
     Task { [weak self] in
       guard let self else { return }
       do {
@@ -1052,13 +1049,9 @@ public class SpinPlayer {
       ISO8601DateFormatter().string(from: scheduledDate)
     )
 
-    // Callers must await ensureAudioSessionConfigured() before calling schedulePlay.
-    assert(
-      playolaMainMixer.audioSessionManager.isConfigured,
-      "Audio session must be configured before calling schedulePlay — call ensureAudioSessionConfigured() first"
-    )
-    playolaMainMixer.configureAudioSession()
     // Start the engine off the main thread to avoid blocking on AUIOClient_StartIO.
+    // The host owns the AVAudioSession and must have activated it before the
+    // scheduled airtime. If not, start() throws and is reported.
     if !engine.isRunning {
       try await playolaMainMixer.start()
     }
