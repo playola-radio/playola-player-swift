@@ -593,7 +593,7 @@ PlayolaStationPlayer.shared.$state
 
 3. **Handle `.paused`.** A `.paused(Spin)` state was added to `PlayolaStationPlayer.State`. Any exhaustive `switch` over the state must add a `.paused` case (the compiler will flag every site).
 
-4. **`configure(…)` lost its `audioSessionOwnership` parameter.** Host ownership is now the only mode; remove the argument if you passed it.
+`configure(authProvider:baseURL:)` is otherwise unchanged.
 
 ### File Download Management
 

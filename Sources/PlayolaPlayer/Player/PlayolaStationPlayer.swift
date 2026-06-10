@@ -178,22 +178,36 @@ final public class PlayolaStationPlayer: ObservableObject {
     self.urlSession = urlSession
     self.authProvider = nil
     self.listeningSessionReporter = ListeningSessionReporter(stationPlayer: self, authProvider: nil)
-
     // The SDK does NOT observe AVAudioSession interruptions or route changes —
     // the host owns that policy and drives pauseForInterruption() /
-    // resumeAfterInterruption() explicitly.
-    //
-    // It DOES recover its own engine graph: AVAudioEngine stops itself on a
-    // hardware/format/route reconfiguration and posts this notification. Only
-    // the SDK can observe this for its own engine, so it must self-heal — this
-    // is engine ownership, not session ownership, and touches no AVAudioSession
-    // API. `object: nil` avoids resolving the shared mixer (and building the
-    // CoreAudio graph) at construction time.
+    // resumeAfterInterruption() explicitly. It DOES self-recover its own engine
+    // graph; that observer is registered lazily once playback begins (see
+    // registerEngineConfigObserverIfNeeded()) so construction stays cheap.
+  }
+
+  /// True once the engine-config-change observer has been registered (lazily,
+  /// on first playback) so we register it exactly once.
+  private var engineConfigObserverRegistered = false
+
+  /// Registers the AVAudioEngineConfigurationChange observer, scoped to the
+  /// SDK's OWN engine. AVAudioEngine stops itself on a hardware/format/route
+  /// reconfiguration and posts this notification; only the SDK can observe it
+  /// for its own engine, so it must self-heal. This is engine ownership, not
+  /// session ownership — it touches no AVAudioSession API.
+  ///
+  /// Registered lazily (from getAvailableSpinPlayer, at the moment a SpinPlayer
+  /// resolves the shared mixer anyway) rather than at init, so merely
+  /// constructing a player never builds the CoreAudio graph. Scoping to
+  /// `mainMixer.engine` (not `object: nil`) means a host running its own
+  /// AVAudioEngine does NOT trigger spurious SDK restarts.
+  private func registerEngineConfigObserverIfNeeded() {
+    guard !engineConfigObserverRegistered else { return }
+    engineConfigObserverRegistered = true
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(handleAudioEngineConfigurationChange(_:)),
       name: .AVAudioEngineConfigurationChange,
-      object: nil
+      object: mainMixer.engine
     )
   }
 
@@ -205,6 +219,9 @@ final public class PlayolaStationPlayer: ObservableObject {
     let availablePlayers = _spinPlayers.filter({ $0.state == .available })
     if let available = availablePlayers.first { return available }
 
+    // First real playback: the SpinPlayer below resolves the shared mixer, so
+    // it's safe to scope the engine-recovery observer to that engine now.
+    registerEngineConfigObserverIfNeeded()
     // Note: SpinPlayer currently couples to PlayolaMainMixer.shared internally
     // (it ignores an injected mixer). Fine in production where everything uses
     // .shared; threading injection through SpinPlayer is a known follow-up.
