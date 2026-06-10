@@ -112,6 +112,37 @@ struct InterruptionTransportTests {
     #expect(player.wasPlayingBeforeInterruptionForTesting == true)
   }
 
+  @Test("stop() clears armed interruption state so a later resume can't revive it")
+  func stopClearsArmedInterruptionState() {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(), urlSession: MockURLSession())
+    player.configure(authProvider: MockAuthProvider())
+    player.setStateForTesting(.playing(.mock), stationId: "station-1")
+    player.pauseForInterruption()
+    #expect(player.interruptedStationIdForTesting == "station-1")  // armed
+
+    player.stop()
+
+    #expect(player.interruptedStationIdForTesting == nil)
+    #expect(player.wasPlayingBeforeInterruptionForTesting == false)
+    #expect(player.isSuspendedForTesting == false)
+  }
+
+  @Test("resumeAfterInterruption after a stop is a no-op")
+  func resumeAfterStopIsNoOp() async throws {
+    let player = PlayolaStationPlayer(
+      fileDownloadManager: MockFileDownloadManager(), urlSession: MockURLSession())
+    player.configure(authProvider: MockAuthProvider())
+    player.setStateForTesting(.playing(.mock), stationId: "station-1")
+    player.pauseForInterruption()
+    player.stop()
+
+    // Guard fails (stop cleared the armed fields) → returns before touching the
+    // engine, so this never resolves the shared mixer / starts CoreAudio.
+    try await player.resumeAfterInterruption()
+    #expect(player.isPlaying == false)
+  }
+
   @Test("Pause during loading arms resume and clears the spinner state")
   func pauseDuringLoadingArmsResumeAndClearsSpinner() {
     let player = PlayolaStationPlayer(
