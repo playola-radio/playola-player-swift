@@ -178,6 +178,12 @@ class PlayerViewModel: ObservableObject {
                 case .playing(let spin):
                     self?.nowPlaying = "\(spin.audioBlock.title) by \(spin.audioBlock.artist)"
                     self?.isLoading = false
+                case .paused(let spin):
+                    self?.nowPlaying = "\(spin.audioBlock.title) by \(spin.audioBlock.artist) (paused)"
+                    self?.isLoading = false
+                case .error(let error):
+                    self?.nowPlaying = "Error: \(error.localizedDescription)"
+                    self?.isLoading = false
                 }
             }
             .store(in: &cancellables)
@@ -249,6 +255,20 @@ struct PlayerView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                case .paused(let spin):
+                    VStack(spacing: 5) {
+                        Text(spin.audioBlock.title)
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                        Text(spin.audioBlock.artist)
+                            .foregroundColor(.secondary)
+                        Text("Paused")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                case .error(let error):
+                    Text("Error: \(error.localizedDescription)")
+                        .foregroundColor(.red)
                 }
             }
             .padding()
@@ -309,14 +329,14 @@ extension PlayerViewController: PlayolaStationPlayerDelegate {
                 self?.updateUI(title: spin.audioBlock.title, 
                              subtitle: spin.audioBlock.artist)
                 
-                // Access additional metadata
-                if let duration = spin.audioBlock.durationMS {
-                    print("Duration: \(duration / 1000) seconds")
-                }
-                
                 if let imageUrl = spin.audioBlock.imageUrl {
                     self?.loadAlbumArt(from: imageUrl)
                 }
+            case .paused(let spin):
+                self?.updateUI(title: spin.audioBlock.title,
+                             subtitle: "\(spin.audioBlock.artist) (paused)")
+            case .error(let error):
+                self?.updateUI(title: "Error", subtitle: error.localizedDescription)
             }
         }
     }
@@ -474,31 +494,106 @@ PlayolaErrorReporter.shared.reportingLevel = .debug // Reports everything
 error.playolaReport(context: "Custom operation failed", level: .warning)
 ```
 
-### Audio Session Management
+### Audio session
 
-PlayolaPlayer automatically manages audio sessions, but you can customize the behavior:
+**PlayolaPlayer does not manage the `AVAudioSession`.** The host app owns it: you configure the category, activate/deactivate the session, and own all interruption and route-change policy. This keeps the SDK composable with the rest of your app's audio (URL streams, recording, VoIP) instead of fighting it for the process-global session.
+
+The host is responsible for:
+
+1. **Configure and activate the session before calling `play(stationId:)` or `resumeAfterInterruption()`.** The SDK does not validate this precondition. If the session is not active when the `AVAudioEngine` starts, the engine throws and the error surfaces through the normal error path (`.error` state / thrown error from `play(stationId:)`), not a crash.
+
+2. **Own all interruption and route-change policy.** The SDK registers no `AVAudioSession` observers and never auto-stops or auto-resumes. Your app decides when to pause and resume, and drives the SDK with `pauseForInterruption()` / `resumeAfterInterruption()`.
+
+Minimal launch-time setup (long-form playback, AirPlay 2 friendly):
 
 ```swift
 import AVFoundation
 
-// Handle interruptions (phone calls, alarms, etc.)
+let session = AVAudioSession.sharedInstance()
+try session.setCategory(.playback, mode: .default, policy: .longFormAudio, options: [])
+try session.setActive(true)
+```
+
+#### Interruption handling
+
+Call `pauseForInterruption()` synchronously when an interruption begins and `resumeAfterInterruption()` asynchronously when it ends:
+
+```swift
+import AVFoundation
+import PlayolaPlayer
+
+// Register in your audio coordinator's init
 NotificationCenter.default.addObserver(
     forName: AVAudioSession.interruptionNotification,
     object: nil,
     queue: .main
 ) { notification in
-    PlayolaStationPlayer.shared.handleAudioSessionInterruption(notification)
-}
+    guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+          let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+    else { return }
 
-// Handle route changes (headphones plugged/unplugged)
-NotificationCenter.default.addObserver(
-    forName: AVAudioSession.routeChangeNotification,
-    object: nil,
-    queue: .main
-) { notification in
-    PlayolaStationPlayer.shared.handleAudioRouteChange(notification)
+    switch type {
+    case .began:
+        // Silence the engine immediately; preserves stationId for resume
+        PlayolaStationPlayer.shared.pauseForInterruption()
+
+    case .ended:
+        guard let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+              AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume)
+        else { return }
+
+        Task {
+            do {
+                // Host must reactivate the session before resuming the SDK
+                try AVAudioSession.sharedInstance().setActive(true)
+                try await PlayolaStationPlayer.shared.resumeAfterInterruption()
+            } catch {
+                print("Resume failed: \(error)")
+            }
+        }
+
+    @unknown default:
+        break
+    }
 }
 ```
+
+#### Pause semantics for wall-clock radio
+
+PlayolaPlayer streams a live wall-clock schedule — there is no "frozen" playback position. `pauseForInterruption()` preserves only the station identity; `resumeAfterInterruption()` re-fetches the current schedule and re-syncs to the live wall clock. The station resumes at the correct "right now" position, not where it left off before the interruption.
+
+While paused, the player publishes `.paused(Spin)` state (the `Spin` carries the display metadata — title, artist, artwork URL — of the track that was playing at pause time). Update your UI accordingly:
+
+```swift
+PlayolaStationPlayer.shared.$state
+    .sink { state in
+        switch state {
+        case .idle:
+            updateUI(title: "Not playing")
+        case .loading:
+            updateUI(title: "Loading...")
+        case .playing(let spin):
+            updateUI(title: spin.audioBlock.title, artist: spin.audioBlock.artist)
+        case .paused(let spin):
+            updateUI(title: spin.audioBlock.title, artist: spin.audioBlock.artist, paused: true)
+        case .error(let error):
+            updateUI(title: "Error", subtitle: error.localizedDescription)
+        }
+    }
+    .store(in: &cancellables)
+```
+
+### Migrating from 0.19.x to 0.20.0
+
+`0.20.0` makes the host the sole owner of the `AVAudioSession`. Earlier versions configured, activated, and self-handled interruptions for you. This is a breaking change; both steps are required.
+
+1. **Own the session.** Add the launch-time setup from [Audio session](#audio-session) above (`setCategory(.playback, …)` + `setActive(true)`). The SDK no longer does this — without it, `play(stationId:)` fails when the engine starts.
+
+2. **Drive interruptions yourself.** The SDK no longer observes `AVAudioSession.interruptionNotification` / `routeChangeNotification` and the `handleAudioSessionInterruption(_:)` / `handleAudioRouteChange(_:)` methods are removed. Register your own observers and call `pauseForInterruption()` / `resumeAfterInterruption()` as shown in [Interruption handling](#interruption-handling). Reactivate the session before calling resume.
+
+3. **Handle `.paused`.** A `.paused(Spin)` state was added to `PlayolaStationPlayer.State`. Any exhaustive `switch` over the state must add a `.paused` case (the compiler will flag every site).
+
+`configure(authProvider:baseURL:)` is otherwise unchanged.
 
 ### File Download Management
 
@@ -591,7 +686,7 @@ File management ensures smooth playback:
 Built on AVAudioEngine for audio processing:
 - Real-time mixing of multiple audio sources
 - Volume control and fading between tracks
-- Session management for handling interruptions and route changes
+- Self-recovers its own engine graph on `AVAudioEngineConfigurationChange` (the host owns the `AVAudioSession`; see [Audio session](#audio-session))
 
 ### How Separate Files Become Continuous Radio
 
@@ -708,27 +803,32 @@ final public class PlayolaStationPlayer: ObservableObject {
     @Published public var state: State
     
     // Configuration
-    public func configure(authProvider: PlayolaAuthenticationProvider, baseURL: URL = default)
+    public func configure(
+        authProvider: PlayolaAuthenticationProvider,
+        baseURL: URL = default
+    )
     
     // Playback control
     public func play(stationId: String, atDate: Date? = nil) async throws
     public func stop()
+    
+    // Interruption handling — the host calls these (it owns the AVAudioSession)
+    public func pauseForInterruption()
+    public func resumeAfterInterruption() async throws
     
     // Status checking
     public var isPlaying: Bool { get }
     
     // Delegate support
     public weak var delegate: PlayolaStationPlayerDelegate?
-    
-    // Audio session handling (iOS only)
-    public func handleAudioSessionInterruption(_ notification: Notification)
-    public func handleAudioRouteChange(_ notification: Notification)
 }
 
 public enum State: Sendable {
     case idle
-    case loading(Float)  // Progress 0.0-1.0
+    case loading(Float)   // Progress 0.0-1.0
     case playing(Spin)
+    case paused(Spin)     // Interrupted; Spin is display metadata only
+    case error(StationPlayerError)
 }
 ```
 
@@ -771,9 +871,8 @@ open class PlayolaMainMixer {
     public let engine: AVAudioEngine
     public weak var delegate: PlayolaMainMixerDelegate?
     
-    public func configureAudioSession()
-    public func deactivateAudioSession()
-    public func start() throws
+    public func start() async throws
+    public func restartEngine() async throws
     public func attach(_ node: AVAudioPlayerNode)
     public func connect(_ playerNode: AVAudioPlayerNode, to mixerNode: AVAudioMixerNode, format: AVAudioFormat?)
     public func prepare()
