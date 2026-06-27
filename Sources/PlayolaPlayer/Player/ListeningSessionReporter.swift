@@ -257,19 +257,30 @@ public class ListeningSessionReporter {
     let interval = heartbeatInterval
     let task = Task { [weak self] in
       await previous?.value
+      let intervalNanos = UInt64(interval * 1_000_000_000)
       while !Task.isCancelled {
         guard let self else { return }
+        // Time the sleep from the START of the POST so the cadence is `interval`,
+        // not `interval + network round-trip`. Otherwise under poor connectivity
+        // the gap between POSTs exceeds the backend's session window
+        // (endTime = lastPOST + 10s) and the session expires between heartbeats —
+        // re-introducing the undercount this fix targets.
+        let startNanos = DispatchTime.now().uptimeNanoseconds
         do {
           try await self.reportOrExtendListeningSession(stationId)
           // The backend now has a session for this device — `/end` is allowed.
           self.remoteSessionStarted = true
         } catch {
+          // A cancellation (real stop/switch) is not a failure — exit quietly.
+          if Task.isCancelled { return }
           // Log and keep looping — the next tick retries.
           await self.errorReporter.reportError(
             error, context: "Failed periodic listening session update", level: .warning)
         }
+        let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startNanos
+        let remaining = intervalNanos > elapsedNanos ? intervalNanos - elapsedNanos : 0
         do {
-          try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+          try await Task.sleep(nanoseconds: remaining)
         } catch {
           return  // cancelled during sleep
         }

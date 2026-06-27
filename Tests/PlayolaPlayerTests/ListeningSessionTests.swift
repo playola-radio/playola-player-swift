@@ -479,7 +479,8 @@ struct ListeningSessionTests {
       #expect(reporter.currentSessionStationId == nil)
     }
 
-    @Test("rapid stop→switch: B's POST waits for A's in-flight POST to drain")
+    @Test(
+      "rapid stop→switch: B's POST waits for A's in-flight POST to drain", .timeLimit(.minutes(1)))
     func switchWaitsForInflightDrain() async throws {
       let session = MockURLSession()
       let reporter = makeReporter(session)
@@ -514,10 +515,14 @@ struct ListeningSessionTests {
 }
 
 /// Lets a test hold the first mock request in flight and release it on demand,
-/// to assert ordering across concurrent reporter transitions.
+/// to assert ordering across concurrent reporter transitions. Uses a
+/// continuation rather than a poll loop, so it neither busy-waits nor releases
+/// early when the holding task is cancelled (the test drives release explicitly;
+/// the `.timeLimit` trait on the test is the escape hatch if release is missed).
 private actor TestGate {
   private var claimed = false
   private var released = false
+  private var continuation: CheckedContinuation<Void, Never>?
 
   func claimFirst() -> Bool {
     if claimed { return false }
@@ -526,8 +531,13 @@ private actor TestGate {
   }
 
   func waitUntilReleased() async {
-    while !released { try? await Task.sleep(nanoseconds: 5_000_000) }
+    if released { return }
+    await withCheckedContinuation { continuation = $0 }
   }
 
-  func release() { released = true }
+  func release() {
+    released = true
+    continuation?.resume()
+    continuation = nil
+  }
 }
