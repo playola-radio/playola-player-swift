@@ -440,5 +440,56 @@ struct ListeningSessionTests {
       // Keeps `reporter` alive through the awaits and confirms the session cleared.
       #expect(reporter.currentSessionStationId == nil)
     }
+
+    @Test("rapid stop→switch: B's POST waits for A's in-flight POST to drain")
+    func switchWaitsForInflightDrain() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      // Hold the very first POST (station A) in flight until we release it.
+      let gate = TestGate()
+      session.beforeResponse = { _ in
+        if await gate.claimFirst() { await gate.waitUntilReleased() }
+      }
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-A")))
+      await waitUntil { session.requestCallCount >= 1 }  // A's POST is in flight (held)
+
+      reporter.handleStateChange(.idle)
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-B")))
+
+      // While A is held, B must not have POSTed — the chain enforces ordering.
+      try? await Task.sleep(nanoseconds: 150_000_000)
+      #expect(session.requestCallCount == 1)
+
+      await gate.release()
+
+      // B now proceeds, strictly after A. No /end on the switch.
+      await waitUntil { session.requestCallCount >= 2 }
+      #expect(session.requestedURLs.allSatisfy { !$0.absoluteString.hasSuffix("/end") })
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions")
+    }
   }
+}
+
+/// Lets a test hold the first mock request in flight and release it on demand,
+/// to assert ordering across concurrent reporter transitions.
+private actor TestGate {
+  private var claimed = false
+  private var released = false
+
+  func claimFirst() -> Bool {
+    if claimed { return false }
+    claimed = true
+    return true
+  }
+
+  func waitUntilReleased() async {
+    while !released { try? await Task.sleep(nanoseconds: 5_000_000) }
+  }
+
+  func release() { released = true }
 }

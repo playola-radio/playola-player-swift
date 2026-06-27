@@ -55,6 +55,11 @@ public class ListeningSessionReporter {
   /// still rendering. Started from real `.playing` state, cancelled on a real
   /// stop/pause — never tied to the UI/scene lifecycle.
   var heartbeatTask: Task<Void, Never>?
+  /// Tail of the serialized lifecycle chain — the most recent start OR end task.
+  /// Every new transition awaits this before its own network write, so reports
+  /// and `/end`s for a device stay strictly ordered even across a station
+  /// switch or a rapid stop→start (no POST can land out of order).
+  private var lifecycleTail: Task<Void, Never>?
   /// Seconds between heartbeat POSTs. Each POST extends the backend session by
   /// 10s, so the cadence must stay under that window. Internal so tests can
   /// shrink it; production keeps the default.
@@ -101,6 +106,7 @@ public class ListeningSessionReporter {
 
   deinit {
     self.heartbeatTask?.cancel()
+    self.lifecycleTail?.cancel()
     disposeBag.removeAll()
   }
 
@@ -131,12 +137,12 @@ public class ListeningSessionReporter {
     // the moment we subscribe to `$state` lands here and is correctly ignored.
     guard currentSessionStationId != nil else { return }
     currentSessionStationId = nil
-    let previous = heartbeatTask
-    previous?.cancel()
+    let previous = lifecycleTail
+    heartbeatTask?.cancel()
     heartbeatTask = nil
-    Task { [weak self] in
-      // Let the in-flight heartbeat POST finish first so `/end` is the last
-      // write and can't be re-extended by a heartbeat that lands after it.
+    let task = Task { [weak self] in
+      // Drain the prior lifecycle write first so `/end` is the last write and
+      // can't be re-extended by a heartbeat that lands after it.
       await previous?.value
       guard let self else { return }
       // A new `.playing` started while we were draining — don't end its session.
@@ -148,6 +154,7 @@ public class ListeningSessionReporter {
           error, context: "Failed to cleanly end listening session", level: .warning)
       }
     }
+    lifecycleTail = task
   }
 
   public func endListeningSession() async throws {
@@ -229,14 +236,15 @@ public class ListeningSessionReporter {
   /// clearing `stationId` can't race the final loop iteration. A serial
   /// POST-then-sleep loop keeps heartbeats from overlapping if a POST runs long.
   ///
-  /// The new loop drains the previous one (`await previous?.value`) before its
-  /// first POST so a station switch can't let the old station's in-flight POST
-  /// land after the new station's — the heartbeats stay strictly ordered.
+  /// The new loop drains the previous lifecycle write (`await previous?.value`,
+  /// where `previous` is the chain tail — a prior heartbeat OR a prior `/end`)
+  /// before its first POST, so no station's in-flight POST can land after a
+  /// newer transition. Heartbeats and `/end`s stay strictly ordered.
   private func startHeartbeat(stationId: String) {
-    let previous = heartbeatTask
-    previous?.cancel()
+    let previous = lifecycleTail
+    heartbeatTask?.cancel()
     let interval = heartbeatInterval
-    heartbeatTask = Task { [weak self] in
+    let task = Task { [weak self] in
       await previous?.value
       while !Task.isCancelled {
         guard let self else { return }
@@ -254,6 +262,8 @@ public class ListeningSessionReporter {
         }
       }
     }
+    heartbeatTask = task
+    lifecycleTail = task
   }
 
   private func handleAuthenticationFailure(url: URL, requestBody: ListeningSessionRequest)
