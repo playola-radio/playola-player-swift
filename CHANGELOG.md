@@ -4,6 +4,22 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Versions correspond to git tags,
 which Swift Package Manager consumers pin to.
 
+## 0.19.1
+
+### Added
+
+- **`Airing.startTime` / `Airing.endTime` — the show's real on-air window.** Every
+  spin returned by `GET /v1/stations/{stationId}/schedule` now carries these two
+  fields on its nested `airing` object. `startTime` is the real moment the show
+  goes on air (`MIN(spin.airtime)` across the airing's spins, accounting for the
+  "lead gap" where preceding content pushes the show later than its slot);
+  `endTime` is the real moment it goes off air (`MAX(spin.endOfMessageTime)`,
+  floored at `airtime + episode.durationMS`). Both are optional ISO-8601 UTC
+  dates — present only on airings from the schedule feed and `nil` elsewhere — so
+  the change is additive and source-compatible. `airtime` (the nominal slot) is
+  unchanged. Downstream apps can drive a real-time "next show in ~N min" countdown
+  off `endTime`.
+
 ## 0.19.0
 
 ### Added
