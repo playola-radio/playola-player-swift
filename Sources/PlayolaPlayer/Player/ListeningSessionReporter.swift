@@ -50,7 +50,18 @@ public class ListeningSessionReporter {
   var deviceId: String? {
     return DeviceInfoProvider.identifierForVendor?.uuidString
   }
-  var timer: Timer?
+  /// Background-safe heartbeat. A long-lived Task (not a foreground RunLoop
+  /// `Timer`) so it keeps firing while the app is backgrounded and audio is
+  /// still rendering. Started from real `.playing` state, cancelled on a real
+  /// stop/pause — never tied to the UI/scene lifecycle.
+  var heartbeatTask: Task<Void, Never>?
+  /// Seconds between heartbeat POSTs. Each POST extends the backend session by
+  /// 10s, so the cadence must stay under that window. Internal so tests can
+  /// shrink it; production keeps the default.
+  var heartbeatInterval: TimeInterval = 10.0
+  /// The station of the currently-active session, or nil when none is active.
+  /// Doubles as the guard that stops a stray `.idle`/`.paused` from sending a
+  /// bogus `/end` when no session was ever started.
   var currentSessionStationId: String?
   var disposeBag = Set<AnyCancellable>()
   weak var stationPlayer: PlayolaStationPlayer?
@@ -74,46 +85,58 @@ public class ListeningSessionReporter {
     self.urlSession = urlSession
     self.baseURL = baseURL
 
-    stationPlayer.$stationId.sink { [weak self] stationId in
-      guard let self else { return }
-      if let stationId {
-        Task {
-          do {
-            try await self.reportOrExtendListeningSession(stationId)
-            self.startPeriodicNotifications()
-          } catch {
-            Task {
-              await self.errorReporter.reportError(
-                error,
-                context: "Failed to initiate listening session for station \(stationId)",
-                level: .warning
-              )
-            }
-          }
-        }
-      } else {
-        Task {
-          do {
-            try await self.endListeningSession()
-            self.stopPeriodicNotifications()
-          } catch {
-            // Just log the error but don't fail critically since this is cleanup
-            Task {
-              await self.errorReporter.reportError(
-                error,
-                context: "Failed to cleanly end listening session",
-                level: .warning
-              )
-            }
-          }
-        }
-      }
+    // Drive the session off real playback state, NOT off `stationId`/the UI
+    // lifecycle. `stationId` is set during `.loading` and cleared by `stop()`,
+    // so observing it reported failed loads and ended sessions on backgrounding.
+    // `$state` only says "playing"/"paused"/"idle", which is what listening is.
+    stationPlayer.$state.sink { [weak self] state in
+      self?.handleStateChange(state)
     }.store(in: &disposeBag)
   }
 
   deinit {
-    self.timer?.invalidate()
+    self.heartbeatTask?.cancel()
     disposeBag.removeAll()
+  }
+
+  /// Maps published playback state to session lifecycle. Start reporting only
+  /// once audio is actually playing; end only on a genuine stop/pause. `.loading`
+  /// is deliberately inert so a failed or aborted load never creates a session.
+  func handleStateChange(_ state: PlayolaStationPlayer.State) {
+    switch state {
+    case .playing(let spin):
+      startSession(stationId: spin.stationId)
+    case .paused, .idle, .error:
+      endSessionIfActive()
+    case .loading:
+      break
+    }
+  }
+
+  private func startSession(stationId: String) {
+    // Already reporting this station — a repeated `.playing` emission must not
+    // spin up a second heartbeat.
+    if currentSessionStationId == stationId, heartbeatTask != nil { return }
+    currentSessionStationId = stationId
+    startHeartbeat(stationId: stationId)
+  }
+
+  private func endSessionIfActive() {
+    // No active session — don't send a bogus `/end`. The initial `.idle` emitted
+    // the moment we subscribe to `$state` lands here and is correctly ignored.
+    guard currentSessionStationId != nil else { return }
+    currentSessionStationId = nil
+    heartbeatTask?.cancel()
+    heartbeatTask = nil
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        try await self.endListeningSession()
+      } catch {
+        await self.errorReporter.reportError(
+          error, context: "Failed to cleanly end listening session", level: .warning)
+      }
+    }
   }
 
   public func endListeningSession() async throws {
@@ -190,40 +213,30 @@ public class ListeningSessionReporter {
     }
   }
 
-  private func startPeriodicNotifications() {
-    self.timer = Timer.scheduledTimer(
-      withTimeInterval: 10.0, repeats: true,
-      block: { [weak self] _ in
+  /// Starts (or restarts) the heartbeat loop for `stationId`. The station id is
+  /// captured here, not re-read from `stationPlayer` each tick, so `stop()`
+  /// clearing `stationId` can't race the final loop iteration. A serial
+  /// POST-then-sleep loop keeps heartbeats from overlapping if a POST runs long.
+  private func startHeartbeat(stationId: String) {
+    heartbeatTask?.cancel()
+    let interval = heartbeatInterval
+    heartbeatTask = Task { [weak self] in
+      while !Task.isCancelled {
         guard let self else { return }
-        guard let stationId = self.stationPlayer?.stationId else {
-          let error = ListeningSessionError.invalidResponse(
-            "Missing stationId in periodic notification")
-          Task {
-            await self.errorReporter.reportError(error, level: .warning)
-          }
-          return
+        do {
+          try await self.reportOrExtendListeningSession(stationId)
+        } catch {
+          // Log and keep looping — the next tick retries.
+          await self.errorReporter.reportError(
+            error, context: "Failed periodic listening session update", level: .warning)
         }
-
-        Task {
-          do {
-            try await self.reportOrExtendListeningSession(stationId)
-          } catch {
-            // Log errors but continue running - we'll try again next interval
-            Task {
-              await self.errorReporter.reportError(
-                error,
-                context: "Failed periodic listening session update",
-                level: .warning
-              )
-            }
-          }
+        do {
+          try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        } catch {
+          return  // cancelled during sleep
         }
-      })
-  }
-
-  private func stopPeriodicNotifications() {
-    self.timer?.invalidate()
-    self.timer = nil
+      }
+    }
   }
 
   private func handleAuthenticationFailure(url: URL, requestBody: ListeningSessionRequest)

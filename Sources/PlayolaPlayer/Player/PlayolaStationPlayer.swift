@@ -812,7 +812,8 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// 1. Stops all playing audio
   /// 2. Cancels pending downloads
   /// 3. Clears the current schedule
-  /// 4. Reports the end of the listening session
+  /// 4. Goes `.idle`, which ends the listening session (the reporter observes
+  ///    `state`, so a real stop ends reporting — backgrounding does not).
   public func stop() {
     os_log("🛑 STOP called", log: PlayolaStationPlayer.logger, type: .info)
 

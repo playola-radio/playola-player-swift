@@ -268,4 +268,127 @@ struct ListeningSessionTests {
           == "http://localhost:8080/v1/listeningSessions/end")
     }
   }
+
+  @Suite("State-driven session lifecycle")
+  @MainActor
+  struct StateDrivenLifecycle {
+    /// Polls until `condition` is true or the timeout elapses. The reporter
+    /// drives POSTs from detached Tasks, so assertions must wait for them.
+    func waitUntil(
+      _ condition: @MainActor @escaping () -> Bool, timeout: TimeInterval = 2.0
+    ) async {
+      let deadline = Date().addingTimeInterval(timeout)
+      while Date() < deadline {
+        if condition() { return }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+      }
+    }
+
+    private func makeReporter(_ session: MockURLSession) -> ListeningSessionReporter {
+      ListeningSessionReporter(
+        authProvider: MockAuthProvider(currentToken: "valid.token"), urlSession: session)
+    }
+
+    @Test("`.playing` starts a session with a POST to /listeningSessions")
+    func playingStartsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60  // keep the heartbeat from repeating mid-test
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+
+      await waitUntil { session.requestCallCount >= 1 }
+      #expect(session.requestCallCount == 1)
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions")
+    }
+
+    @Test("`.loading` does not create a session")
+    func loadingDoesNothing() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+
+      reporter.handleStateChange(.loading(0.5))
+
+      try? await Task.sleep(nanoseconds: 150_000_000)
+      #expect(session.requestCallCount == 0)
+    }
+
+    @Test("`.idle` after playing ends the session with a POST to /listeningSessions/end")
+    func idleAfterPlayingEndsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.idle)
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions/end")
+    }
+
+    @Test("`.idle` with no active session does not send a bogus /end")
+    func idleWithoutSessionSendsNothing() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+
+      reporter.handleStateChange(.idle)
+
+      try? await Task.sleep(nanoseconds: 150_000_000)
+      #expect(session.requestCallCount == 0)
+    }
+
+    @Test("`.paused` after playing ends the session")
+    func pausedAfterPlayingEndsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.paused(.mockWith(stationId: "station-1")))
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions/end")
+    }
+
+    @Test("heartbeat keeps POSTing /listeningSessions while playing")
+    func heartbeatRepeatsWhilePlaying() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 0.05
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+
+      await waitUntil { session.requestCallCount >= 3 }
+      #expect(session.requestCallCount >= 3)
+
+      reporter.handleStateChange(.idle)  // stop the heartbeat so the test settles
+    }
+
+    @Test("repeated `.playing` for the same station does not start a second heartbeat")
+    func duplicatePlayingDoesNotDoubleStart() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      try? await Task.sleep(nanoseconds: 150_000_000)
+
+      #expect(session.requestCallCount == 1)
+    }
+  }
 }
