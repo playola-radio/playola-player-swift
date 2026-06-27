@@ -102,11 +102,17 @@ public class ListeningSessionReporter {
     // so observing it reported failed loads and ended sessions on backgrounding.
     // `$state` only says "playing"/"paused"/"idle", which is what listening is.
     stationPlayer.$state.sink { [weak self] state in
-      // `state` is published from the @MainActor player; assume isolation so the
-      // handler runs synchronously on the main actor (preserving state order)
-      // without an async hop that could reorder rapid transitions.
-      MainActor.assumeIsolated {
-        self?.handleStateChange(state)
+      // `state` is published from the @MainActor player, so delivery is on the
+      // main actor: handle it synchronously to preserve state order (an async
+      // hop could reorder rapid transitions). Guard with `isMainThread` so a
+      // contract violation degrades to a safe async hop instead of crashing the
+      // `MainActor.assumeIsolated` precondition.
+      if Thread.isMainThread {
+        MainActor.assumeIsolated {
+          self?.handleStateChange(state)
+        }
+      } else {
+        Task { @MainActor in self?.handleStateChange(state) }
       }
     }.store(in: &disposeBag)
   }
