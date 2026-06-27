@@ -90,7 +90,12 @@ public class ListeningSessionReporter {
     // so observing it reported failed loads and ended sessions on backgrounding.
     // `$state` only says "playing"/"paused"/"idle", which is what listening is.
     stationPlayer.$state.sink { [weak self] state in
-      self?.handleStateChange(state)
+      // `state` is published from the @MainActor player; assume isolation so the
+      // handler runs synchronously on the main actor (preserving state order)
+      // without an async hop that could reorder rapid transitions.
+      MainActor.assumeIsolated {
+        self?.handleStateChange(state)
+      }
     }.store(in: &disposeBag)
   }
 
@@ -126,10 +131,16 @@ public class ListeningSessionReporter {
     // the moment we subscribe to `$state` lands here and is correctly ignored.
     guard currentSessionStationId != nil else { return }
     currentSessionStationId = nil
-    heartbeatTask?.cancel()
+    let previous = heartbeatTask
+    previous?.cancel()
     heartbeatTask = nil
     Task { [weak self] in
+      // Let the in-flight heartbeat POST finish first so `/end` is the last
+      // write and can't be re-extended by a heartbeat that lands after it.
+      await previous?.value
       guard let self else { return }
+      // A new `.playing` started while we were draining — don't end its session.
+      guard self.currentSessionStationId == nil else { return }
       do {
         try await self.endListeningSession()
       } catch {
@@ -217,10 +228,16 @@ public class ListeningSessionReporter {
   /// captured here, not re-read from `stationPlayer` each tick, so `stop()`
   /// clearing `stationId` can't race the final loop iteration. A serial
   /// POST-then-sleep loop keeps heartbeats from overlapping if a POST runs long.
+  ///
+  /// The new loop drains the previous one (`await previous?.value`) before its
+  /// first POST so a station switch can't let the old station's in-flight POST
+  /// land after the new station's — the heartbeats stay strictly ordered.
   private func startHeartbeat(stationId: String) {
-    heartbeatTask?.cancel()
+    let previous = heartbeatTask
+    previous?.cancel()
     let interval = heartbeatInterval
     heartbeatTask = Task { [weak self] in
+      await previous?.value
       while !Task.isCancelled {
         guard let self else { return }
         do {

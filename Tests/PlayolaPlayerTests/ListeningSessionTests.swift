@@ -390,5 +390,55 @@ struct ListeningSessionTests {
 
       #expect(session.requestCallCount == 1)
     }
+
+    @Test("switching stations keeps one session — reports the new station, never /end")
+    func switchingStationsDoesNotEnd() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-A")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-B")))
+      await waitUntil { session.requestCallCount >= 2 }
+
+      // A station switch is one continuous per-device session: it must report
+      // the new station and must NOT send /end.
+      #expect(session.requestedURLs.allSatisfy { !$0.absoluteString.hasSuffix("/end") })
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions")
+    }
+
+    @Test("observes player $state: initial .idle is ignored, .playing starts, .idle ends")
+    func observesPlayerStateLifecycle() async throws {
+      let player = PlayolaStationPlayer()
+      let session = MockURLSession()
+      let reporter = ListeningSessionReporter(
+        stationPlayer: player,
+        authProvider: MockAuthProvider(currentToken: "valid.token"),
+        urlSession: session)
+      reporter.heartbeatInterval = 60
+
+      // The reporter subscribes to `$state`, whose current value is `.idle`.
+      // That initial emission must NOT send a bogus /end.
+      try? await Task.sleep(nanoseconds: 100_000_000)
+      #expect(session.requestCallCount == 0)
+
+      player.setStateForTesting(.playing(.mockWith(stationId: "s1")), stationId: "s1")
+      await waitUntil { session.requestCallCount >= 1 }
+      #expect(
+        session.lastRequest?.url?.absoluteString.hasSuffix("/v1/listeningSessions") == true)
+
+      player.setStateForTesting(.idle, stationId: nil)
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString.hasSuffix("/v1/listeningSessions/end") == true)
+      // Keeps `reporter` alive through the awaits and confirms the session cleared.
+      #expect(reporter.currentSessionStationId == nil)
+    }
   }
 }

@@ -12,6 +12,9 @@ final class MockURLSession: URLSessionProtocol, @unchecked Sendable {
   var responses: [(Data, URLResponse)] = []
   var requestCallCount = 0
   var lastRequest: URLRequest?
+  /// Every requested URL in order, so tests can assert which endpoints were hit
+  /// (e.g. that no `/end` was ever sent), not just the most recent one.
+  var requestedURLs: [URL] = []
 
   /// When set, every call throws this error (simulating a transport-level
   /// failure such as a `URLError`) instead of returning a response.
@@ -20,6 +23,7 @@ final class MockURLSession: URLSessionProtocol, @unchecked Sendable {
   func data(for request: URLRequest) async throws -> (Data, URLResponse) {
     requestCallCount += 1
     lastRequest = request
+    if let url = request.url { requestedURLs.append(url) }
 
     if let errorToThrow {
       throw errorToThrow
