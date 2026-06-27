@@ -68,6 +68,13 @@ public class ListeningSessionReporter {
   /// Doubles as the guard that stops a stray `.idle`/`.paused` from sending a
   /// bogus `/end` when no session was ever started.
   var currentSessionStationId: String?
+  /// True once a `/listeningSessions` POST has actually succeeded for the current
+  /// device session — i.e. the backend really created a session. Gates `/end` so
+  /// a `.playing` whose first POST failed (auth/network) or was aborted before it
+  /// landed never sends a `/end` for a session that doesn't exist server-side.
+  /// Sticky across a station switch (one continuous per-device session); reset
+  /// only when the session actually ends.
+  var remoteSessionStarted = false
   var disposeBag = Set<AnyCancellable>()
   weak var stationPlayer: PlayolaStationPlayer?
   var currentListeningSessionID: String?
@@ -147,6 +154,10 @@ public class ListeningSessionReporter {
       guard let self else { return }
       // A new `.playing` started while we were draining — don't end its session.
       guard self.currentSessionStationId == nil else { return }
+      // Never created a session server-side (first POST failed/was aborted) —
+      // there is nothing to end, so don't send a bogus `/end`.
+      guard self.remoteSessionStarted else { return }
+      self.remoteSessionStarted = false
       do {
         try await self.endListeningSession()
       } catch {
@@ -250,6 +261,8 @@ public class ListeningSessionReporter {
         guard let self else { return }
         do {
           try await self.reportOrExtendListeningSession(stationId)
+          // The backend now has a session for this device — `/end` is allowed.
+          self.remoteSessionStarted = true
         } catch {
           // Log and keep looping — the next tick retries.
           await self.errorReporter.reportError(

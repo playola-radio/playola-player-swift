@@ -362,6 +362,44 @@ struct ListeningSessionTests {
           == "https://admin-api.playola.fm/v1/listeningSessions/end")
     }
 
+    @Test("`.error` after playing ends the session")
+    func errorAfterPlayingEndsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.error(.networkError("boom")))
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions/end")
+    }
+
+    @Test("a failed first POST does not produce a bogus /end on stop")
+    func failedFirstPostDoesNotEnd() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+      // First report fails, so no session is ever created server-side.
+      session.addResponse(
+        statusCode: 500,
+        url: URL(string: "https://admin-api.playola.fm/v1/listeningSessions")!)
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }  // the failed report happened
+
+      reporter.handleStateChange(.idle)
+      try? await Task.sleep(nanoseconds: 200_000_000)  // give the end task time to (not) fire
+
+      #expect(session.requestedURLs.allSatisfy { !$0.absoluteString.hasSuffix("/end") })
+      #expect(reporter.remoteSessionStarted == false)
+    }
+
     @Test("heartbeat keeps POSTing /listeningSessions while playing")
     func heartbeatRepeatsWhilePlaying() async throws {
       let session = MockURLSession()
