@@ -79,7 +79,9 @@ extension Airing {
     createdAt: Date? = nil,
     updatedAt: Date? = nil,
     episode: Episode?? = nil,
-    station: Station?? = nil
+    station: Station?? = nil,
+    startTime: Date?? = nil,
+    endTime: Date?? = nil
   ) -> Airing {
     let mock = Self.mock
     return Airing(
@@ -90,7 +92,9 @@ extension Airing {
       createdAt: createdAt ?? mock.createdAt,
       updatedAt: updatedAt ?? mock.updatedAt,
       episode: episode ?? mock.episode,
-      station: station ?? mock.station
+      station: station ?? mock.station,
+      startTime: startTime ?? mock.startTime,
+      endTime: endTime ?? mock.endTime
     )
   }
 }
