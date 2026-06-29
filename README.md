@@ -500,6 +500,26 @@ NotificationCenter.default.addObserver(
 }
 ```
 
+### Background playback & listening reporting
+
+The SDK keeps its listening-session heartbeat alive with a playback-state-driven
+task (not a foreground timer), so reporting continues while the app is
+backgrounded **as long as the app is kept alive for background audio**. The host
+app must:
+
+1. **Declare the `audio` background mode.** Add `UIBackgroundModes` → `audio` to
+   your `Info.plist`. Without it, iOS suspends the process on backgrounding, the
+   audio render thread stops, and no client code (heartbeat or `/end`) can run —
+   listening time is undercounted even though a few seconds of buffered audio may
+   still be audible. (The SDK manages the `AVAudioSession` itself on this release
+   line; the background-mode entitlement is still the app's to declare.)
+
+2. **Never call `stop()` on backgrounding.** `stop()` means "playback is over":
+   it ends the listening session. Calling it from a scene/lifecycle hook
+   (`scenePhase == .background`, `didEnterBackground`, `willResignActive`) ends
+   the session while audio is still playing, which is exactly the undercount this
+   design avoids. Only call `stop()` on a real user stop or teardown.
+
 ### File Download Management
 
 Work with the file download and caching system:
