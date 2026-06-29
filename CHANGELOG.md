@@ -5,6 +5,27 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
 minor version.
 
+## 0.20.2
+
+### Fixed
+
+- **Listening sessions are now reported for the whole time audio actually plays,
+  including in the background.** The session heartbeat ran on a foreground
+  `RunLoop` `Timer`, and the session lifecycle was driven by `stationId` (set
+  during `.loading`, cleared by `stop()`). When the app was backgrounded the
+  client sent `POST /listeningSessions/end` while `AVAudioEngine` kept playing
+  already-scheduled audio, and the timer froze with the suspended process —
+  undercounting recorded listening time. The heartbeat now runs on a
+  playback-state-driven `Task` (background-safe while the host holds the `audio`
+  background mode, and timed from the start of each POST so the cadence stays
+  RTT-independent), and the session lifecycle follows real playback `state`: it
+  starts on `.playing`, ends only on a genuine stop/pause/error, never on
+  backgrounding, and never sends a bogus `/end` for a session the backend never
+  created. Hosts that want background reporting must declare
+  `UIBackgroundModes = audio`, keep the `.playback` `AVAudioSession` active, and
+  must not call `stop()` on backgrounding — see the README "Background playback &
+  listening reporting" section. Also available on the 0.19.x line as 0.19.2.
+
 ## 0.20.1
 
 ### Added

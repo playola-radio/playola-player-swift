@@ -50,8 +50,31 @@ public class ListeningSessionReporter {
   var deviceId: String? {
     return DeviceInfoProvider.identifierForVendor?.uuidString
   }
-  var timer: Timer?
+  /// Background-safe heartbeat. A long-lived Task (not a foreground RunLoop
+  /// `Timer`) so it keeps firing while the app is backgrounded and audio is
+  /// still rendering. Started from real `.playing` state, cancelled on a real
+  /// stop/pause — never tied to the UI/scene lifecycle.
+  var heartbeatTask: Task<Void, Never>?
+  /// Tail of the serialized lifecycle chain — the most recent start OR end task.
+  /// Every new transition awaits this before its own network write, so reports
+  /// and `/end`s for a device stay strictly ordered even across a station
+  /// switch or a rapid stop→start (no POST can land out of order).
+  private var lifecycleTail: Task<Void, Never>?
+  /// Seconds between heartbeat POSTs. Each POST extends the backend session by
+  /// 10s, so the cadence must stay under that window. Internal so tests can
+  /// shrink it; production keeps the default.
+  var heartbeatInterval: TimeInterval = 10.0
+  /// The station of the currently-active session, or nil when none is active.
+  /// Doubles as the guard that stops a stray `.idle`/`.paused` from sending a
+  /// bogus `/end` when no session was ever started.
   var currentSessionStationId: String?
+  /// True once a `/listeningSessions` POST has actually succeeded for the current
+  /// device session — i.e. the backend really created a session. Gates `/end` so
+  /// a `.playing` whose first POST failed (auth/network) or was aborted before it
+  /// landed never sends a `/end` for a session that doesn't exist server-side.
+  /// Sticky across a station switch (one continuous per-device session); reset
+  /// only when the session actually ends.
+  var remoteSessionStarted = false
   var disposeBag = Set<AnyCancellable>()
   weak var stationPlayer: PlayolaStationPlayer?
   var currentListeningSessionID: String?
@@ -74,46 +97,81 @@ public class ListeningSessionReporter {
     self.urlSession = urlSession
     self.baseURL = baseURL
 
-    stationPlayer.$stationId.sink { [weak self] stationId in
-      guard let self else { return }
-      if let stationId {
-        Task {
-          do {
-            try await self.reportOrExtendListeningSession(stationId)
-            self.startPeriodicNotifications()
-          } catch {
-            Task {
-              await self.errorReporter.reportError(
-                error,
-                context: "Failed to initiate listening session for station \(stationId)",
-                level: .warning
-              )
-            }
-          }
+    // Drive the session off real playback state, NOT off `stationId`/the UI
+    // lifecycle. `stationId` is set during `.loading` and cleared by `stop()`,
+    // so observing it reported failed loads and ended sessions on backgrounding.
+    // `$state` only says "playing"/"paused"/"idle", which is what listening is.
+    stationPlayer.$state.sink { [weak self] state in
+      // `state` is published from the @MainActor player, so delivery is on the
+      // main actor: handle it synchronously to preserve state order (an async
+      // hop could reorder rapid transitions). Guard with `isMainThread` so a
+      // contract violation degrades to a safe async hop instead of crashing the
+      // `MainActor.assumeIsolated` precondition.
+      if Thread.isMainThread {
+        MainActor.assumeIsolated {
+          self?.handleStateChange(state)
         }
       } else {
-        Task {
-          do {
-            try await self.endListeningSession()
-            self.stopPeriodicNotifications()
-          } catch {
-            // Just log the error but don't fail critically since this is cleanup
-            Task {
-              await self.errorReporter.reportError(
-                error,
-                context: "Failed to cleanly end listening session",
-                level: .warning
-              )
-            }
-          }
-        }
+        Task { @MainActor in self?.handleStateChange(state) }
       }
     }.store(in: &disposeBag)
   }
 
   deinit {
-    self.timer?.invalidate()
+    self.heartbeatTask?.cancel()
+    self.lifecycleTail?.cancel()
     disposeBag.removeAll()
+  }
+
+  /// Maps published playback state to session lifecycle. Start reporting only
+  /// once audio is actually playing; end only on a genuine stop/pause. `.loading`
+  /// is deliberately inert so a failed or aborted load never creates a session.
+  func handleStateChange(_ state: PlayolaStationPlayer.State) {
+    switch state {
+    case .playing(let spin):
+      startSession(stationId: spin.stationId)
+    case .paused, .idle, .error:
+      endSessionIfActive()
+    case .loading:
+      break
+    }
+  }
+
+  private func startSession(stationId: String) {
+    // Already reporting this station — a repeated `.playing` emission must not
+    // spin up a second heartbeat.
+    if currentSessionStationId == stationId, heartbeatTask != nil { return }
+    currentSessionStationId = stationId
+    startHeartbeat(stationId: stationId)
+  }
+
+  private func endSessionIfActive() {
+    // No active session — don't send a bogus `/end`. The initial `.idle` emitted
+    // the moment we subscribe to `$state` lands here and is correctly ignored.
+    guard currentSessionStationId != nil else { return }
+    currentSessionStationId = nil
+    let previous = lifecycleTail
+    heartbeatTask?.cancel()
+    heartbeatTask = nil
+    let task = Task { [weak self] in
+      // Drain the prior lifecycle write first so `/end` is the last write and
+      // can't be re-extended by a heartbeat that lands after it.
+      await previous?.value
+      guard let self else { return }
+      // A new `.playing` started while we were draining — don't end its session.
+      guard self.currentSessionStationId == nil else { return }
+      // Never created a session server-side (first POST failed/was aborted) —
+      // there is nothing to end, so don't send a bogus `/end`.
+      guard self.remoteSessionStarted else { return }
+      self.remoteSessionStarted = false
+      do {
+        try await self.endListeningSession()
+      } catch {
+        await self.errorReporter.reportError(
+          error, context: "Failed to cleanly end listening session", level: .warning)
+      }
+    }
+    lifecycleTail = task
   }
 
   public func endListeningSession() async throws {
@@ -190,40 +248,52 @@ public class ListeningSessionReporter {
     }
   }
 
-  private func startPeriodicNotifications() {
-    self.timer = Timer.scheduledTimer(
-      withTimeInterval: 10.0, repeats: true,
-      block: { [weak self] _ in
+  /// Starts (or restarts) the heartbeat loop for `stationId`. The station id is
+  /// captured here, not re-read from `stationPlayer` each tick, so `stop()`
+  /// clearing `stationId` can't race the final loop iteration. A serial
+  /// POST-then-sleep loop keeps heartbeats from overlapping if a POST runs long.
+  ///
+  /// The new loop drains the previous lifecycle write (`await previous?.value`,
+  /// where `previous` is the chain tail — a prior heartbeat OR a prior `/end`)
+  /// before its first POST, so no station's in-flight POST can land after a
+  /// newer transition. Heartbeats and `/end`s stay strictly ordered.
+  private func startHeartbeat(stationId: String) {
+    let previous = lifecycleTail
+    heartbeatTask?.cancel()
+    let interval = heartbeatInterval
+    let task = Task { [weak self] in
+      await previous?.value
+      let intervalNanos = UInt64(interval * 1_000_000_000)
+      while !Task.isCancelled {
         guard let self else { return }
-        guard let stationId = self.stationPlayer?.stationId else {
-          let error = ListeningSessionError.invalidResponse(
-            "Missing stationId in periodic notification")
-          Task {
-            await self.errorReporter.reportError(error, level: .warning)
-          }
-          return
+        // Time the sleep from the START of the POST so the cadence is `interval`,
+        // not `interval + network round-trip`. Otherwise under poor connectivity
+        // the gap between POSTs exceeds the backend's session window
+        // (endTime = lastPOST + 10s) and the session expires between heartbeats —
+        // re-introducing the undercount this fix targets.
+        let startNanos = DispatchTime.now().uptimeNanoseconds
+        do {
+          try await self.reportOrExtendListeningSession(stationId)
+          // The backend now has a session for this device — `/end` is allowed.
+          self.remoteSessionStarted = true
+        } catch {
+          // A cancellation (real stop/switch) is not a failure — exit quietly.
+          if Task.isCancelled { return }
+          // Log and keep looping — the next tick retries.
+          await self.errorReporter.reportError(
+            error, context: "Failed periodic listening session update", level: .warning)
         }
-
-        Task {
-          do {
-            try await self.reportOrExtendListeningSession(stationId)
-          } catch {
-            // Log errors but continue running - we'll try again next interval
-            Task {
-              await self.errorReporter.reportError(
-                error,
-                context: "Failed periodic listening session update",
-                level: .warning
-              )
-            }
-          }
+        let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startNanos
+        let remaining = intervalNanos > elapsedNanos ? intervalNanos - elapsedNanos : 0
+        do {
+          try await Task.sleep(nanoseconds: remaining)
+        } catch {
+          return  // cancelled during sleep
         }
-      })
-  }
-
-  private func stopPeriodicNotifications() {
-    self.timer?.invalidate()
-    self.timer = nil
+      }
+    }
+    heartbeatTask = task
+    lifecycleTail = task
   }
 
   private func handleAuthenticationFailure(url: URL, requestBody: ListeningSessionRequest)

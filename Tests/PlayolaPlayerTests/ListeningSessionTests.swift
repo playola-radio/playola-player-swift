@@ -268,4 +268,276 @@ struct ListeningSessionTests {
           == "http://localhost:8080/v1/listeningSessions/end")
     }
   }
+
+  @Suite("State-driven session lifecycle")
+  @MainActor
+  struct StateDrivenLifecycle {
+    /// Polls until `condition` is true or the timeout elapses. The reporter
+    /// drives POSTs from detached Tasks, so assertions must wait for them.
+    func waitUntil(
+      _ condition: @MainActor @escaping () -> Bool, timeout: TimeInterval = 2.0
+    ) async {
+      let deadline = Date().addingTimeInterval(timeout)
+      while Date() < deadline {
+        if condition() { return }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+      }
+    }
+
+    private func makeReporter(_ session: MockURLSession) -> ListeningSessionReporter {
+      ListeningSessionReporter(
+        authProvider: MockAuthProvider(currentToken: "valid.token"), urlSession: session)
+    }
+
+    @Test("`.playing` starts a session with a POST to /listeningSessions")
+    func playingStartsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60  // keep the heartbeat from repeating mid-test
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+
+      await waitUntil { session.requestCallCount >= 1 }
+      #expect(session.requestCallCount == 1)
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions")
+    }
+
+    @Test("`.loading` does not create a session")
+    func loadingDoesNothing() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+
+      reporter.handleStateChange(.loading(0.5))
+
+      try? await Task.sleep(nanoseconds: 150_000_000)
+      #expect(session.requestCallCount == 0)
+    }
+
+    @Test("`.idle` after playing ends the session with a POST to /listeningSessions/end")
+    func idleAfterPlayingEndsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.idle)
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions/end")
+    }
+
+    @Test("`.idle` with no active session does not send a bogus /end")
+    func idleWithoutSessionSendsNothing() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+
+      reporter.handleStateChange(.idle)
+
+      try? await Task.sleep(nanoseconds: 150_000_000)
+      #expect(session.requestCallCount == 0)
+    }
+
+    @Test("`.paused` after playing ends the session")
+    func pausedAfterPlayingEndsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.paused(.mockWith(stationId: "station-1")))
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions/end")
+    }
+
+    @Test("`.error` after playing ends the session")
+    func errorAfterPlayingEndsSession() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.error(.networkError("boom")))
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions/end")
+    }
+
+    @Test("a failed first POST does not produce a bogus /end on stop")
+    func failedFirstPostDoesNotEnd() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+      // First report fails, so no session is ever created server-side.
+      session.addResponse(
+        statusCode: 500,
+        url: URL(string: "https://admin-api.playola.fm/v1/listeningSessions")!)
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }  // the failed report happened
+
+      reporter.handleStateChange(.idle)
+      try? await Task.sleep(nanoseconds: 200_000_000)  // give the end task time to (not) fire
+
+      #expect(session.requestedURLs.allSatisfy { !$0.absoluteString.hasSuffix("/end") })
+      #expect(reporter.remoteSessionStarted == false)
+    }
+
+    @Test("heartbeat keeps POSTing /listeningSessions while playing")
+    func heartbeatRepeatsWhilePlaying() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 0.05
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+
+      await waitUntil { session.requestCallCount >= 3 }
+      #expect(session.requestCallCount >= 3)
+
+      reporter.handleStateChange(.idle)  // stop the heartbeat so the test settles
+    }
+
+    @Test("repeated `.playing` for the same station does not start a second heartbeat")
+    func duplicatePlayingDoesNotDoubleStart() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-1")))
+      try? await Task.sleep(nanoseconds: 150_000_000)
+
+      #expect(session.requestCallCount == 1)
+    }
+
+    @Test("switching stations keeps one session — reports the new station, never /end")
+    func switchingStationsDoesNotEnd() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-A")))
+      await waitUntil { session.requestCallCount >= 1 }
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-B")))
+      await waitUntil { session.requestCallCount >= 2 }
+
+      // A station switch is one continuous per-device session: it must report
+      // the new station and must NOT send /end.
+      #expect(session.requestedURLs.allSatisfy { !$0.absoluteString.hasSuffix("/end") })
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions")
+    }
+
+    @Test("observes player $state: initial .idle is ignored, .playing starts, .idle ends")
+    func observesPlayerStateLifecycle() async throws {
+      let player = PlayolaStationPlayer()
+      let session = MockURLSession()
+      let reporter = ListeningSessionReporter(
+        stationPlayer: player,
+        authProvider: MockAuthProvider(currentToken: "valid.token"),
+        urlSession: session)
+      reporter.heartbeatInterval = 60
+
+      // The reporter subscribes to `$state`, whose current value is `.idle`.
+      // That initial emission must NOT send a bogus /end.
+      try? await Task.sleep(nanoseconds: 100_000_000)
+      #expect(session.requestCallCount == 0)
+
+      player.setStateForTesting(.playing(.mockWith(stationId: "s1")), stationId: "s1")
+      await waitUntil { session.requestCallCount >= 1 }
+      #expect(
+        session.lastRequest?.url?.absoluteString.hasSuffix("/v1/listeningSessions") == true)
+
+      player.setStateForTesting(.idle, stationId: nil)
+      await waitUntil {
+        session.lastRequest?.url?.absoluteString.hasSuffix("/listeningSessions/end") == true
+      }
+      #expect(
+        session.lastRequest?.url?.absoluteString.hasSuffix("/v1/listeningSessions/end") == true)
+      // Keeps `reporter` alive through the awaits and confirms the session cleared.
+      #expect(reporter.currentSessionStationId == nil)
+    }
+
+    @Test(
+      "rapid stop→switch: B's POST waits for A's in-flight POST to drain", .timeLimit(.minutes(1)))
+    func switchWaitsForInflightDrain() async throws {
+      let session = MockURLSession()
+      let reporter = makeReporter(session)
+      reporter.heartbeatInterval = 60
+
+      // Hold the very first POST (station A) in flight until we release it.
+      let gate = TestGate()
+      session.beforeResponse = { _ in
+        if await gate.claimFirst() { await gate.waitUntilReleased() }
+      }
+
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-A")))
+      await waitUntil { session.requestCallCount >= 1 }  // A's POST is in flight (held)
+
+      reporter.handleStateChange(.idle)
+      reporter.handleStateChange(.playing(.mockWith(stationId: "station-B")))
+
+      // While A is held, B must not have POSTed — the chain enforces ordering.
+      try? await Task.sleep(nanoseconds: 150_000_000)
+      #expect(session.requestCallCount == 1)
+
+      await gate.release()
+
+      // B now proceeds, strictly after A. No /end on the switch.
+      await waitUntil { session.requestCallCount >= 2 }
+      #expect(session.requestedURLs.allSatisfy { !$0.absoluteString.hasSuffix("/end") })
+      #expect(
+        session.lastRequest?.url?.absoluteString
+          == "https://admin-api.playola.fm/v1/listeningSessions")
+    }
+  }
+}
+
+/// Lets a test hold the first mock request in flight and release it on demand,
+/// to assert ordering across concurrent reporter transitions. Uses a
+/// continuation rather than a poll loop, so it neither busy-waits nor releases
+/// early when the holding task is cancelled (the test drives release explicitly;
+/// the `.timeLimit` trait on the test is the escape hatch if release is missed).
+private actor TestGate {
+  private var claimed = false
+  private var released = false
+  private var continuation: CheckedContinuation<Void, Never>?
+
+  func claimFirst() -> Bool {
+    if claimed { return false }
+    claimed = true
+    return true
+  }
+
+  func waitUntilReleased() async {
+    if released { return }
+    await withCheckedContinuation { continuation = $0 }
+  }
+
+  func release() {
+    released = true
+    continuation?.resume()
+    continuation = nil
+  }
 }

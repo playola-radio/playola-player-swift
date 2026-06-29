@@ -514,6 +514,32 @@ try session.setCategory(.playback, mode: .default, policy: .longFormAudio, optio
 try session.setActive(true)
 ```
 
+#### Background playback & listening reporting
+
+The SDK keeps its listening-session heartbeat alive with a playback-state-driven
+task, not a foreground timer, so reporting continues while the app is
+backgrounded **as long as the host keeps the app alive for background audio**.
+The host must:
+
+1. **Declare the `audio` background mode.** Add `UIBackgroundModes` → `audio`
+   to your `Info.plist`. Without it, iOS suspends the process on backgrounding,
+   the audio render thread stops, and no client code (heartbeat or `/end`) can
+   run — listening time is undercounted even though a few seconds of buffered
+   audio may still be audible.
+
+2. **Keep the `.playback` session active** (the launch-time setup above).
+
+3. **Never call `stop()` on backgrounding.** `stop()` means "playback is over":
+   it ends the listening session. Calling it from a scene/lifecycle hook
+   (`scenePhase == .background`, `didEnterBackground`, `willResignActive`) ends
+   the session while audio is still playing, which is exactly the undercount
+   this design avoids. Only call `stop()` on a real user stop or teardown.
+
+4. **Use `pauseForInterruption()` for real audio interruptions only** (calls,
+   other apps grabbing the session), not for app backgrounding. A pause ends
+   the listening session because audio is genuinely silent; backgrounding is not
+   a pause.
+
 #### Interruption handling
 
 Call `pauseForInterruption()` synchronously when an interruption begins and `resumeAfterInterruption()` asynchronously when it ends:
