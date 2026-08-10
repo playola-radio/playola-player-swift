@@ -139,7 +139,7 @@ private final class RendererFeeder: @unchecked Sendable {
       nc.addObserver(
         forName: .AVSampleBufferAudioRendererWasFlushedAutomatically,
         object: renderer, queue: nil
-      ) { [weak self] note in self?.reanchor(reason: "auto-flush", note: note) })
+      ) { [weak self] _ in self?.handleAutoFlush() })
     observers.append(
       nc.addObserver(
         forName: .AVSampleBufferAudioRendererOutputConfigurationDidChange,
@@ -148,37 +148,46 @@ private final class RendererFeeder: @unchecked Sendable {
 
     renderer.requestMediaDataWhenReady(on: queue) { [weak self] in
       guard let self, !self.stopped else { return }
-      while self.renderer.isReadyForMoreMediaData {
-        guard let samples = self.produce(SpikeAudio.chunkFrames, self.nextFrame) else { break }
-        let pts = CMTime(value: self.nextFrame, timescale: CMTimeScale(SpikeAudio.sampleRate))
-        guard
-          let sb = SpikeAudio.makeSampleBuffer(
-            interleaved: samples, frames: SpikeAudio.chunkFrames, pts: pts)
-        else {
-          self.onStatus("makeSampleBuffer FAILED")
-          break
-        }
-        self.renderer.enqueue(sb)
-        self.nextFrame += Int64(SpikeAudio.chunkFrames)
-        self.enqueued += 1
-      }
-      // No artificial buffer cap: isReadyForMoreMediaData already reflects the renderer's appetite
-      // (deep for AirPlay), and re-anchor handles any race-ahead after a route-change flush.
-      if self.renderer.status == .failed {
-        self.onStatus("renderer .failed: \(self.renderer.error?.localizedDescription ?? "unknown")")
-      }
+      self.pump()
     }
     synchronizer.setRate(1.0, time: .zero)
     onStatus("started (rate=1)")
   }
 
-  /// Route-change recovery: keep the timebase running, re-enqueue from its current time.
-  private func reanchor(reason: String, note: Notification?) {
+  /// Enqueue while the renderer wants more. Runs only on `queue` (request callback + flush handler).
+  private func pump() {
+    while !stopped, renderer.isReadyForMoreMediaData {
+      guard let samples = produce(SpikeAudio.chunkFrames, nextFrame) else { break }
+      let pts = CMTime(value: nextFrame, timescale: CMTimeScale(SpikeAudio.sampleRate))
+      guard
+        let sb = SpikeAudio.makeSampleBuffer(
+          interleaved: samples, frames: SpikeAudio.chunkFrames, pts: pts)
+      else {
+        onStatus("makeSampleBuffer FAILED")
+        break
+      }
+      renderer.enqueue(sb)
+      nextFrame += Int64(SpikeAudio.chunkFrames)
+      enqueued += 1
+    }
+    if renderer.status == .failed {
+      onStatus("renderer .failed: \(renderer.error?.localizedDescription ?? "unknown")")
+    }
+  }
+
+  /// Route-change recovery that works with high-latency AirPlay: PAUSE the synchronizer, reset the
+  /// timeline, REFILL from the start, then RESUME (Apple's "pause" option). The "keep-running,
+  /// re-enqueue-from-now" option fails here because ~2s AirPlay latency makes re-enqueued audio land in
+  /// the past. This is the same recovery a manual Stop→Start does — mirrors §4.1's re-anchor design.
+  private func handleAutoFlush() {
     queue.async { [weak self] in
-      guard let self else { return }
-      let now = max(0, CMTimeGetSeconds(self.synchronizer.currentTime()))
-      self.nextFrame = Int64(now * SpikeAudio.sampleRate)
-      self.onStatus("\(reason) → re-anchored @\(String(format: "%.2f", now))s")
+      guard let self, !self.stopped else { return }
+      self.synchronizer.setRate(0, time: .zero)
+      self.renderer.flush()
+      self.nextFrame = 0
+      self.pump()  // prime from the fresh anchor before resuming
+      self.synchronizer.setRate(1.0, time: .zero)
+      self.onStatus("auto-flush → paused, refilled, resumed @0")
     }
   }
 
@@ -232,8 +241,8 @@ private func toneChunk(frames: Int, startFrame: Int64) -> [Float] {
 private final class EngineManualSource: @unchecked Sendable {
   private let engine = AVAudioEngine()
   private let player = AVAudioPlayerNode()
-  private var fmt: AVAudioFormat!
-  private var renderBuffer: AVAudioPCMBuffer!
+  private var fmt: AVAudioFormat?
+  private var renderBuffer: AVAudioPCMBuffer?
   private var ready = false
   private let onStatus: @Sendable (String) -> Void
 
@@ -243,16 +252,20 @@ private final class EngineManualSource: @unchecked Sendable {
     guard
       let interleaved = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: SpikeAudio.sampleRate,
-        channels: AVAudioChannelCount(SpikeAudio.channels), interleaved: true)
+        channels: AVAudioChannelCount(SpikeAudio.channels), interleaved: true),
+      let buf = AVAudioPCMBuffer(
+        pcmFormat: interleaved, frameCapacity: AVAudioFrameCount(SpikeAudio.chunkFrames))
     else {
-      onStatus("engine-manual: bad format")
+      onStatus("engine-manual: bad format/buffer")
       return
     }
     fmt = interleaved
-    renderBuffer = AVAudioPCMBuffer(
-      pcmFormat: interleaved, frameCapacity: AVAudioFrameCount(SpikeAudio.chunkFrames))
+    renderBuffer = buf
     engine.attach(player)
-    engine.connect(player, to: engine.mainMixerNode, format: nil)
+    // Explicit graph at the manual-render format all the way to the output node, so the manual
+    // renderer has a valid, format-matched chain (a mismatch here was a likely null-deref source).
+    engine.connect(player, to: engine.mainMixerNode, format: interleaved)
+    engine.connect(engine.mainMixerNode, to: engine.outputNode, format: interleaved)
     do {
       try engine.enableManualRenderingMode(
         .offline, format: interleaved, maximumFrameCount: AVAudioFrameCount(SpikeAudio.chunkFrames))
@@ -261,16 +274,19 @@ private final class EngineManualSource: @unchecked Sendable {
       onStatus("engine-manual: start FAILED \(error.localizedDescription)")
       return
     }
-    if let tone = makeToneBuffer() {
-      player.scheduleBuffer(tone, at: nil, options: .loops, completionHandler: nil)
-      player.play()
+    guard let tone = makeToneBuffer(format: interleaved) else {
+      onStatus("engine-manual: tone buffer failed")
+      return
     }
+    player.scheduleBuffer(tone, at: nil, options: .loops, completionHandler: nil)
+    player.play()
     ready = true
+    onStatus("engine-manual: ready")
   }
 
-  private func makeToneBuffer() -> AVAudioPCMBuffer? {
+  private func makeToneBuffer(format: AVAudioFormat) -> AVAudioPCMBuffer? {
     let frames = AVAudioFrameCount(SpikeAudio.sampleRate)
-    guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: frames) else { return nil }
+    guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
     buf.frameLength = frames
     let twoPiF = 2.0 * Double.pi * SpikeAudio.toneHz
     if let ch = buf.floatChannelData {
@@ -284,11 +300,14 @@ private final class EngineManualSource: @unchecked Sendable {
     return buf
   }
 
-  /// Pull `frames` of mixed PCM from the engine as interleaved float32.
+  /// Pull `frames` of mixed PCM from the engine as interleaved float32. Fully guarded — returns nil
+  /// (→ silence) instead of crashing if the engine is not in a valid render state.
   func produce(frames: Int, startFrame: Int64) -> [Float]? {
-    guard ready else { return nil }
+    guard ready, engine.isInManualRenderingMode, engine.isRunning,
+      let buffer = renderBuffer
+    else { return nil }
     do {
-      let status = try engine.renderOffline(AVAudioFrameCount(frames), to: renderBuffer)
+      let status = try engine.renderOffline(AVAudioFrameCount(frames), to: buffer)
       guard status == .success else {
         onStatus("engine render \(status.rawValue)")
         return nil
@@ -297,8 +316,8 @@ private final class EngineManualSource: @unchecked Sendable {
       onStatus("engine renderOffline FAILED \(error.localizedDescription)")
       return nil
     }
-    let n = Int(renderBuffer.frameLength)
-    guard n > 0, let ch = renderBuffer.floatChannelData else { return nil }
+    let n = Int(buffer.frameLength)
+    guard n > 0, let ch = buffer.floatChannelData else { return nil }
     return Array(UnsafeBufferPointer(start: ch[0], count: n * SpikeAudio.channels))
   }
 
