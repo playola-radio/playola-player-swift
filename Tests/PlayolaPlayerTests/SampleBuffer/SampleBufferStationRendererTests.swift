@@ -1,9 +1,11 @@
 //  SampleBufferStationRendererTests.swift
 //  PlayolaPlayer
 //
-//  Phase 5 — Lane D. The render-driver core through the fake seam: fill-loop
-//  enqueue/PTS, boundary -> spin-start (T12), generation supersession (T6), and
-//  pause-refill-resume recovery after an AirPlay auto-flush (§13/C2).
+//  Phase 5 — Lane D. The render-driver core through the fake seam, run
+//  synchronously via ImmediateControlExecutor: fill-loop enqueue/PTS/no-backfill,
+//  boundary -> spin-start (T12), generation supersession (T6), dynamic append
+//  (beyond-horizon vs late-ignored), snapshot replacement, and pause-refill-resume
+//  recovery after an AirPlay auto-flush (§13/C2).
 
 import CoreMedia
 import Foundation
@@ -21,25 +23,10 @@ private struct StubMixSource: MixSource {
   }
 }
 
-private final class DiscardSpySource: MixSource, @unchecked Sendable {
-  let startFrame: Int64
-  let envelope: FadeEnvelope
-  private(set) var lastDiscardOffset: Int64?
-
-  init(startFrame: Int64) {
-    self.startFrame = startFrame
-    self.envelope = FadeEnvelope(spin: Spin.mockWith(startingVolume: 1.0, fades: []))
-  }
-
-  func stereoFrame(atSourceOffset offset: Int64) -> SIMD2<Float>? { SIMD2(0.5, 0.5) }
-  func discard(beforeSourceOffset offset: Int64) { lastDiscardOffset = offset }
-}
-
 @MainActor
 struct SampleBufferStationRendererTests {
   private let sampleRate: Double = 48_000
   private let framesPerBuffer = 4_096
-  private let anchor = Date(timeIntervalSince1970: 1_700_000_000)
 
   private func makeRenderer(
     sync: FakeRenderSynchronizer, sink: FakeSampleBufferRenderer, startFrame: Int64 = 0
@@ -48,18 +35,18 @@ struct SampleBufferStationRendererTests {
       synchronizer: sync,
       renderer: sink,
       mixer: TimelineMixer(sampleRate: sampleRate),
-      mapper: TimelineMapper(anchorDate: anchor, scheduleOffset: 0, sampleRate: sampleRate),
-      dateProvider: DateProviderMock(mockDate: anchor),
       startFrame: startFrame,
       sampleRate: sampleRate,
-      framesPerBuffer: framesPerBuffer)
+      framesPerBuffer: framesPerBuffer,
+      control: ImmediateControlExecutor())
   }
 
-  private func stub(startFrame: Int64) -> StubMixSource {
-    StubMixSource(
-      startFrame: startFrame,
-      envelope: FadeEnvelope(spin: Spin.mockWith(startingVolume: 1.0, fades: [])),
-      value: SIMD2(0.5, 0.5))
+  private func unity(_ v: Float = 1.0) -> FadeEnvelope {
+    FadeEnvelope(spin: Spin.mockWith(startingVolume: v, fades: []))
+  }
+
+  private func stub(startFrame: Int64, value: SIMD2<Float> = SIMD2(0.5, 0.5)) -> StubMixSource {
+    StubMixSource(startFrame: startFrame, envelope: unity(), value: value)
   }
 
   @Test("fill enqueues contiguous buffers with monotonic sample-accurate PTS")
@@ -68,19 +55,30 @@ struct SampleBufferStationRendererTests {
     let sink = FakeSampleBufferRenderer()
     let renderer = makeRenderer(sync: sync, sink: sink)
     renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
-
     renderer.start()
     sink.pump()
 
     #expect(!sink.enqueued.isEmpty)
-    // Contiguous startFrames: 0, 4096, 8192, …
     for (i, buffer) in sink.enqueued.enumerated() {
       #expect(buffer.startFrame == Int64(i * framesPerBuffer))
       #expect(buffer.frameCount == framesPerBuffer)
     }
-    // Shallow queue: capped ~1s ahead of the playhead (48000 frames).
     #expect(sink.enqueued.last!.startFrame < 48_000)
     #expect(CMTimeGetSeconds(sink.enqueued[0].presentationTimeStamp) == 0)
+  }
+
+  @Test("fill never enqueues buffers whose PTS is behind the playhead")
+  func fillNeverBackfills() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
+    sync.currentTime = CMTime(seconds: 1, preferredTimescale: Int32(sampleRate))
+    renderer.start()
+    sink.pump()
+
+    #expect(!sink.enqueued.isEmpty)
+    #expect(sink.enqueued.allSatisfy { $0.startFrame >= 48_000 })
   }
 
   @Test("a crossed boundary reports the spin start once")
@@ -88,14 +86,13 @@ struct SampleBufferStationRendererTests {
     let sync = FakeRenderSynchronizer()
     let sink = FakeSampleBufferRenderer()
     let renderer = makeRenderer(sync: sync, sink: sink)
-    let spin = Spin.mockWith(id: "spin-A")
     var started: [String] = []
     renderer.onSpinStarted = { started.append($0.id) }
-    renderer.setSchedule([.init(spin: spin, source: stub(startFrame: 0))])
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
     renderer.start()
 
     sync.fireBoundary()
-    sync.fireBoundary()  // idempotent: once per spin
+    sync.fireBoundary()  // idempotent
 
     #expect(started == ["spin-A"])
   }
@@ -110,41 +107,72 @@ struct SampleBufferStationRendererTests {
     renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
     renderer.start()
 
-    renderer.supersede()  // a newer play() took over
+    renderer.supersede()
     sync.fireBoundary()
 
     #expect(started.isEmpty)
   }
 
-  @Test("fill trims each source behind the playhead to bound memory")
-  func fillDiscardsBehindPlayhead() {
+  @Test("a spin scheduled beyond the enqueue horizon is appended and reports its boundary")
+  func appendBeyondHorizonAdds() {
     let sync = FakeRenderSynchronizer()
     let sink = FakeSampleBufferRenderer()
     let renderer = makeRenderer(sync: sync, sink: sink)
-    let spy = DiscardSpySource(startFrame: 0)
-    renderer.setSchedule([.init(spin: Spin.mockWith(), source: spy)])
-    // Playhead already at 1s: everything before frame 48000 is presented and safe to release.
-    sync.currentTime = CMTime(seconds: 1, preferredTimescale: Int32(sampleRate))
+    var started: [String] = []
+    renderer.onSpinStarted = { started.append($0.id) }
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
     renderer.start()
-    sink.pump()
 
-    #expect(spy.lastDiscardOffset == 48_000)  // playhead(48000) - startFrame(0)
+    // 100000 frames out (~2s) is well beyond the 48000-frame horizon → clean append.
+    renderer.appendScheduled([
+      .init(spin: Spin.mockWith(id: "spin-B"), source: stub(startFrame: 100_000))
+    ])
+    sync.fireBoundary()
+
+    #expect(started.contains("spin-B"))
   }
 
-  @Test("fill never enqueues buffers whose PTS is behind the playhead")
-  func fillNeverBackfills() {
+  @Test("a spin landing inside the enqueue horizon is not appended (late-ignored)")
+  func appendInsideHorizonIgnored() {
     let sync = FakeRenderSynchronizer()
     let sink = FakeSampleBufferRenderer()
-    let renderer = makeRenderer(sync: sync, sink: sink)  // starts at frame 0
-    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
-    // Playhead already at 1s while the write cursor is still at frame 0.
-    sync.currentTime = CMTime(seconds: 1, preferredTimescale: Int32(sampleRate))
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    var started: [String] = []
+    var ignored: [String] = []
+    renderer.onSpinStarted = { started.append($0.id) }
+    renderer.onLateSpinIgnored = { ignored.append($0.id) }
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
     renderer.start()
+
+    // 1000 frames out is inside the horizon → no in-place surgery in slice 1.
+    renderer.appendScheduled([
+      .init(spin: Spin.mockWith(id: "spin-C"), source: stub(startFrame: 1_000))
+    ])
+    sync.fireBoundary()
+
+    #expect(ignored == ["spin-C"])
+    #expect(!started.contains("spin-C"))
+  }
+
+  @Test("updateSnapshot replaces a spin's render source")
+  func updateSnapshotReplacesSource() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    // Start silent, then publish a decoded window carrying audio.
+    renderer.setSchedule([
+      .init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0, value: SIMD2(0, 0)))
+    ])
+    renderer.start()
+
+    let window = SpinPCMWindow(
+      spinID: "spin-A", startFrame: 0, envelope: unity(), windowStart: 0,
+      frames: Array(repeating: SIMD2(0.5, 0.5), count: framesPerBuffer))
+    renderer.updateSnapshot(window)
     sink.pump()
 
-    // Rejoined at the playhead: no enqueued buffer is authored before frame 48000.
     #expect(!sink.enqueued.isEmpty)
-    #expect(sink.enqueued.allSatisfy { $0.startFrame >= 48_000 })
+    #expect(abs(sink.enqueued[0].frames[0].x - 0.5) < 0.0001)
   }
 
   @Test("recovery flushes, rejoins at the current playhead, and resumes")
@@ -154,19 +182,34 @@ struct SampleBufferStationRendererTests {
     let renderer = makeRenderer(sync: sync, sink: sink)
     renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
     renderer.start()
-    sink.pump()  // initial fill from frame 0
+    sink.pump()
 
-    // Route change: the timebase has advanced to 2s; recover.
     sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
     let flushesBefore = sink.flushCount
     renderer.recoverAfterAutoFlush()
 
     #expect(sink.flushCount == flushesBefore + 1)
-    // Rejoined at the playhead (no backfill): a buffer authored at frame 96000 exists.
     #expect(sink.enqueued.contains { $0.startFrame == 96_000 })
-    // Resumed by re-anchoring the synchronizer at the playhead.
     let resume = sync.setRateCalls.last
     #expect(resume?.rate == 1.0)
     #expect(resume.map { CMTimeGetSeconds($0.time) } == 2.0)
+  }
+
+  @Test("stop tears down: no further boundary publishes, sink stopped and flushed")
+  func stopTearsDown() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    var started: [String] = []
+    renderer.onSpinStarted = { started.append($0.id) }
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
+    renderer.start()
+
+    renderer.stop()
+    sync.fireBoundary()
+
+    #expect(started.isEmpty)
+    #expect(sink.stopRequestCount >= 1)
+    #expect(sink.flushCount >= 1)
   }
 }

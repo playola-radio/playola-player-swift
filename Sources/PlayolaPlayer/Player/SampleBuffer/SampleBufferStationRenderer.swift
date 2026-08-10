@@ -2,127 +2,197 @@ import CoreMedia
 import Foundation
 import PlayolaCore
 
+/// Serializes all sample-buffer render + control work onto one domain. Production uses the renderer's
+/// request queue (the same serial queue `requestMediaDataWhenReady` runs the fill block on), so control
+/// mutations and the render pull never race. Unit tests inject `ImmediateControlExecutor` to run
+/// synchronously (Codex design 019feda9).
+protocol RenderControlExecutor: Sendable {
+  func execute(_ work: @escaping @Sendable () -> Void)
+}
+
+struct QueueControlExecutor: RenderControlExecutor {
+  let queue: DispatchQueue
+  func execute(_ work: @escaping @Sendable () -> Void) { queue.async(execute: work) }
+}
+
+struct ImmediateControlExecutor: RenderControlExecutor {
+  func execute(_ work: @escaping @Sendable () -> Void) { work() }
+}
+
 /// Drives the sample-buffer render path: pulls mixed program PCM from the `TimelineMixer` into the
 /// `SampleBufferRendering` sink on demand, maps synchronizer boundary observers to spin-start events,
-/// enforces play-generation supersession, and performs the device-proven pause-refill-resume recovery
-/// after an AirPlay route auto-flush (PHASE_5_PLAN §4.1 / §13 / C2).
+/// enforces play-generation supersession, folds in dynamically-scheduled spins, and performs the
+/// device-proven pause-refill-resume recovery after an AirPlay route auto-flush (PHASE_5_PLAN §4.1/§13).
 ///
-/// Threading contract (slice 1): control calls (`setSchedule`, `start`, `supersede`, `stop`,
-/// `recoverAfterAutoFlush`) and the `fill()` pull run serialized on the owner's executor; boundary
-/// observers arrive on the synchronizer's queue and only read immutable schedule state + hop spin-start
-/// out through `onSpinStarted`. Full lock-free render-thread hardening (C11) and teardown ordering (C13)
-/// are the device-verified follow-up. `@unchecked Sendable`: it holds non-Sendable CoreMedia-adjacent
-/// deps that the owner serializes.
+/// **Threading:** every field below is confined to the control executor's serial domain (== request
+/// queue in production). Control methods hop onto it; `fill()` already runs there (it's the
+/// `requestMediaDataWhenReady` block); boundary observers hop onto it too. The render pull reads only
+/// immutable `MixSource` snapshots — decode happens on a separate queue and publishes via
+/// `updateSnapshot`. `@unchecked Sendable` is justified by that single-domain confinement.
 final class SampleBufferStationRenderer: @unchecked Sendable {
   struct Scheduled {
     let spin: Spin
-    /// Decode/IO-free mix source for this spin; its `startFrame` fixes the boundary time.
-    let source: MixSource
+    /// Immutable, decode/IO-free snapshot for this spin; its `startFrame` fixes the boundary time.
+    var source: MixSource
   }
 
   private let synchronizer: RenderSynchronizing
   private let renderer: SampleBufferRendering
   private let mixer: TimelineMixer
-  private let dateProvider: DateProviderProtocol
   private let sampleRate: Double
   private let framesPerBuffer: Int
-  /// Keep the enqueue queue shallow (≈ read-ahead window) so a boundary re-anchor / recovery is a cheap
-  /// tail flush + refill (PHASE_5_PLAN §4.1/C2, §8.8 memory bound).
+  /// Shallow enqueue horizon (≈ read-ahead window) so re-anchor / recovery is a cheap flush+refill and
+  /// dynamically-added spins beyond it are a clean append, not queued-tail surgery (§4.1/C2, §8.8).
   private let maxEnqueueAheadFrames: Int64
   private let requestQueue: DispatchQueue
+  private let control: RenderControlExecutor
 
-  private var mapper: TimelineMapper
+  // Confined to the control domain:
   private var scheduled: [Scheduled] = []
   private var nextOutputFrame: Int64
   private var generation = 0
   private var boundaryTokens: [Any] = []
   private var startedSpinIDs: Set<String> = []
+  private var stopped = false
 
-  /// Fired when a spin's boundary is crossed (maps to `PlayolaStationPlayer.State.playing(spin)`).
+  /// Fired (on the control domain) when a spin boundary is crossed. The OWNER's closure hops to the
+  /// main actor and checks its own generation before publishing `State.playing(spin)`.
   var onSpinStarted: ((Spin) -> Void)?
-  /// Drives real `SpinBufferSource` pre-decode ahead of the render position; nil in pure tests.
+  /// Fired when a dynamically-appended spin lands INSIDE the enqueue horizon (too late for a clean
+  /// append); the owner logs/reports it. Slice 1 does not edit already-queued audio (§7 OUT).
+  var onLateSpinIgnored: ((Spin) -> Void)?
+  /// Non-blocking signal (on the control domain) that decode should run ahead to `throughOutputFrame`.
+  /// The owner's closure must dispatch to the DECODE queue, decode, snapshot, and call `updateSnapshot`
+  /// — it must NOT decode inline on the render path (A2).
   var decodeAhead: ((_ throughOutputFrame: Int64) -> Void)?
 
   init(
     synchronizer: RenderSynchronizing,
     renderer: SampleBufferRendering,
     mixer: TimelineMixer,
-    mapper: TimelineMapper,
-    dateProvider: DateProviderProtocol,
     startFrame: Int64,
     sampleRate: Double = MixFormat.sampleRate,
     framesPerBuffer: Int = 4_096,
-    requestQueue: DispatchQueue = DispatchQueue(label: "fm.playola.samplebuffer.request")
+    requestQueue: DispatchQueue = DispatchQueue(label: "fm.playola.samplebuffer.request"),
+    control: RenderControlExecutor? = nil
   ) {
     self.synchronizer = synchronizer
     self.renderer = renderer
     self.mixer = mixer
-    self.mapper = mapper
-    self.dateProvider = dateProvider
     self.nextOutputFrame = startFrame
     self.sampleRate = sampleRate
     self.framesPerBuffer = framesPerBuffer
     self.maxEnqueueAheadFrames = Int64(sampleRate * 1.0)
     self.requestQueue = requestQueue
+    self.control = control ?? QueueControlExecutor(queue: requestQueue)
   }
 
-  // MARK: - Control
+  // MARK: - Control (all hop onto the serial control domain)
 
   func setSchedule(_ items: [Scheduled]) {
-    scheduled = items
-    installBoundaryObservers()
+    control.execute { [self] in
+      guard !stopped else { return }
+      scheduled = items
+      installBoundaryObservers()
+    }
+  }
+
+  /// Fold newly-discovered upcoming spins into a running renderer. Slice 1 supports only the cheap case:
+  /// a spin whose start frame is beyond the enqueue horizon (append). One landing inside the horizon
+  /// fires `onLateSpinIgnored` (no in-place queued-tail surgery).
+  func appendScheduled(_ items: [Scheduled]) {
+    control.execute { [self] in
+      guard !stopped else { return }
+      let horizon = nextOutputFrame + maxEnqueueAheadFrames
+      for item in items where !scheduled.contains(where: { $0.spin.id == item.spin.id }) {
+        if item.source.startFrame >= horizon {
+          scheduled.append(item)
+          installBoundaryObserver(for: item)
+        } else {
+          onLateSpinIgnored?(item.spin)
+        }
+      }
+    }
+  }
+
+  /// Publish a freshly-decoded PCM window from the decode queue, replacing that spin's render snapshot.
+  func updateSnapshot(_ window: SpinPCMWindow) {
+    control.execute { [self] in
+      guard !stopped else { return }
+      if let i = scheduled.firstIndex(where: { $0.spin.id == window.spinID }) {
+        scheduled[i].source = window
+      }
+    }
   }
 
   /// Anchor the synchronizer at the start frame and begin pulling media.
   func start() {
-    synchronizer.setRate(1.0, time: CMTime(value: nextOutputFrame, timescale: Int32(sampleRate)))
+    control.execute { [self] in
+      guard !stopped else { return }
+      synchronizer.setRate(1.0, time: cmTime(nextOutputFrame))
+    }
     renderer.requestMediaDataWhenReady(on: requestQueue) { [weak self] in
-      self?.fill()
+      self?.fill()  // runs on requestQueue == control domain
     }
   }
 
-  /// Supersede: any pending boundary/fill work tagged with an older generation is ignored.
+  /// Supersede: pending boundary/fill work tagged with an older generation is ignored.
   func supersede() {
-    generation += 1
+    control.execute { [self] in generation += 1 }
   }
 
+  /// Ordered teardown [Codex Q3 / spike EXC_BAD_ACCESS]: supersede, stop pulling, remove observers,
+  /// flush, drop the closures that publish back to the owner — before the owner releases us.
   func stop() {
-    supersede()
-    renderer.stopRequestingMediaData()
-    renderer.flush()
-    removeBoundaryObservers()
+    control.execute { [self] in
+      generation += 1
+      stopped = true
+      renderer.stopRequestingMediaData()
+      removeBoundaryObservers()
+      renderer.flush()
+      scheduled = []
+      onSpinStarted = nil
+      onLateSpinIgnored = nil
+      decodeAhead = nil
+    }
   }
 
   /// Pause-refill-resume recovery after `AVSampleBufferAudioRendererWasFlushedAutomatically` (route
   /// change). At real AirPlay latency the "keep-running, re-enqueue-from-now" option lands audio in the
-  /// past → silence; Apple's pause option is what works (PHASE_5_PLAN §13). Never backfill: rejoin at the
-  /// current playhead (§4.4).
+  /// past → silence; Apple's pause option is what works (§13). Never backfill: rejoin at the playhead.
   func recoverAfterAutoFlush() {
-    let playhead = playheadFrame()
-    renderer.flush()
-    startedSpinIDs.removeAll()
-    nextOutputFrame = playhead
-    mapper = mapper.reanchored(now: dateProvider.now(), currentStationFrame: playhead)
-    fill()
-    synchronizer.setRate(1.0, time: CMTime(value: playhead, timescale: Int32(sampleRate)))
+    control.execute { [self] in
+      guard !stopped else { return }
+      let playhead = playheadFrame()
+      renderer.flush()
+      startedSpinIDs.removeAll()
+      nextOutputFrame = playhead
+      fillLocked()
+      synchronizer.setRate(1.0, time: cmTime(playhead))
+    }
   }
 
-  // MARK: - Media pull
+  // MARK: - Media pull (runs on the control domain)
 
-  /// Pull mixed PCM into the sink while it wants data, keeping the queue shallow. Decode/IO-free in the
-  /// mix step itself: `decodeAhead` (pre-decode) runs first, then the mixer only sums ready PCM (A2/T9).
+  /// Entry point from `requestMediaDataWhenReady` (already on the request/control queue).
   func fill() {
+    fillLocked()
+  }
+
+  private func fillLocked() {
+    guard !stopped else { return }
     let gen = generation
     while renderer.isReadyForMoreMediaData {
-      // Never backfill (§4.4): if the playhead has run past the write cursor (delayed callback / route
+      // Never backfill (§4.4): if the playhead ran past the write cursor (delayed callback / route
       // change), rejoin at the playhead rather than enqueue buffers whose PTS is already in the past.
       let playhead = playheadFrame()
       if nextOutputFrame < playhead { nextOutputFrame = playhead }
       guard nextOutputFrame - playhead < maxEnqueueAheadFrames else { break }
       let range = nextOutputFrame..<(nextOutputFrame + Int64(framesPerBuffer))
 
+      // Signal decode to run ahead (non-blocking); the mix step below only reads ready snapshots.
       decodeAhead?(range.upperBound + Int64(framesPerBuffer))
-      guard gen == generation else { return }  // superseded during pre-decode
+      guard gen == generation else { return }
 
       var scratch = [Float](repeating: 0, count: framesPerBuffer * 2)
       mixer.render(outputFrameRange: range, sources: scheduled.map { $0.source }, into: &scratch)
@@ -136,16 +206,13 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
         RenderBuffer(startFrame: range.lowerBound, sampleRate: sampleRate, frames: frames))
       nextOutputFrame = range.upperBound
     }
-
-    // Release already-presented audio behind the playhead to bound memory (P1). Never drops frames the
-    // mixer may still read (the playhead trails the enqueue position).
-    let playhead = playheadFrame()
-    for item in scheduled {
-      item.source.discard(beforeSourceOffset: playhead - item.source.startFrame)
-    }
   }
 
   // MARK: - Private
+
+  private func cmTime(_ frame: Int64) -> CMTime {
+    CMTime(value: frame, timescale: Int32(sampleRate))
+  }
 
   private func playheadFrame() -> Int64 {
     Int64((CMTimeGetSeconds(synchronizer.currentTime) * sampleRate).rounded())
@@ -153,15 +220,19 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
 
   private func installBoundaryObservers() {
     removeBoundaryObservers()
-    for item in scheduled {
-      let time = CMTime(value: item.source.startFrame, timescale: Int32(sampleRate))
-      let spin = item.spin
-      let gen = generation
-      let token = synchronizer.addBoundaryObserver(forTimes: [time]) { [weak self] in
-        self?.handleBoundary(spin: spin, generation: gen)
-      }
-      boundaryTokens.append(token)
+    for item in scheduled { installBoundaryObserver(for: item) }
+  }
+
+  private func installBoundaryObserver(for item: Scheduled) {
+    let time = cmTime(item.source.startFrame)
+    let spin = item.spin
+    let gen = generation
+    let token = synchronizer.addBoundaryObserver(forTimes: [time]) { [weak self] in
+      guard let self else { return }
+      // Hop onto the control domain: the observer may fire on the synchronizer's queue.
+      self.control.execute { self.handleBoundary(spin: spin, generation: gen) }
     }
+    boundaryTokens.append(token)
   }
 
   private func removeBoundaryObservers() {
@@ -169,18 +240,9 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     boundaryTokens.removeAll()
   }
 
-  /// The current wall-clock → frame mapping, re-anchored at each boundary. The owner reads this when
-  /// scheduling the NEXT window of spins so their authored frames track fresh wall clock (A1). It does
-  /// not move already-authored frames or already-installed boundary observers — corrections land at the
-  /// next cut point, by design (§4.1).
-  var currentMapper: TimelineMapper { mapper }
-
   private func handleBoundary(spin: Spin, generation gen: Int) {
-    guard gen == generation else { return }  // superseded session — never publish
+    guard !stopped, gen == generation else { return }  // superseded / torn down — never publish
     guard startedSpinIDs.insert(spin.id).inserted else { return }  // once per spin
-    // Boundary re-anchor from fresh wall clock (A1): updates the mapping used to schedule FUTURE spins;
-    // already-authored frames/observers are unchanged.
-    mapper = mapper.reanchored(now: dateProvider.now(), currentStationFrame: playheadFrame())
     onSpinStarted?(spin)
   }
 }

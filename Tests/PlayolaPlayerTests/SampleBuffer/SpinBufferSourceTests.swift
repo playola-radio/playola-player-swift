@@ -102,6 +102,26 @@ struct SpinBufferSourceTests {
     #expect(source48.decodedThroughOffset == 24_000)
   }
 
+  @Test("snapshot captures the decoded window and is isolated from further decode")
+  func snapshotIsImmutableAndIsolated() throws {
+    let url = try makeToneFile(sampleRate: MixFormat.sampleRate, seconds: 1.0)
+    let source = try SpinBufferSource(spin: toneSpin(), fileURL: url, startFrame: 0)
+
+    try source.decode(throughSourceOffset: 10_000)
+    let snap = source.snapshot()
+
+    // Snapshot matches the source at capture time.
+    #expect(snap.startFrame == source.startFrame)
+    #expect(snap.stereoFrame(atSourceOffset: 5_000) == source.stereoFrame(atSourceOffset: 5_000))
+    #expect(snap.stereoFrame(atSourceOffset: 9_999) != nil)
+    #expect(snap.stereoFrame(atSourceOffset: 10_000) == nil)
+
+    // Decoding further does not mutate the earlier snapshot (value semantics).
+    try source.decode(throughSourceOffset: 20_000)
+    #expect(snap.stereoFrame(atSourceOffset: 15_000) == nil)  // snapshot unchanged
+    #expect(source.stereoFrame(atSourceOffset: 15_000) != nil)  // source advanced
+  }
+
   @Test("discard bounds the window without affecting later reads")
   func discardBoundsMemory() throws {
     let url = try makeToneFile(sampleRate: MixFormat.sampleRate, seconds: 1.0)

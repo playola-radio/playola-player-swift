@@ -79,6 +79,19 @@ final class SpinBufferSource: MixSource {
     return frames[index]
   }
 
+  /// A cheap immutable snapshot of the currently-decoded window, for the render side.
+  ///
+  /// The decode queue owns and mutates a `SpinBufferSource`; the render callback must never touch it
+  /// (it isn't `Sendable` and its `frames` are mutated on the decode queue). Instead the decode driver
+  /// publishes a `SpinPCMWindow` — a `Sendable` `MixSource` the renderer installs on its own serial
+  /// queue (PHASE_5_PLAN §4 / Codex design 019feda9). `frames` shares storage via copy-on-write until
+  /// the next decode append, so snapshotting is O(1) in the common case.
+  func snapshot() -> SpinPCMWindow {
+    SpinPCMWindow(
+      spinID: spinID, startFrame: startFrame, envelope: envelope,
+      windowStart: windowStart, frames: frames)
+  }
+
   // MARK: - Decode driver (non-render executor)
 
   /// Highest source offset currently decoded and readable (exclusive upper bound).
@@ -165,6 +178,24 @@ final class SpinBufferSource: MixSource {
       reachedEndOfFile = true
     }
     return outFrames
+  }
+}
+
+/// Immutable, `Sendable` snapshot of a `SpinBufferSource`'s decoded window — the value the render
+/// callback reads. Because it is a value type with immutable storage, it is safe to hand across the
+/// decode → render queue boundary and to keep as long as the renderer needs it.
+struct SpinPCMWindow: MixSource, Sendable {
+  let spinID: String
+  let startFrame: Int64
+  let envelope: FadeEnvelope
+  let windowStart: Int64
+  let frames: [SIMD2<Float>]
+
+  func stereoFrame(atSourceOffset offset: Int64) -> SIMD2<Float>? {
+    guard offset >= windowStart else { return nil }
+    let index = Int(offset - windowStart)
+    guard index < frames.count else { return nil }
+    return frames[index]
   }
 }
 
