@@ -122,8 +122,9 @@ struct SampleBufferStationRendererTests {
     renderer.onSpinStarted = { started.append($0.id) }
     renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
     renderer.start()
+    sink.pump()  // advance the write cursor past the enqueue horizon
 
-    // 100000 frames out (~2s) is well beyond the 48000-frame horizon → clean append.
+    // Well past the write cursor → clean append.
     renderer.appendScheduled([
       .init(spin: Spin.mockWith(id: "spin-B"), source: stub(startFrame: 100_000))
     ])
@@ -143,8 +144,9 @@ struct SampleBufferStationRendererTests {
     renderer.onLateSpinIgnored = { ignored.append($0.id) }
     renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
     renderer.start()
+    sink.pump()  // write cursor advances past frame 1000
 
-    // 1000 frames out is inside the horizon → no in-place surgery in slice 1.
+    // Frame 1000 is now behind the write cursor (already enqueued) → no in-place surgery in slice 1.
     renderer.appendScheduled([
       .init(spin: Spin.mockWith(id: "spin-C"), source: stub(startFrame: 1_000))
     ])

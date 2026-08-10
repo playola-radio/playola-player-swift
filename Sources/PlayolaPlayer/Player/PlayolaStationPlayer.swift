@@ -870,10 +870,14 @@ final public class PlayolaStationPlayer: ObservableObject {
       guard let self, self.isCurrentGeneration(generation) else { return }
       self.state = .playing(spin)
     }
+    // Stay .loading until the first decode actually starts playback (§4.4), then publish the airing spin.
+    controller.onPlaybackStarted = { [weak self] in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      self.state = .playing(firstSpin)
+    }
     self.sampleBufferController = controller
 
     controller.start(with: sampleBufferSpins(from: currentSchedule))
-    self.state = .playing(firstSpin)
 
     schedulingTask?.cancel()
     schedulingTask = Task { [generation] in

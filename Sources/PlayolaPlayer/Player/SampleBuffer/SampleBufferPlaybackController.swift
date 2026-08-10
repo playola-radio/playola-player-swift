@@ -32,10 +32,15 @@ final class SampleBufferPlaybackController {
 
   private var knownSpinIDs: Set<String> = []
   private var downloadTasks: [String: Task<Void, Never>] = [:]
-  private var started = false
+  private var scheduleInstalled = false
+  private var rendererStarted = false
 
   /// Called (on the main actor) when a spin boundary is crossed — maps to `State.playing(spin)`.
   var onSpinStarted: ((Spin) -> Void)?
+  /// Called (on the main actor) when playback actually begins — the first decode landed (or the startup
+  /// deadline elapsed). The owner flips state to `.playing` here rather than at `start(with:)`, so a slow
+  /// first download shows `.loading`, not silent `.playing` (§4.4).
+  var onPlaybackStarted: (() -> Void)?
 
   /// - Parameter anchorDate: output frame 0 on the station timeline (normally `now`). Incoming spins
   ///   already carry offset-adjusted airtimes (`Schedule.current(offsetTimeInterval:)` shifted them for
@@ -79,14 +84,33 @@ final class SampleBufferPlaybackController {
     sink.onAutoFlush = { [weak renderer] in
       renderer?.recoverAfterAutoFlush()
     }
+    pump.onFirstData = { [weak self] in
+      Task { @MainActor in self?.startRendererIfNeeded() }
+    }
   }
 
-  /// Begin playback with the currently-airing + immediately-upcoming spins.
+  /// Startup deadline: begin playback even if the first decode hasn't landed, so a slow/missing download
+  /// can't hang the station (§4.4). Device-tunable.
+  private static let startupDeadline: UInt64 = 2_000_000_000  // 2s
+
+  /// Install the schedule + kick downloads, but DON'T start the renderer yet — start it when the first
+  /// decode lands (`pump.onFirstData`) or the startup deadline elapses, to avoid enqueuing a silent
+  /// startup hole into the shallow queue before any audio is decoded.
   func start(with spins: [Spin]) {
     let scheduled = spins.compactMap { ingest($0) }
     renderer.setSchedule(scheduled)
+    scheduleInstalled = true
+    Task { [weak self] in
+      try? await Task.sleep(nanoseconds: Self.startupDeadline)
+      self?.startRendererIfNeeded()
+    }
+  }
+
+  private func startRendererIfNeeded() {
+    guard !rendererStarted else { return }
+    rendererStarted = true
     renderer.start()
-    started = true
+    onPlaybackStarted?()
   }
 
   /// Fold in later-discovered upcoming spins (from the station player's 20s poll). Cheap append for
@@ -94,14 +118,16 @@ final class SampleBufferPlaybackController {
   func addUpcoming(_ spins: [Spin]) {
     let scheduled = spins.compactMap { ingest($0) }
     guard !scheduled.isEmpty else { return }
-    if started {
+    if scheduleInstalled {
       renderer.appendScheduled(scheduled)
     } else {
       renderer.setSchedule(scheduled)
+      scheduleInstalled = true
     }
   }
 
   func stop() {
+    renderer.halt()  // freeze audio immediately, before any re-play starts a fresh sink
     for task in downloadTasks.values { task.cancel() }
     downloadTasks.removeAll()
     knownSpinIDs.removeAll()
@@ -174,7 +200,12 @@ final class SampleBufferPlaybackController {
 private final class DecodePump: @unchecked Sendable {
   private let queue = DispatchQueue(label: "fm.playola.samplebuffer.decode", qos: .userInitiated)
   private var sources: [String: SpinBufferSource] = [:]  // queue-confined
+  private var firstDataSignaled = false  // queue-confined
   private let publish: @Sendable (SpinPCMWindow) -> Void
+
+  /// Fired once, after the first source decodes some PCM — the controller uses it to start the renderer
+  /// (avoids a silent startup hole). Set before any decode begins.
+  var onFirstData: (@Sendable () -> Void)?
 
   init(publish: @escaping @Sendable (SpinPCMWindow) -> Void) {
     self.publish = publish
@@ -189,6 +220,10 @@ private final class DecodePump: @unchecked Sendable {
           throughSourceOffset: initialOffset + Int64(SpinBufferSource.readAheadFrames))
         sources[spin.id] = source
         publish(source.snapshot())
+        if !firstDataSignaled {
+          firstDataSignaled = true
+          onFirstData?()
+        }
       } catch {
         // A failed decode contributes silence (the mixer renders nil frames); the station continues.
       }

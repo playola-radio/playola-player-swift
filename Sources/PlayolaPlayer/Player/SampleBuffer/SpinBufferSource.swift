@@ -15,8 +15,10 @@ import PlayolaCore
 /// state). The renderer drives `decode(throughSourceOffset:)` ahead of the render position on a
 /// non-render executor and `discard(beforeSourceOffset:)` behind it to bound memory (P1 jetsam).
 ///
-/// Not `Sendable`: `AVAudioFile`/`AVAudioConverter` are single-threaded; the owner serializes access.
-final class SpinBufferSource: MixSource {
+/// Not `Sendable` and NOT a `MixSource`: `AVAudioFile`/`AVAudioConverter` are single-threaded and stay
+/// on the decode queue. The render side reads its `snapshot()` (an immutable `SpinPCMWindow`), never the
+/// source itself — so the queue-crossing `MixSource` contract only ever carries `Sendable` values.
+final class SpinBufferSource {
   /// Read-ahead / memory bound, in mix frames (~2 s). Named per eng-review P1; tuned on device (C10).
   static let readAheadFrames = Int(MixFormat.sampleRate * 2.0)
 

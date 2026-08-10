@@ -7,7 +7,7 @@ import Foundation
 /// decode/IO-free — it only returns PCM that some other executor has already decoded into a bounded
 /// ring buffer. A frame that is not (yet) available returns `nil`, which the mixer renders as silence;
 /// it must never block waiting for a decode or download.
-protocol MixSource {
+protocol MixSource: Sendable {
   /// Output frame (on the mix timeline) at which this source's frame 0 is presented. Negative when the
   /// spin began before the station-timeline anchor (mid-file join reads from the positive offset).
   var startFrame: Int64 { get }

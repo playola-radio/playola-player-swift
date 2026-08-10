@@ -103,7 +103,10 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   func appendScheduled(_ items: [Scheduled]) {
     control.execute { [self] in
       guard !stopped else { return }
-      let horizon = nextOutputFrame + maxEnqueueAheadFrames
+      // Clean-append cutoff is the WRITE CURSOR: no buffer at/after `nextOutputFrame` has been enqueued
+      // yet, so a spin starting there or later just needs a source + boundary observer. A spin starting
+      // before it is already inside queued audio → surgery (out of scope for slice 1).
+      let horizon = nextOutputFrame
       for item in items where !scheduled.contains(where: { $0.spin.id == item.spin.id }) {
         if item.source.startFrame >= horizon {
           scheduled.append(item)
@@ -139,6 +142,14 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// Supersede: pending boundary/fill work tagged with an older generation is ignored.
   func supersede() {
     control.execute { [self] in generation += 1 }
+  }
+
+  /// Synchronous, immediate halt for teardown-before-replacement: stop pulling and freeze the timebase
+  /// NOW, so a re-play starting a fresh sink cannot briefly overlap this one's audio. Safe to call from
+  /// any thread (the underlying CoreMedia calls are); the ordered cleanup still runs via `stop()`.
+  func halt() {
+    renderer.stopRequestingMediaData()
+    synchronizer.setRate(0, time: synchronizer.currentTime)
   }
 
   /// Ordered teardown [Codex Q3 / spike EXC_BAD_ACCESS]: supersede, stop pulling, remove observers,
