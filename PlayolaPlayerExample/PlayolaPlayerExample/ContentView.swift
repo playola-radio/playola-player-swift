@@ -47,6 +47,7 @@ struct ContentView: View {
   @StateObject private var threadMonitor = MainThreadMonitor()
   @State private var showingStationPicker = false
   @State private var showingScheduleViewer = false
+  @State private var showingPhase5Spike = false
   @State private var selectedStationId: String = "9d79fd38-1940-4312-8fe8-3b9b50d49c6c"
 
   var body: some View {
@@ -236,6 +237,15 @@ struct ContentView: View {
                   .font(.title2)
                   .foregroundColor(.white.opacity(0.8))
               })
+
+            // Phase 5 slice-0 AirPlay renderer spike
+            Button(
+              action: { showingPhase5Spike.toggle() },
+              label: {
+                Image(systemName: "airplayaudio")
+                  .font(.title2)
+                  .foregroundColor(.white.opacity(0.8))
+              })
           }
         }
 
@@ -247,6 +257,9 @@ struct ContentView: View {
     }
     .sheet(isPresented: $showingScheduleViewer) {
       ScheduleViewer(selectedStationId: selectedStationId)
+    }
+    .sheet(isPresented: $showingPhase5Spike) {
+      Phase5SpikeView()
     }
   }
 
