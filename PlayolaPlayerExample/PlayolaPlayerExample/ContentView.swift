@@ -5,6 +5,7 @@
 //  Created by Brian D Keane on 12/29/24.
 //
 
+import AVFoundation
 import PlayolaPlayer
 import SwiftUI
 
@@ -301,6 +302,9 @@ struct ContentView: View {
         do {
           // Phase 5 QA: select the render backend before the first play() (no-op once locked).
           player.setRenderBackend(useSampleBufferRenderer ? .sampleBuffer : .legacyEngine)
+          // Feed this device's current-route output latency so multiple devices play in sync
+          // (local ~18ms, AirPlay ~2s). Host reads it; the SDK doesn't touch AVAudioSession.
+          player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
           try await player.play(stationId: selectedStationId)
         } catch {
           // Handle errors gracefully (including cancellation during loading).

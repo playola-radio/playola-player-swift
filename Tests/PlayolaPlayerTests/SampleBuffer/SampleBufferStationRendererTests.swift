@@ -81,6 +81,22 @@ struct SampleBufferStationRendererTests {
     #expect(sink.enqueued.allSatisfy { $0.startFrame >= 48_000 })
   }
 
+  @Test("a latency-compensated start frame shifts the anchor and the first authored PTS")
+  func latencyCompensatedStart() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let latencyFrames: Int64 = 96_000  // 2s @ 48k (e.g. AirPlay), fed as the start frame
+    let renderer = makeRenderer(sync: sync, sink: sink, startFrame: latencyFrames)
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
+    renderer.start()
+    // The timebase is anchored at the shifted frame; model that so fill isn't gated as "behind".
+    sync.currentTime = CMTime(value: latencyFrames, timescale: Int32(sampleRate))
+    sink.pump()
+
+    #expect(sync.setRateCalls.first.map { CMTimeGetSeconds($0.time) } == 2.0)  // anchored 2s ahead
+    #expect(sink.enqueued.first?.startFrame == latencyFrames)  // authored from the shifted frame
+  }
+
   @Test("a crossed boundary reports the spin start once")
   func boundaryReportsSpinStart() {
     let sync = FakeRenderSynchronizer()

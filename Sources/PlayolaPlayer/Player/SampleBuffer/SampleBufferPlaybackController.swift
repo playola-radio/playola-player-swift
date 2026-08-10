@@ -42,14 +42,21 @@ final class SampleBufferPlaybackController {
   /// first download shows `.loading`, not silent `.playing` (§4.4).
   var onPlaybackStarted: (() -> Void)?
 
-  /// - Parameter anchorDate: output frame 0 on the station timeline (normally `now`). Incoming spins
-  ///   already carry offset-adjusted airtimes (`Schedule.current(offsetTimeInterval:)` shifted them for
-  ///   time-shifted playback), so the mapper adds NO further offset — anchoring at `now` with offset 0.
+  /// - Parameters:
+  ///   - anchorDate: output frame 0 on the station timeline (normally `now`). Incoming spins already
+  ///     carry offset-adjusted airtimes (`Schedule.current(offsetTimeInterval:)` shifted them for
+  ///     time-shifted playback), so the mapper adds NO further offset — anchoring at `now` with offset 0.
+  ///   - outputLatency: measured acoustic output latency of THIS device's current route (host-fed; the
+  ///     SDK can't read `AVAudioSession`). We start the timebase + write cursor this far ahead so the
+  ///     audio for wall-clock T reaches the speaker AT T. With every device compensating its own route
+  ///     latency (local ~18 ms, AirPlay ~2 s), all devices emit the same content at the same wall
+  ///     instant → simultaneous multi-device playback (PHASE_5_PLAN §4.1). Route-change re-comp is FU-2.
   init(
     anchorDate: Date,
     fileDownloadManager: FileDownloadManaging,
     errorReporter: PlayolaErrorReporter = .shared,
-    sampleRate: Double = MixFormat.sampleRate
+    sampleRate: Double = MixFormat.sampleRate,
+    outputLatency: TimeInterval = 0
   ) {
     self.fileDownloadManager = fileDownloadManager
     self.errorReporter = errorReporter
@@ -57,13 +64,14 @@ final class SampleBufferPlaybackController {
     self.mapper = TimelineMapper(
       anchorDate: anchorDate, scheduleOffset: 0, sampleRate: sampleRate)
 
+    let latencyFrames = Int64((max(0, outputLatency) * sampleRate).rounded())
     let sink = LiveSampleBufferSink()
     self.sink = sink
     let renderer = SampleBufferStationRenderer(
       synchronizer: LiveRenderSynchronizer(sink.synchronizer),
       renderer: LiveSampleBufferRenderer(sink.renderer),
       mixer: TimelineMixer(sampleRate: sampleRate),
-      startFrame: 0,
+      startFrame: latencyFrames,
       sampleRate: sampleRate)
     self.renderer = renderer
     self.pump = DecodePump(publish: { [weak renderer] window in renderer?.updateSnapshot(window) })

@@ -170,6 +170,14 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// disable itself once this is true — `setRenderBackend` is a no-op thereafter.
   public var isRenderBackendLocked: Bool { renderBackendLocked }
 
+  /// Acoustic output latency (seconds) of the host's CURRENT audio route, fed in by the host (the SDK
+  /// cannot read `AVAudioSession`). The `.sampleBuffer` backend starts its timebase this far ahead so
+  /// audio for wall-clock T reaches the speaker at T — so two devices, each compensating its own route
+  /// (local ~18 ms, AirPlay ~2 s), play the same content at the same instant. Read at each `play()`;
+  /// set it before playing. 0 = no compensation. No effect on the legacy backend. (Route changes
+  /// mid-session need re-compensation — see PHASE_5_FOLLOWUPS.md FU-2.)
+  public var outputLatencyCompensation: TimeInterval = 0
+
   /// Selects the render backend (Phase 5). A no-op once playback has started (avoids an accidental
   /// mid-session switch on the pervasively-shared `.shared` instance). Instance-scoped so the same
   /// mechanism works on `.shared` now and on any future app-owned instance (eng-review A3).
@@ -865,7 +873,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
     let controller = SampleBufferPlaybackController(
       anchorDate: Date(),
-      fileDownloadManager: fileDownloadManager)
+      fileDownloadManager: fileDownloadManager,
+      outputLatency: outputLatencyCompensation)
     controller.onSpinStarted = { [weak self] spin in
       guard let self, self.isCurrentGeneration(generation) else { return }
       self.state = .playing(spin)
