@@ -131,6 +131,22 @@ struct SampleBufferStationRendererTests {
     #expect(spy.lastDiscardOffset == 48_000)  // playhead(48000) - startFrame(0)
   }
 
+  @Test("fill never enqueues buffers whose PTS is behind the playhead")
+  func fillNeverBackfills() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)  // starts at frame 0
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
+    // Playhead already at 1s while the write cursor is still at frame 0.
+    sync.currentTime = CMTime(seconds: 1, preferredTimescale: Int32(sampleRate))
+    renderer.start()
+    sink.pump()
+
+    // Rejoined at the playhead: no enqueued buffer is authored before frame 48000.
+    #expect(!sink.enqueued.isEmpty)
+    #expect(sink.enqueued.allSatisfy { $0.startFrame >= 48_000 })
+  }
+
   @Test("recovery flushes, rejoins at the current playhead, and resumes")
   func recoveryPauseRefillResume() {
     let sync = FakeRenderSynchronizer()

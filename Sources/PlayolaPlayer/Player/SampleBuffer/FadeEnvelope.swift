@@ -13,6 +13,13 @@ import PlayolaCore
 /// join needs no special handling: the mixer simply evaluates the gain at the join position, and the
 /// continuous ramp yields a smooth value with no discontinuity.
 ///
+/// KNOWN DIVERGENCE FROM LEGACY AT A MID-FILE JOIN (deliberate; flag for the device A/B): when the
+/// legacy path *starts* mid-file it sets the initial volume to the stepwise `Spin.volumeAt(ms)` (3 s
+/// look-ahead) and drops fades before the join (`SpinPlayer.setInitialVolume` / `scheduleFades`). This
+/// envelope instead reports the continuous ramp value at the join position — e.g. joining 5.5 s into a
+/// spin with a fade at 5.0 s→0.2 yields ~0.73 here vs 0.2 in legacy. Chosen for a jump-free join; if
+/// strict cross-backend join parity is required, add a join-aware initial level and test it.
+///
 /// At *plateau* positions — before the first fade, and once a ramp has completed — this equals the
 /// stepwise `Spin.volumeAtMS`; between them it interpolates linearly over the ramp window.
 struct FadeEnvelope: Sendable, Equatable {

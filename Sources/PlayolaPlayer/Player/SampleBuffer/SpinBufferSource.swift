@@ -61,7 +61,11 @@ final class SpinBufferSource: MixSource {
     self.windowStart = max(0, initialSourceOffset)
     // Seek the file once to the join offset; decoding proceeds forward from here.
     let nativeStart = AVAudioFramePosition(Double(self.windowStart) * nativeFramesPerMixFrame)
-    if nativeStart > 0 && nativeStart < file.length {
+    if nativeStart >= file.length {
+      // Join offset is at/after end-of-file (spin already over): decode nothing, produce silence.
+      // Without this the un-seeked file stays at frame 0 and would replay the start from a past offset.
+      reachedEndOfFile = true
+    } else if nativeStart > 0 {
       file.framePosition = nativeStart
     }
   }

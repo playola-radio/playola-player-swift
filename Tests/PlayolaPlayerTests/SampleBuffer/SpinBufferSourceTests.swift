@@ -71,6 +71,21 @@ struct SpinBufferSourceTests {
     #expect(abs((joined?.x ?? -9) - expected) < 0.02)
   }
 
+  @Test("a join offset past end-of-file yields silence, not a replay from frame 0")
+  func joinPastEndOfFileIsSilent() throws {
+    let url = try makeToneFile(sampleRate: MixFormat.sampleRate, seconds: 1.0)  // 48000 frames
+    let joinOffset: Int64 = 60_000  // past the 48000-frame end
+    let source = try SpinBufferSource(
+      spin: toneSpin(), fileURL: url, startFrame: -joinOffset, initialSourceOffset: joinOffset)
+
+    try source.decode(throughSourceOffset: joinOffset + 4_096)
+
+    #expect(source.isFullyDecoded)
+    // Must NOT replay the file's beginning at the past offset.
+    #expect(source.stereoFrame(atSourceOffset: joinOffset) == nil)
+    #expect(source.stereoFrame(atSourceOffset: 0) == nil)
+  }
+
   @Test("resamples 44.1kHz and 48kHz sources to the same aligned mix length")
   func formatNormalization() throws {
     let url44 = try makeToneFile(sampleRate: 44_100, seconds: 0.5)

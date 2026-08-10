@@ -114,7 +114,11 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   func fill() {
     let gen = generation
     while renderer.isReadyForMoreMediaData {
-      guard nextOutputFrame - playheadFrame() < maxEnqueueAheadFrames else { break }
+      // Never backfill (§4.4): if the playhead has run past the write cursor (delayed callback / route
+      // change), rejoin at the playhead rather than enqueue buffers whose PTS is already in the past.
+      let playhead = playheadFrame()
+      if nextOutputFrame < playhead { nextOutputFrame = playhead }
+      guard nextOutputFrame - playhead < maxEnqueueAheadFrames else { break }
       let range = nextOutputFrame..<(nextOutputFrame + Int64(framesPerBuffer))
 
       decodeAhead?(range.upperBound + Int64(framesPerBuffer))
