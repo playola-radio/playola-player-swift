@@ -480,8 +480,27 @@ First on-device run (iPhone → Apple TV "Living Room"), sample-buffer variant:
   `SampleBufferStationRenderer` teardown ordering); (b) a mid-stream stall under investigation — spike now
   reports renderer status / rate / ready + removed an over-aggressive buffer cap to diagnose.
 
-Still to verify on device: engine-manual-render variant parity (crash fixed, re-run pending), stall
-root-cause, and the mixer decision (custom `TimelineMixer` vs engine-manual-render).
+**Second on-device run — sample-buffer CONFIRMED end-to-end on AirPlay:** tone kept playing on the Apple
+TV across the route switch; log showed `auto-flush → paused, refilled, resumed @0`, `route: AirPlay`,
+`status=1 (rendering) rate=1`, `outputLatency 2000ms`. The **pause-refill-resume** recovery (Apple's
+"pause" option) is what works at high AirPlay latency; the "keep-running, re-enqueue-from-now" option
+does NOT (audio lands in the past). **This validates §4.1's re-anchor-as-pause-refill-resume on hardware.**
+
+**Mixer-choice evidence (leaning custom `TimelineMixer`):**
+- **Custom-PCM → renderer (= the custom mixer's sink): works, robust, AirPlays long-form, recovers on
+  route change.** Emits interleaved float32 directly — exactly what `CMSampleBuffer` wants.
+- **Engine-manual-render: works only deinterleaved.** AVAudioEngine internal connections reject
+  interleaved (`-10868 kAudioUnitErr_FormatNotSupported`); the engine must run **deinterleaved** and we
+  must **interleave** its output for the renderer — an extra per-chunk conversion the custom mixer avoids.
+  It was also the crash-prone path (lifecycle + format). Its original appeal (reuse AU fade automation) is
+  already moot (fades reduce to `Spin.volumeAt*`, §4.3/Q1).
+- **Recommendation: lock the custom `TimelineMixer`** (generate/mix interleaved PCM ourselves → one
+  `AVSampleBufferAudioRenderer`). Cleaner test seam (§6 centerpiece), no AVAudioEngine format/lifecycle
+  friction, no interleave conversion. Engine-manual stays available in the spike for a final A/B but is
+  not expected to change the call.
+
+Still to verify on device: (optional) engine-manual A/B now that -10868 is fixed; the earlier ~40s stall
+did not recur in the second run (no artificial buffer cap).
 
 ---
 
