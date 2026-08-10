@@ -166,10 +166,18 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// Set once playback has begun; further backend changes are ignored (release-mode no-op, [C5]).
   private var renderBackendLocked = false
 
-  /// Selects the render backend. A no-op once playback has started (avoids an accidental mid-session
-  /// switch on the pervasively-shared `.shared` instance). Instance-scoped so the same mechanism works
-  /// on `.shared` now and on any future app-owned instance (eng-review A3).
-  func setRenderBackend(_ backend: PlayolaRenderBackend) {
+  /// Whether the render backend is locked (playback has started). A UI selecting the backend should
+  /// disable itself once this is true — `setRenderBackend` is a no-op thereafter.
+  public var isRenderBackendLocked: Bool { renderBackendLocked }
+
+  /// Selects the render backend (Phase 5). A no-op once playback has started (avoids an accidental
+  /// mid-session switch on the pervasively-shared `.shared` instance). Instance-scoped so the same
+  /// mechanism works on `.shared` now and on any future app-owned instance (eng-review A3).
+  ///
+  /// Use this when you configure auth elsewhere (or not at all); otherwise pass `renderBackend:` to
+  /// `configure(authProvider:…)`. Set it BEFORE the first `play()`; to switch afterward, create a fresh
+  /// player (or relaunch) — live switching is intentionally unsupported.
+  public func setRenderBackend(_ backend: PlayolaRenderBackend) {
     // Real no-op once locked — in ALL build configs, not just an assertionFailure that vanishes in
     // release and would let the switch through (C5).
     guard !renderBackendLocked else { return }
