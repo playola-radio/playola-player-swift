@@ -1,3 +1,4 @@
+import CoreMedia
 import Foundation
 import PlayolaCore
 
@@ -21,7 +22,10 @@ import PlayolaCore
 final class SampleBufferPlaybackController {
   private let fileDownloadManager: FileDownloadManaging
   private let errorReporter: PlayolaErrorReporter
-  private let mapper: TimelineMapper
+  private let sampleRate: Double
+  /// Re-anchored at each spin boundary from the live playhead (eng-review A1) so poll-discovered future
+  /// spins are authored against fresh wall clock; main-actor confined (only `ingest`/`reanchor` touch it).
+  private var mapper: TimelineMapper
   private let sink: LiveSampleBufferSink
   private let renderer: SampleBufferStationRenderer
   private let pump: DecodePump
@@ -33,17 +37,20 @@ final class SampleBufferPlaybackController {
   /// Called (on the main actor) when a spin boundary is crossed — maps to `State.playing(spin)`.
   var onSpinStarted: ((Spin) -> Void)?
 
+  /// - Parameter anchorDate: output frame 0 on the station timeline (normally `now`). Incoming spins
+  ///   already carry offset-adjusted airtimes (`Schedule.current(offsetTimeInterval:)` shifted them for
+  ///   time-shifted playback), so the mapper adds NO further offset — anchoring at `now` with offset 0.
   init(
     anchorDate: Date,
-    scheduleOffset: TimeInterval,
     fileDownloadManager: FileDownloadManaging,
     errorReporter: PlayolaErrorReporter = .shared,
     sampleRate: Double = MixFormat.sampleRate
   ) {
     self.fileDownloadManager = fileDownloadManager
     self.errorReporter = errorReporter
+    self.sampleRate = sampleRate
     self.mapper = TimelineMapper(
-      anchorDate: anchorDate, scheduleOffset: scheduleOffset, sampleRate: sampleRate)
+      anchorDate: anchorDate, scheduleOffset: 0, sampleRate: sampleRate)
 
     let sink = LiveSampleBufferSink()
     self.sink = sink
@@ -57,10 +64,14 @@ final class SampleBufferPlaybackController {
     self.pump = DecodePump(publish: { [weak renderer] window in renderer?.updateSnapshot(window) })
 
     renderer.onSpinStarted = { [weak self] spin in
-      Task { @MainActor in self?.onSpinStarted?(spin) }
+      Task { @MainActor in
+        self?.reanchor()  // A1: re-pin the mapping to the live playhead at each boundary
+        self?.onSpinStarted?(spin)
+      }
     }
     renderer.onLateSpinIgnored = { [weak self] spin in
-      self?.reportLateSpin(spin)
+      // Fires on the renderer's control queue; hop to the main actor (like onSpinStarted).
+      Task { @MainActor in self?.reportLateSpin(spin) }
     }
     renderer.decodeAhead = { [weak pump] through in
       pump?.driveDecode(throughOutputFrame: through)
@@ -136,6 +147,15 @@ final class SampleBufferPlaybackController {
           error, context: "Sample-buffer download failed for spin \(spin.id)", level: .error)
       }
     }
+  }
+
+  /// Re-anchor the wall-clock → frame mapping to the synchronizer's current playhead so spins scheduled
+  /// after this boundary track fresh wall clock (bounds long-session drift; A1). Main-actor confined.
+  private func reanchor() {
+    let seconds = CMTimeGetSeconds(sink.synchronizer.currentTime())
+    guard seconds.isFinite else { return }
+    let playhead = Int64((seconds * sampleRate).rounded())
+    mapper = mapper.reanchored(now: Date(), currentStationFrame: playhead)
   }
 
   private func reportLateSpin(_ spin: Spin) {

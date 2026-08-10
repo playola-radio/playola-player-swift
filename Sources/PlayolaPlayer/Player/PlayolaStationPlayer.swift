@@ -859,9 +859,12 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// spins. The already-airing `firstSpin` is published immediately (its boundary is in the past);
   /// later spins publish `.playing` as their boundaries are crossed.
   private func startSampleBufferPlayback(generation: Int, firstSpin: Spin) {
+    // A second play() (station switch) with no intervening stop() must tear the previous controller
+    // down in order before replacing it — otherwise its renderer/pump can outlive ownership.
+    teardownSampleBufferPlayback()
+
     let controller = SampleBufferPlaybackController(
       anchorDate: Date(),
-      scheduleOffset: scheduleOffset ?? 0,
       fileDownloadManager: fileDownloadManager)
     controller.onSpinStarted = { [weak self] spin in
       guard let self, self.isCurrentGeneration(generation) else { return }
@@ -1060,10 +1063,13 @@ final public class PlayolaStationPlayer: ObservableObject {
     // restartEngine() before play(): after an interruption the engine may be in
     // a stopped-but-stale CoreAudio state; play()'s lazy engine start does not
     // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is
-    // idempotent when healthy.
+    // idempotent when healthy. The sample-buffer backend uses no AVAudioEngine, so
+    // skip it there — an unrelated engine failure must not block a sample-buffer resume.
     let generation = playGeneration
     do {
-      try await mainMixer.restartEngine()
+      if renderBackend == .legacyEngine {
+        try await mainMixer.restartEngine()
+      }
     } catch {
       // Mirror play()'s error path so a host observing $state isn't left on a
       // stale .paused with no working resume — but only if a host stop()/play()
