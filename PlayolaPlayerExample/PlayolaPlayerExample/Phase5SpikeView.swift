@@ -31,6 +31,10 @@
 import AVFoundation
 import SwiftUI
 
+#if canImport(UIKit)
+  import UIKit
+#endif
+
 // MARK: - Shared audio helpers
 
 private enum SpikeAudio {
@@ -315,9 +319,45 @@ final class Phase5SpikeModel: ObservableObject {
   @Published var outputLatencyMs: String = "—"
   @Published var live: String = "—"
   @Published var running: String? = nil
+  @Published var eventLog: String = ""
 
   private var feeder: RendererFeeder?
   private var timer: Timer?
+  private var logLines: [String] = []
+  private let logFmt: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss.SSS"
+    return f
+  }()
+
+  /// Every status event is timestamped + appended to the copyable log (deduped consecutive repeats).
+  func appendStatus(_ s: String) {
+    status = s
+    let line = "[\(logFmt.string(from: Date()))] \(s)"
+    if logLines.last?.dropFirst(15) != line.dropFirst(15) {  // ignore timestamp when de-duping
+      logLines.append(line)
+      if logLines.count > 120 { logLines.removeFirst(logLines.count - 120) }
+      eventLog = logLines.joined(separator: "\n")
+    }
+  }
+
+  /// Snapshot everything into the clipboard so it can be pasted straight into chat.
+  func copyReport() {
+    let report = """
+      === Phase 5 slice-0 spike report ===
+      running: \(running ?? "-")
+      last status: \(status)
+      route: \(route)
+      outputLatency: \(outputLatencyMs)
+      live: \(live)
+      --- event log ---
+      \(eventLog)
+      """
+    #if canImport(UIKit)
+      UIPasteboard.general.string = report
+    #endif
+    appendStatus("✓ copied \(logLines.count)-line report to clipboard")
+  }
 
   func configureSessionLongForm() {
     #if os(iOS) || os(tvOS)
@@ -349,7 +389,7 @@ final class Phase5SpikeModel: ObservableObject {
     configureSessionLongForm()
     let f = RendererFeeder(
       produce: { frames, start in toneChunk(frames: frames, startFrame: start) },
-      onStatus: { [weak self] s in Task { @MainActor in self?.status = s } })
+      onStatus: { [weak self] s in Task { @MainActor in self?.appendStatus(s) } })
     feeder = f
     f.start()
     running = "sample-buffer"
@@ -362,13 +402,13 @@ final class Phase5SpikeModel: ObservableObject {
     // The engine is set up, pulled, and torn down entirely on the feeder's serial queue via
     // prepare/produce/teardown — never touched from main — so no lifecycle race / use-after-free.
     let src = EngineManualSource(onStatus: { [weak self] s in
-      Task { @MainActor in self?.status = s }
+      Task { @MainActor in self?.appendStatus(s) }
     })
     let f = RendererFeeder(
       prepare: { src.setup() },
       produce: { frames, start in src.produce(frames: frames, startFrame: start) },
       teardown: { src.teardown() },
-      onStatus: { [weak self] s in Task { @MainActor in self?.status = s } })
+      onStatus: { [weak self] s in Task { @MainActor in self?.appendStatus(s) } })
     feeder = f
     f.start()
     running = "engine-manual"
@@ -426,13 +466,35 @@ struct Phase5SpikeView: View {
               .buttonStyle(.borderedProminent)
             Button("Start (engine-manual → renderer)") { model.startEngineManual() }
               .buttonStyle(.borderedProminent)
-            Button("Stop") { model.stopAll() }.buttonStyle(.bordered)
-            Button("Refresh route/latency") { model.refreshRoute() }.buttonStyle(.bordered)
+            HStack(spacing: 12) {
+              Button("Stop") { model.stopAll() }.buttonStyle(.bordered)
+              Button("Refresh") { model.refreshRoute() }.buttonStyle(.bordered)
+            }
+            Button {
+              model.copyReport()
+            } label: {
+              Label("Copy values (paste to chat)", systemImage: "doc.on.clipboard")
+                .font(.headline).foregroundColor(.white)
+                .frame(maxWidth: .infinity).padding()
+                .background(Color.green.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
           }
           .frame(maxWidth: .infinity)
 
+          // Timestamped event log (what gets copied). Scroll to see the full sequence.
+          Text("Event log").font(.caption).foregroundColor(.secondary)
+          ScrollView {
+            Text(model.eventLog.isEmpty ? "(no events yet)" : model.eventLog)
+              .font(.caption2.monospaced())
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .textSelection(.enabled)
+          }
+          .frame(height: 180)
+          .padding(8).background(Color.black.opacity(0.06)).cornerRadius(8)
+
           Text(
-            "Report: did each variant keep playing when moved to a HomePod/Apple TV (any -50 / .failed)? Did you see 'auto-flush → re-anchored' on the switch? Local vs AirPlay latency? Did engine-manual sound as clean?"
+            "Report: did each variant keep playing when moved to a HomePod/Apple TV (any -50 / .failed)? Did you see 'auto-flush → re-anchored' on the switch? Local vs AirPlay latency? Did engine-manual sound as clean? Tap Copy values and paste it here."
           )
           .font(.caption2).foregroundColor(.secondary)
         }
