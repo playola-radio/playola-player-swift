@@ -237,16 +237,19 @@ struct ContentView: View {
                   .font(.title2)
                   .foregroundColor(.white.opacity(0.8))
               })
-
-            // Phase 5 slice-0 AirPlay renderer spike
-            Button(
-              action: { showingPhase5Spike.toggle() },
-              label: {
-                Image(systemName: "airplayaudio")
-                  .font(.title2)
-                  .foregroundColor(.white.opacity(0.8))
-              })
           }
+
+          // Phase 5 slice-0 AirPlay renderer spike (unmissable full-width entry)
+          Button(action: { showingPhase5Spike.toggle() }) {
+            Label("Phase 5 AirPlay Spike", systemImage: "airplayaudio")
+              .font(.headline)
+              .foregroundColor(.white)
+              .frame(maxWidth: .infinity)
+              .padding()
+              .background(Color.blue.opacity(0.4))
+              .clipShape(RoundedRectangle(cornerRadius: 12))
+          }
+          .padding(.horizontal)
         }
 
         Spacer()
