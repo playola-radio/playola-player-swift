@@ -463,6 +463,26 @@ decided by the user (Tension 1 → C spike-both; Tension 2 fade → A legacy ram
   handled fallback is **flag stays OFF in production** (the rollout is server-flagged precisely for this).
   That is the design, not an unhandled gap.
 
+## 13. Slice-0 device findings (in progress)
+
+First on-device run (iPhone → Apple TV "Living Room"), sample-buffer variant:
+- **GO: `AVSampleBufferAudioRenderer` routes AirPlay-2 long-form to Apple TV** — tone played on the Apple
+  TV. Confirms the core premise (§2) on real hardware; the sink AirPlays long-form.
+- **AirPlay presentation latency ≈ 2000 ms** vs **~18 ms local** (`AVAudioSession.outputLatency`). This is
+  a large, concrete anchor offset — validates that §4.1's latency compensation is mandatory, not
+  theoretical, and sets the magnitude the real anchor must absorb (and the legacy-vs-sample-buffer parity
+  gap to reconcile).
+- **Route-change auto-flush is real:** switching to AirPlay fired
+  `AVSampleBufferAudioRendererWasFlushedAutomatically`; the spike's re-anchor (§4.1/C2) is required or the
+  stream goes silent. Confirms the plan's re-anchor design against actual behavior.
+- **Bugs found + fixed in the spike (not architecture blockers):** (a) EXC_BAD_ACCESS from an engine
+  lifecycle race — teardown must be serialized with the render callback (informs the real
+  `SampleBufferStationRenderer` teardown ordering); (b) a mid-stream stall under investigation — spike now
+  reports renderer status / rate / ready + removed an over-aggressive buffer cap to diagnose.
+
+Still to verify on device: engine-manual-render variant parity (crash fixed, re-run pending), stall
+root-cause, and the mixer decision (custom `TimelineMixer` vs engine-manual-render).
+
 ---
 
 ### Provenance
