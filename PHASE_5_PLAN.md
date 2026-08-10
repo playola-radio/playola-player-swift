@@ -418,10 +418,15 @@ Synthesized from this review. P1 blocks ship; P2 same branch; P3 follow-up.
 An independent Codex pass on the finalized plan surfaced these; all folded in. Cross-model tensions were
 decided by the user (Tension 1 → C spike-both; Tension 2 fade → A legacy ramps).
 
-- **C1 Deprecated enqueue API.** `requestMediaDataWhenReady` / `enqueue(CMSampleBuffer)` is deprecated;
-  the iOS-18 surface is the newer `sampleBufferReceiver` / async receiver. The `SampleBufferRendering`
-  protocol must wrap the **current, non-deprecated** API. **Verify the exact symbol at implementation**
-  against the iOS-18 SDK before building the seam (plan does not hard-assert the symbol name).
+- **C1 Deprecated enqueue API — REJECTED after verification.** Codex claimed
+  `requestMediaDataWhenReady`/`enqueue` is deprecated in favor of a `sampleBufferReceiver`. Checked the
+  Xcode-26.5 iOS SDK headers directly: `AVSampleBufferAudioRenderer : <AVQueuedSampleBufferRendering>`
+  still exposes `enqueueSampleBuffer:` / `requestMediaDataWhenReadyOnQueue:usingBlock:` /
+  `isReadyForMoreMediaData` / `flush` with **NO `API_DEPRECATED`** annotation (available ios(11.0)+).
+  `sampleBufferReceiver` is a *video*-renderer concept (only appears in `AVAssetWriterInput.h`), not the
+  audio path. So the classic `requestMediaDataWhenReady` + `enqueue` IS the correct current surface for
+  the audio renderer; the `SampleBufferRendering` protocol wraps it. (Example of the outside voice being
+  confidently wrong — verified, not adopted.)
 - **C2 Re-anchor vs queued buffers.** Folded into §4.1 (shallow queue + tail-flush/re-enqueue, or
   future-PTS-only nudging).
 - **C3 Boundary observers ≠ acoustic presentation** over AirPlay — already handled by the wall-clock
