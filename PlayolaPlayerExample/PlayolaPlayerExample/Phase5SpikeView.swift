@@ -249,59 +249,60 @@ private final class EngineManualSource: @unchecked Sendable {
   init(onStatus: @escaping @Sendable (String) -> Void) { self.onStatus = onStatus }
 
   func setup() {
+    // AVAudioEngine internal node connections require the STANDARD (deinterleaved) float32 format;
+    // connecting in interleaved throws -10868 (kAudioUnitErr_FormatNotSupported). So the engine graph
+    // + manual rendering run deinterleaved, and produce() interleaves the result for the CMSampleBuffer.
+    // (That extra conversion is a real cost of the engine-manual path vs the custom mixer.)
     guard
-      let interleaved = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32, sampleRate: SpikeAudio.sampleRate,
-        channels: AVAudioChannelCount(SpikeAudio.channels), interleaved: true),
+      let standard = AVAudioFormat(
+        standardFormatWithSampleRate: SpikeAudio.sampleRate,
+        channels: AVAudioChannelCount(SpikeAudio.channels)),
       let buf = AVAudioPCMBuffer(
-        pcmFormat: interleaved, frameCapacity: AVAudioFrameCount(SpikeAudio.chunkFrames))
+        pcmFormat: standard, frameCapacity: AVAudioFrameCount(SpikeAudio.chunkFrames))
     else {
       onStatus("engine-manual: bad format/buffer")
       return
     }
-    fmt = interleaved
+    fmt = standard
     renderBuffer = buf
     engine.attach(player)
-    // Explicit graph at the manual-render format all the way to the output node, so the manual
-    // renderer has a valid, format-matched chain (a mismatch here was a likely null-deref source).
-    engine.connect(player, to: engine.mainMixerNode, format: interleaved)
-    engine.connect(engine.mainMixerNode, to: engine.outputNode, format: interleaved)
+    engine.connect(player, to: engine.mainMixerNode, format: standard)
     do {
       try engine.enableManualRenderingMode(
-        .offline, format: interleaved, maximumFrameCount: AVAudioFrameCount(SpikeAudio.chunkFrames))
+        .offline, format: standard, maximumFrameCount: AVAudioFrameCount(SpikeAudio.chunkFrames))
       try engine.start()
     } catch {
       onStatus("engine-manual: start FAILED \(error.localizedDescription)")
       return
     }
-    guard let tone = makeToneBuffer(format: interleaved) else {
+    guard let tone = makeToneBuffer(format: standard) else {
       onStatus("engine-manual: tone buffer failed")
       return
     }
     player.scheduleBuffer(tone, at: nil, options: .loops, completionHandler: nil)
     player.play()
     ready = true
-    onStatus("engine-manual: ready")
+    onStatus("engine-manual: ready (deinterleaved graph)")
   }
 
+  /// Deinterleaved tone: write each channel plane separately.
   private func makeToneBuffer(format: AVAudioFormat) -> AVAudioPCMBuffer? {
     let frames = AVAudioFrameCount(SpikeAudio.sampleRate)
-    guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return nil }
+    guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
+      let ch = buf.floatChannelData
+    else { return nil }
     buf.frameLength = frames
     let twoPiF = 2.0 * Double.pi * SpikeAudio.toneHz
-    if let ch = buf.floatChannelData {
-      let p = ch[0]
-      for f in 0..<Int(frames) {
-        let v = Float(sin(twoPiF * Double(f) / SpikeAudio.sampleRate) * 0.2)
-        p[f * SpikeAudio.channels] = v
-        p[f * SpikeAudio.channels + 1] = v
-      }
+    let planes = Int(format.channelCount)
+    for f in 0..<Int(frames) {
+      let v = Float(sin(twoPiF * Double(f) / SpikeAudio.sampleRate) * 0.2)
+      for p in 0..<planes { ch[p][f] = v }
     }
     return buf
   }
 
-  /// Pull `frames` of mixed PCM from the engine as interleaved float32. Fully guarded — returns nil
-  /// (→ silence) instead of crashing if the engine is not in a valid render state.
+  /// Pull mixed PCM from the engine (deinterleaved), interleave to stereo float32 for the renderer.
+  /// Fully guarded — returns nil (→ silence) instead of crashing if the engine is not in a valid state.
   func produce(frames: Int, startFrame: Int64) -> [Float]? {
     guard ready, engine.isInManualRenderingMode, engine.isRunning,
       let buffer = renderBuffer
@@ -318,7 +319,14 @@ private final class EngineManualSource: @unchecked Sendable {
     }
     let n = Int(buffer.frameLength)
     guard n > 0, let ch = buffer.floatChannelData else { return nil }
-    return Array(UnsafeBufferPointer(start: ch[0], count: n * SpikeAudio.channels))
+    let ch0 = ch[0]
+    let ch1 = buffer.format.channelCount > 1 ? ch[1] : ch[0]
+    var out = [Float](repeating: 0, count: n * SpikeAudio.channels)
+    for f in 0..<n {
+      out[f * 2] = ch0[f]
+      out[f * 2 + 1] = ch1[f]
+    }
+    return out
   }
 
   func teardown() {
