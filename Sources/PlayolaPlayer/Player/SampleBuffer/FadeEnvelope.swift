@@ -1,0 +1,64 @@
+import Foundation
+import PlayolaCore
+
+/// Per-position playback gain for a single spin on the sample-buffer render path.
+///
+/// This reproduces the **legacy engine's fade behaviour**: the legacy path drives an AU volume
+/// parameter with a ~1.5 s *linear ramp* from the previous level to each fade's target, anchored at
+/// `fade.atMS` in the file's own timeline (see `SpinPlayer.scheduleFades`). The fade targets and the
+/// starting level are taken from the SAME source of truth the legacy path uses — `Spin.startingVolume`
+/// and `Spin.fades` (the data behind `Spin.volumeAt*`) — never a reimplemented curve.
+///
+/// The envelope is a pure function of position within the spin (time since `airtime`), so mid-file
+/// join needs no special handling: the mixer simply evaluates the gain at the join position, and the
+/// continuous ramp yields a smooth value with no discontinuity.
+///
+/// At *plateau* positions — before the first fade, and once a ramp has completed — this equals the
+/// stepwise `Spin.volumeAtMS`; between them it interpolates linearly over the ramp window.
+struct FadeEnvelope: Sendable, Equatable {
+  /// Fade ramp duration, matching the legacy `SpinPlayer.Constants.fadeDuration` (1.5 s).
+  static let rampDurationMS: Double = 1_500
+
+  private let startingVolume: Float
+  /// Fades sorted ascending by `atMS` (as `Spin` guarantees).
+  private let fades: [Fade]
+
+  init(spin: Spin) {
+    self.startingVolume = spin.startingVolume
+    self.fades = spin.fades  // already sorted by Spin's initializer
+  }
+
+  /// Playback gain at `ms` milliseconds since the spin's airtime.
+  func gain(atMS ms: Int) -> Float {
+    gain(atSeconds: Double(ms) / 1_000)
+  }
+
+  /// Playback gain at `seconds` since the spin's airtime.
+  func gain(atSeconds seconds: Double) -> Float {
+    let positionMS = seconds * 1_000
+    var level = startingVolume  // plateau carried into the next ramp
+
+    for fade in fades {
+      let rampStart = Double(fade.atMS)
+      let rampEnd = rampStart + Self.rampDurationMS
+
+      if positionMS < rampStart {
+        // Before this ramp begins: hold the current plateau.
+        return level
+      } else if positionMS < rampEnd {
+        // Within the ramp: linear interpolate from the plateau to the target.
+        let progress = Float((positionMS - rampStart) / Self.rampDurationMS)
+        return level + progress * (fade.toVolume - level)
+      }
+      // Ramp complete: advance the plateau and consider the next fade.
+      level = fade.toVolume
+    }
+
+    return level
+  }
+
+  /// Playback gain at a given output-frame offset into the spin, for the mixer's hot path.
+  func gain(atFrame frameOffset: Int64, sampleRate: Double) -> Float {
+    gain(atSeconds: Double(frameOffset) / sampleRate)
+  }
+}
