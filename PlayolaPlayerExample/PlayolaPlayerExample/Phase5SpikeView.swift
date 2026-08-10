@@ -104,7 +104,9 @@ private final class RendererFeeder: @unchecked Sendable {
   let synchronizer = AVSampleBufferRenderSynchronizer()
   let renderer = AVSampleBufferAudioRenderer()
   private let queue = DispatchQueue(label: "fm.playola.phase5spike.feeder")
+  private let prepare: (@Sendable () -> Void)?
   private let produce: @Sendable (_ frames: Int, _ startFrame: Int64) -> [Float]?
+  private let teardown: (@Sendable () -> Void)?
   private let onStatus: @Sendable (String) -> Void
   private var nextFrame: Int64 = 0
   private var enqueued: Int64 = 0
@@ -112,15 +114,22 @@ private final class RendererFeeder: @unchecked Sendable {
   private var stopped = false
 
   init(
+    prepare: (@Sendable () -> Void)? = nil,
     produce: @escaping @Sendable (_ frames: Int, _ startFrame: Int64) -> [Float]?,
+    teardown: (@Sendable () -> Void)? = nil,
     onStatus: @escaping @Sendable (String) -> Void
   ) {
+    self.prepare = prepare
     self.produce = produce
+    self.teardown = teardown
     self.onStatus = onStatus
   }
 
   func start() {
     synchronizer.addRenderer(renderer)
+    // Prepare (e.g. engine setup) runs on the SAME serial queue as produce, enqueued BEFORE the
+    // renderer's first request block, so it always completes first and nothing races it.
+    if let prepare { queue.async { prepare() } }
     let nc = NotificationCenter.default
     observers.append(
       nc.addObserver(
@@ -148,12 +157,9 @@ private final class RendererFeeder: @unchecked Sendable {
         self.renderer.enqueue(sb)
         self.nextFrame += Int64(SpikeAudio.chunkFrames)
         self.enqueued += 1
-        // Cap absurd race-ahead on AirPlay (which buffers deeply): keep at most ~5s queued.
-        let aheadS =
-          Double(self.nextFrame) / SpikeAudio.sampleRate
-          - CMTimeGetSeconds(self.synchronizer.currentTime())
-        if aheadS > 5 { break }
       }
+      // No artificial buffer cap: isReadyForMoreMediaData already reflects the renderer's appetite
+      // (deep for AirPlay), and re-anchor handles any race-ahead after a route-change flush.
       if self.renderer.status == .failed {
         self.onStatus("renderer .failed: \(self.renderer.error?.localizedDescription ?? "unknown")")
       }
@@ -175,16 +181,25 @@ private final class RendererFeeder: @unchecked Sendable {
   func debugLine() -> String {
     let t = CMTimeGetSeconds(synchronizer.currentTime())
     let ahead = Double(nextFrame) / SpikeAudio.sampleRate - t
-    return String(format: "t=%.1fs ahead=%.2fs enq=%d", t, ahead, enqueued)
+    // status: 0=unknown 1=rendering 2=failed | rate: should be 1 while playing
+    return String(
+      format: "t=%.1fs ahead=%.2fs enq=%d status=%d rate=%.0f ready=%@",
+      t, ahead, enqueued, renderer.status.rawValue, synchronizer.rate,
+      renderer.isReadyForMoreMediaData ? "Y" : "N")
   }
 
   func stop() {
-    stopped = true
     observers.forEach { NotificationCenter.default.removeObserver($0) }
     observers.removeAll()
     synchronizer.setRate(0, time: synchronizer.currentTime())
     renderer.stopRequestingMediaData()
-    renderer.flush()
+    // Serialize teardown on the feeder queue: waits for any in-flight produce()/enqueue to finish,
+    // THEN runs teardown. Prevents the use-after-free where produce() touched a torn-down engine.
+    queue.sync {
+      stopped = true
+      renderer.flush()
+      teardown?()
+    }
     synchronizer.removeRenderer(renderer, at: .zero) { _ in }
     onStatus("stopped")
   }
@@ -302,7 +317,6 @@ final class Phase5SpikeModel: ObservableObject {
   @Published var running: String? = nil
 
   private var feeder: RendererFeeder?
-  private var engineSource: EngineManualSource?
   private var timer: Timer?
 
   func configureSessionLongForm() {
@@ -345,13 +359,15 @@ final class Phase5SpikeModel: ObservableObject {
   func startEngineManual() {
     stopAll()
     configureSessionLongForm()
+    // The engine is set up, pulled, and torn down entirely on the feeder's serial queue via
+    // prepare/produce/teardown — never touched from main — so no lifecycle race / use-after-free.
     let src = EngineManualSource(onStatus: { [weak self] s in
       Task { @MainActor in self?.status = s }
     })
-    src.setup()
-    engineSource = src
     let f = RendererFeeder(
+      prepare: { src.setup() },
       produce: { frames, start in src.produce(frames: frames, startFrame: start) },
+      teardown: { src.teardown() },
       onStatus: { [weak self] s in Task { @MainActor in self?.status = s } })
     feeder = f
     f.start()
@@ -373,10 +389,8 @@ final class Phase5SpikeModel: ObservableObject {
   func stopAll() {
     timer?.invalidate()
     timer = nil
-    feeder?.stop()
+    feeder?.stop()  // teardown (incl. engine) runs serialized inside stop()
     feeder = nil
-    engineSource?.teardown()
-    engineSource = nil
     running = nil
     live = "—"
   }
