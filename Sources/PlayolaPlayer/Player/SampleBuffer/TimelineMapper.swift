@@ -37,4 +37,14 @@ struct TimelineMapper: Equatable, Sendable {
     let stationSeconds = Double(frame) / sampleRate - scheduleOffset
     return anchorDate.addingTimeInterval(stationSeconds)
   }
+
+  /// Re-pin the timeline so that wall-clock `now` maps to `currentStationFrame` (the synchronizer's
+  /// actual playhead), by adjusting `scheduleOffset` only. Used at each spin boundary [PHASE_5_PLAN
+  /// §4.1 / eng-review A1]: the audio-hardware / AirPlay timebase drifts from `Date()` over a long
+  /// session, so re-anchoring at boundaries keeps future spins' authored frames aligned to fresh wall
+  /// clock and stops error accumulating across spins. `anchorDate` and `sampleRate` are unchanged.
+  func reanchored(now: Date, currentStationFrame: Int64) -> TimelineMapper {
+    let newOffset = Double(currentStationFrame) / sampleRate - now.timeIntervalSince(anchorDate)
+    return TimelineMapper(anchorDate: anchorDate, scheduleOffset: newOffset, sampleRate: sampleRate)
+  }
 }

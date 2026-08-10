@@ -35,6 +35,15 @@ public enum StationPlayerError: Error, LocalizedError, Sendable {
   }
 }
 
+/// Selects the SDK's audio render backend (Phase 5). `.legacyEngine` is the proven per-spin
+/// `AVAudioEngine` graph (the default); `.sampleBuffer` is the custom software mixer →
+/// `AVSampleBufferAudioRenderer` path that casts AirPlay-2 long-form. Chosen via
+/// `configure(renderBackend:)`, set once before first `play()` and locked thereafter.
+public enum PlayolaRenderBackend: Sendable, Equatable {
+  case legacyEngine
+  case sampleBuffer
+}
+
 /// A player for Playola stations that manages audio playback, scheduling, and stream management.
 ///
 /// `PlayolaStationPlayer` is the main entry point for apps integrating with the Playola platform.
@@ -131,14 +140,46 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// activate it (category `.playback`) before calling `play(stationId:)` or
   /// `resumeAfterInterruption()`, and owns all interruption/route-change policy.
   /// See the README "Audio session" section.
+  ///   - renderBackend: Which audio render path to use (Phase 5). Defaults to the proven
+  ///     `.legacyEngine`. Set this once, before the first `play()`; it is locked afterward (a later
+  ///     change is a release-mode no-op — see `setRenderBackend`). The app flips it to `.sampleBuffer`
+  ///     behind a server flag.
   public func configure(
     authProvider: PlayolaAuthenticationProvider,
-    baseURL: URL = URL(string: "https://admin-api.playola.fm")!
+    baseURL: URL = URL(string: "https://admin-api.playola.fm")!,
+    renderBackend: PlayolaRenderBackend = .legacyEngine
   ) {
     self.authProvider = authProvider
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
     self.baseUrl = baseURL
+    setRenderBackend(renderBackend)
+  }
+
+  /// The active render backend (Phase 5). Defaults to `.legacyEngine`; locked after first `play()`.
+  /// `private(set)` so tests in the module can read it.
+  private(set) var renderBackend: PlayolaRenderBackend = .legacyEngine
+  /// Set once playback has begun; further backend changes are ignored (release-mode no-op, [C5]).
+  private var renderBackendLocked = false
+
+  /// Selects the render backend. A no-op once playback has started (avoids an accidental mid-session
+  /// switch on the pervasively-shared `.shared` instance). Instance-scoped so the same mechanism works
+  /// on `.shared` now and on any future app-owned instance (eng-review A3).
+  func setRenderBackend(_ backend: PlayolaRenderBackend) {
+    // Real no-op once locked — in ALL build configs, not just an assertionFailure that vanishes in
+    // release and would let the switch through (C5).
+    guard !renderBackendLocked else { return }
+    renderBackend = backend
+  }
+
+  /// Locks the render backend for the rest of this player's life. Called at the first `play()`.
+  private func lockRenderBackend() {
+    renderBackendLocked = true
+  }
+
+  /// Test seam: simulate the first-play lock without driving the network.
+  func lockRenderBackendForTesting() {
+    lockRenderBackend()
   }
 
   public enum State: Sendable {
@@ -703,6 +744,9 @@ final public class PlayolaStationPlayer: ObservableObject {
   ///   - Missing audio content in the schedule
   ///   - File download failures
   public func play(stationId: String, atDate: Date? = nil) async throws {
+    // Lock the render backend on the first play() so it can't switch mid-session (Phase 5, A3/C5).
+    lockRenderBackend()
+
     // Reset any stale interruption state when explicitly starting playback.
     // This ensures CarPlay and other external callers always get a clean start.
     isSuspended = false

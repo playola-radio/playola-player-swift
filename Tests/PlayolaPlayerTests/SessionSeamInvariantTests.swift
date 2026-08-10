@@ -34,7 +34,12 @@ struct SessionSeamInvariantTests {
       // Direct access AND the two session-mutating verbs (catches alias/wrapper
       // bypass). Substring match: a comment mentioning ".setCategory(" would
       // false-positive — acceptable; the failure message names the file.
-      for needle in ["AVAudioSession.sharedInstance", ".setCategory(", ".setActive("]
+      // Also catch direct construction (`AVAudioSession(`) so the new sample-buffer render path
+      // (Phase 5) can't smuggle in a private session — it needs none; that is what lets it route
+      // AirPlay-2 long-form (host owns the session).
+      for needle in [
+        "AVAudioSession.sharedInstance", "AVAudioSession(", ".setCategory(", ".setActive(",
+      ]
       where content.contains(needle) {
         offenders.append("\(url.lastPathComponent): \(needle)")
       }

@@ -10,6 +10,15 @@ import Foundation
 
 @testable import PlayolaPlayer
 
+/// Deterministic clock for the render-seam tests (the PlayolaCoreTests `DateProviderMock` is in a
+/// different test target).
+final class DateProviderMock: DateProviderProtocol, @unchecked Sendable {
+  private var date: Date
+  init(mockDate: Date) { self.date = mockDate }
+  func now() -> Date { date }
+  func setMockDate(_ date: Date) { self.date = date }
+}
+
 final class FakeSampleBufferRenderer: SampleBufferRendering, @unchecked Sendable {
   private(set) var enqueued: [RenderBuffer] = []
   private(set) var flushCount = 0
