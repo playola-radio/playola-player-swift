@@ -21,6 +21,20 @@ private struct StubMixSource: MixSource {
   }
 }
 
+private final class DiscardSpySource: MixSource, @unchecked Sendable {
+  let startFrame: Int64
+  let envelope: FadeEnvelope
+  private(set) var lastDiscardOffset: Int64?
+
+  init(startFrame: Int64) {
+    self.startFrame = startFrame
+    self.envelope = FadeEnvelope(spin: Spin.mockWith(startingVolume: 1.0, fades: []))
+  }
+
+  func stereoFrame(atSourceOffset offset: Int64) -> SIMD2<Float>? { SIMD2(0.5, 0.5) }
+  func discard(beforeSourceOffset offset: Int64) { lastDiscardOffset = offset }
+}
+
 @MainActor
 struct SampleBufferStationRendererTests {
   private let sampleRate: Double = 48_000
@@ -100,6 +114,21 @@ struct SampleBufferStationRendererTests {
     sync.fireBoundary()
 
     #expect(started.isEmpty)
+  }
+
+  @Test("fill trims each source behind the playhead to bound memory")
+  func fillDiscardsBehindPlayhead() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    let spy = DiscardSpySource(startFrame: 0)
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: spy)])
+    // Playhead already at 1s: everything before frame 48000 is presented and safe to release.
+    sync.currentTime = CMTime(seconds: 1, preferredTimescale: Int32(sampleRate))
+    renderer.start()
+    sink.pump()
+
+    #expect(spy.lastDiscardOffset == 48_000)  // playhead(48000) - startFrame(0)
   }
 
   @Test("recovery flushes, rejoins at the current playhead, and resumes")

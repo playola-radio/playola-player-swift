@@ -18,6 +18,15 @@ protocol MixSource {
   /// The already-decoded interleaved-stereo frame at `offset` frames into the spin, or `nil` if that
   /// frame is not currently available (not decoded, out of range, or past end-of-file). Decode/IO-free.
   func stereoFrame(atSourceOffset offset: Int64) -> SIMD2<Float>?
+
+  /// Release decoded frames strictly before `offset` (already-presented audio) to bound memory
+  /// [eng-review P1]. The renderer calls this behind the playhead after each pull. Default: no-op (for
+  /// in-memory test sources); `SpinBufferSource` overrides it to trim its ring buffer.
+  func discard(beforeSourceOffset offset: Int64)
+}
+
+extension MixSource {
+  func discard(beforeSourceOffset offset: Int64) {}
 }
 
 /// Pure software mixer for the sample-buffer render path (Phase 5 centerpiece).

@@ -132,6 +132,13 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
         RenderBuffer(startFrame: range.lowerBound, sampleRate: sampleRate, frames: frames))
       nextOutputFrame = range.upperBound
     }
+
+    // Release already-presented audio behind the playhead to bound memory (P1). Never drops frames the
+    // mixer may still read (the playhead trails the enqueue position).
+    let playhead = playheadFrame()
+    for item in scheduled {
+      item.source.discard(beforeSourceOffset: playhead - item.source.startFrame)
+    }
   }
 
   // MARK: - Private
@@ -158,10 +165,17 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     boundaryTokens.removeAll()
   }
 
+  /// The current wall-clock → frame mapping, re-anchored at each boundary. The owner reads this when
+  /// scheduling the NEXT window of spins so their authored frames track fresh wall clock (A1). It does
+  /// not move already-authored frames or already-installed boundary observers — corrections land at the
+  /// next cut point, by design (§4.1).
+  var currentMapper: TimelineMapper { mapper }
+
   private func handleBoundary(spin: Spin, generation gen: Int) {
     guard gen == generation else { return }  // superseded session — never publish
     guard startedSpinIDs.insert(spin.id).inserted else { return }  // once per spin
-    // Boundary re-anchor from fresh wall clock (eng-review A1); does not disturb already-authored frames.
+    // Boundary re-anchor from fresh wall clock (A1): updates the mapping used to schedule FUTURE spins;
+    // already-authored frames/observers are unchanged.
     mapper = mapper.reanchored(now: dateProvider.now(), currentStationFrame: playheadFrame())
     onSpinStarted?(spin)
   }

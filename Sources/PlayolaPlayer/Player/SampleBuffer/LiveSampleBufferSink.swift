@@ -77,8 +77,26 @@ final class LiveSampleBufferSink {
   let synchronizer = AVSampleBufferRenderSynchronizer()
   let renderer = AVSampleBufferAudioRenderer()
 
+  /// Invoked when the renderer auto-flushes on a route change
+  /// (`AVSampleBufferAudioRendererWasFlushedAutomatically`). The owner wires this to
+  /// `SampleBufferStationRenderer.recoverAfterAutoFlush()` — the device-proven pause-refill-resume
+  /// recovery (PHASE_5_PLAN §13). Without it the stream goes silent after an AirPlay route switch.
+  var onAutoFlush: (@Sendable () -> Void)?
+
+  private var flushObserver: (any NSObjectProtocol)?
+
   init() {
     synchronizer.addRenderer(renderer)
+    flushObserver = NotificationCenter.default.addObserver(
+      forName: .AVSampleBufferAudioRendererWasFlushedAutomatically,
+      object: renderer, queue: nil
+    ) { [weak self] _ in
+      self?.onAutoFlush?()
+    }
+  }
+
+  deinit {
+    if let flushObserver { NotificationCenter.default.removeObserver(flushObserver) }
   }
 }
 
