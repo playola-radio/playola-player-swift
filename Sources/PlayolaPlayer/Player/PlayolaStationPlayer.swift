@@ -113,6 +113,10 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   public weak var delegate: PlayolaStationPlayerDelegate?
 
+  /// Active sample-buffer playback (Phase 5). Non-nil only while the `.sampleBuffer` backend is playing;
+  /// the legacy `.legacyEngine` path leaves this nil and uses `_spinPlayers` exactly as before.
+  private var sampleBufferController: SampleBufferPlaybackController?
+
   // Thread-safe access to spin players - all access must be on main actor
   private var _spinPlayers: [SpinPlayer] = []
 
@@ -797,6 +801,14 @@ final public class PlayolaStationPlayer: ObservableObject {
         "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info,
         stationId)
 
+      // Phase 5: the sample-buffer backend drives its own pipeline (download -> decode -> mixer ->
+      // AVSampleBufferAudioRenderer) instead of the legacy per-spin SpinPlayer graph. The wall-clock
+      // schedule fetch/poll above is shared; only the render sink differs. Legacy path is untouched.
+      if renderBackend == .sampleBuffer {
+        startSampleBufferPlayback(generation: generation, firstSpin: spinToPlay)
+        return
+      }
+
       // Schedule the first spin with progress shown
       try await scheduleSpin(spin: spinToPlay, generation: generation, showProgress: true)
 
@@ -824,6 +836,68 @@ final public class PlayolaStationPlayer: ObservableObject {
       }
       throw error
     }
+  }
+
+  // MARK: - Sample-buffer backend (Phase 5)
+
+  /// Spins currently airing or due within the lookahead window, filtered as the legacy path does.
+  private func sampleBufferSpins(from schedule: Schedule?) -> [Spin] {
+    (schedule?.current(offsetTimeInterval: scheduleOffset) ?? []).filter {
+      $0.airtime < .now + TimeInterval(600)
+    }
+  }
+
+  /// Starts the sample-buffer render pipeline for the current schedule and begins polling for upcoming
+  /// spins. The already-airing `firstSpin` is published immediately (its boundary is in the past);
+  /// later spins publish `.playing` as their boundaries are crossed.
+  private func startSampleBufferPlayback(generation: Int, firstSpin: Spin) {
+    let controller = SampleBufferPlaybackController(
+      anchorDate: Date(),
+      scheduleOffset: scheduleOffset ?? 0,
+      fileDownloadManager: fileDownloadManager)
+    controller.onSpinStarted = { [weak self] spin in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      self.state = .playing(spin)
+    }
+    self.sampleBufferController = controller
+
+    controller.start(with: sampleBufferSpins(from: currentSchedule))
+    self.state = .playing(firstSpin)
+
+    schedulingTask?.cancel()
+    schedulingTask = Task { [generation] in
+      await pollAndFeedSampleBuffer(generation: generation)
+    }
+  }
+
+  /// Reuses the wall-clock 20s poll to feed newly-appeared upcoming spins into the running sample-buffer
+  /// renderer (the controller de-dupes and appends beyond the enqueue horizon).
+  private func pollAndFeedSampleBuffer(generation: Int) async {
+    guard let stationId else { return }
+    while !Task.isCancelled && generation == playGeneration {
+      do {
+        let updated = try await getUpdatedSchedule(stationId: stationId)
+        guard isCurrentGeneration(generation) else { return }
+        sampleBufferController?.addUpcoming(sampleBufferSpins(from: updated))
+      } catch is CancellationError {
+        return
+      } catch {
+        Task {
+          await errorReporter.reportError(
+            error, context: "Failed to poll schedule (sample-buffer)", level: .error)
+        }
+      }
+      do {
+        try await Task.sleep(nanoseconds: schedulePollingInterval)
+      } catch {
+        return
+      }
+    }
+  }
+
+  private func teardownSampleBufferPlayback() {
+    sampleBufferController?.stop()
+    sampleBufferController = nil
   }
 
   // Internal for testability. Kept consistent with `shouldSkipRetry`: a
@@ -865,6 +939,9 @@ final public class PlayolaStationPlayer: ObservableObject {
     // Supersede any in-flight play()/scheduling work so it can't publish state
     // after we go idle.
     playGeneration += 1
+
+    // Phase 5: tear down the sample-buffer pipeline if it was active (no-op for the legacy path).
+    teardownSampleBufferPlayback()
 
     // Log current state before stopping
     os_log(
@@ -936,6 +1013,8 @@ final public class PlayolaStationPlayer: ObservableObject {
     isSuspended = true
     schedulingTask?.cancel()
     schedulingTask = nil
+    // Phase 5: tear down the sample-buffer pipeline if it was active (no-op for the legacy path).
+    teardownSampleBufferPlayback()
     for player in _spinPlayers { player.stop() }
     for (_, downloadId) in activeDownloadIds {
       _ = fileDownloadManager.cancelDownload(id: downloadId)
