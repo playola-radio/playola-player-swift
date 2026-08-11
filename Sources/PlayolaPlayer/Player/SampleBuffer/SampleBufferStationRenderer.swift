@@ -121,6 +121,18 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     }
   }
 
+  /// Drop ended spins from the mix schedule (and their boundary observers) so a long session doesn't
+  /// accumulate finished sources. The owner passes spins whose airtime window is safely in the past.
+  func removeSpins(_ ids: Set<String>) {
+    control.execute { [self] in
+      guard !stopped, !ids.isEmpty else { return }
+      let before = scheduled.count
+      scheduled.removeAll { ids.contains($0.spin.id) }
+      startedSpinIDs.subtract(ids)
+      if scheduled.count != before { installBoundaryObservers() }
+    }
+  }
+
   /// Publish a freshly-decoded PCM window from the decode queue, replacing that spin's render snapshot.
   func updateSnapshot(_ window: SpinPCMWindow) {
     control.execute { [self] in

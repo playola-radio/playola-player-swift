@@ -1,6 +1,7 @@
 import CoreMedia
 import Foundation
 import PlayolaCore
+import os
 
 /// Owns the live sample-buffer playback for one `play()` generation: builds the media stack
 /// (`LiveSampleBufferSink` + `SampleBufferStationRenderer`), downloads each spin, decodes it on a
@@ -31,6 +32,8 @@ final class SampleBufferPlaybackController {
   private let pump: DecodePump
 
   private var knownSpinIDs: Set<String> = []
+  /// Ingested spins by id, so ended ones can be pruned (freeing their decode buffers + boundary observers).
+  private var activeSpins: [String: Spin] = [:]
   private var downloadTasks: [String: Task<Void, Never>] = [:]
   private var scheduleInstalled = false
   private var rendererStarted = false
@@ -81,6 +84,7 @@ final class SampleBufferPlaybackController {
     renderer.onSpinStarted = { [weak self] spin in
       Task { @MainActor in
         self?.reanchor()  // A1: re-pin the mapping to the live playhead at each boundary
+        self?.pruneEndedSpins()  // free finished sources so a long session doesn't leak/degrade
         sampleBufferLog.info("boundary: spin \(spin.id, privacy: .public) started")
         self?.onSpinStarted?(spin)
       }
@@ -163,6 +167,7 @@ final class SampleBufferPlaybackController {
       return nil
     }
     knownSpinIDs.insert(spin.id)
+    activeSpins[spin.id] = spin
 
     let startFrame = mapper.frame(for: spin.airtime)
     let initialOffset = max(0, -startFrame)  // mid-file join for an already-airing spin
@@ -202,6 +207,20 @@ final class SampleBufferPlaybackController {
     mapper = mapper.reanchored(now: Date(), currentStationFrame: playhead)
   }
 
+  /// Drop spins whose airtime window ended comfortably in the past (past playback + the ~2s AirPlay
+  /// presentation lag + the enqueue lead), freeing their decode buffers, render snapshot, and boundary
+  /// observer. Without this, every spin ever played is retained for the whole session (memory grows and
+  /// the decode pass degrades — each spin starts to cut to silence after its eager initial decode).
+  private func pruneEndedSpins() {
+    let cutoff = Date().addingTimeInterval(-8)  // generous grace past playback/AirPlay latency
+    let ended = Set(activeSpins.filter { $0.value.endtime < cutoff }.keys)
+    guard !ended.isEmpty else { return }
+    for id in ended { activeSpins[id] = nil }
+    renderer.removeSpins(ended)
+    pump.removeSources(ended)
+    sampleBufferLog.info("pruned \(ended.count) ended spins (active=\(self.activeSpins.count))")
+  }
+
   private func reportLateSpin(_ spin: Spin) {
     Task {
       await errorReporter.reportError(
@@ -220,6 +239,11 @@ private final class DecodePump: @unchecked Sendable {
   private var sources: [String: SpinBufferSource] = [:]  // queue-confined
   private var firstDataSignaled = false  // queue-confined
   private let publish: @Sendable (SpinPCMWindow) -> Void
+  /// Coalesce decode requests: fill signals every ~85ms, but only ONE decode pass need be queued at a
+  /// time (it always decodes to the latest target). Without this the decode queue backs up and the only
+  /// current PCM is the eager initial 2s — each spin then plays ~2s and cuts to silence.
+  private let decodeRequest = OSAllocatedUnfairLock<(scheduled: Bool, target: Int64)>(
+    initialState: (false, 0))
 
   /// Fired once, after the first source decodes some PCM — the controller uses it to start the renderer
   /// (avoids a silent startup hole). Set before any decode begins.
@@ -249,7 +273,18 @@ private final class DecodePump: @unchecked Sendable {
   }
 
   func driveDecode(throughOutputFrame through: Int64) {
+    let shouldDispatch = decodeRequest.withLock { req -> Bool in
+      req.target = max(req.target, through)
+      if req.scheduled { return false }
+      req.scheduled = true
+      return true
+    }
+    guard shouldDispatch else { return }
     queue.async { [self] in
+      let through = decodeRequest.withLock { req -> Int64 in
+        req.scheduled = false
+        return req.target
+      }
       for (_, source) in sources {
         let target = through - source.startFrame
         guard target > source.decodedThroughOffset, !source.isFullyDecoded else { continue }
@@ -264,6 +299,11 @@ private final class DecodePump: @unchecked Sendable {
         publish(source.snapshot())
       }
     }
+  }
+
+  /// Free the decode buffers for ended spins (they'd otherwise leak ~1.5MB each for the whole session).
+  func removeSources(_ ids: Set<String>) {
+    queue.async { [self] in for id in ids { sources[id] = nil } }
   }
 
   func cancelAll() {
