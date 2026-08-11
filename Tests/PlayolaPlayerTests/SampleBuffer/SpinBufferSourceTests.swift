@@ -122,16 +122,20 @@ struct SpinBufferSourceTests {
     #expect(source.stereoFrame(atSourceOffset: 15_000) != nil)  // source advanced
   }
 
-  @Test("discard bounds the window without affecting later reads")
+  @Test("discard drops whole leading chunks to bound memory, keeping later reads")
   func discardBoundsMemory() throws {
     let url = try makeToneFile(sampleRate: MixFormat.sampleRate, seconds: 1.0)
     let source = try SpinBufferSource(spin: toneSpin(), fileURL: url, startFrame: 0)
 
-    try source.decode(throughSourceOffset: 10_000)
-    let before = source.stereoFrame(atSourceOffset: 8_000)
-    source.discard(beforeSourceOffset: 5_000)
+    // Decode in steps so the window holds several chunks (~4000 frames each).
+    try source.decode(throughSourceOffset: 4_000)
+    try source.decode(throughSourceOffset: 8_000)
+    try source.decode(throughSourceOffset: 12_000)
+    let before = source.stereoFrame(atSourceOffset: 9_000)
 
-    #expect(source.stereoFrame(atSourceOffset: 4_999) == nil)  // dropped
-    #expect(source.stereoFrame(atSourceOffset: 8_000) == before)  // still readable
+    source.discard(beforeSourceOffset: 5_000)  // drops the whole [0,4000) chunk (ends at/before 5000)
+
+    #expect(source.stereoFrame(atSourceOffset: 3_000) == nil)  // in the dropped chunk
+    #expect(source.stereoFrame(atSourceOffset: 9_000) == before)  // still readable
   }
 }

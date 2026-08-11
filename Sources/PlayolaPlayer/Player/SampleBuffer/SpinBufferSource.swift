@@ -32,9 +32,14 @@ final class SpinBufferSource {
   /// file-native frames per one mix frame (fileRate / mixRate).
   private let nativeFramesPerMixFrame: Double
 
-  /// Decoded window covers source offsets [windowStart, windowStart + frames.count).
+  /// Decoded PCM stored as a list of IMMUTABLE chunks (one per decode output). Appending a new chunk
+  /// never copies the existing ones, and a `snapshot()` just shares the chunk list by reference — so
+  /// publishing a snapshot every decode pass is O(chunks), not a ~MB deep copy of the whole window
+  /// (that copy was ~20MB/s across active sources and drove energy up — C11). Covers source offsets
+  /// [windowStart, windowStart + totalFrames).
   private var windowStart: Int64
-  private var frames: [SIMD2<Float>] = []
+  private var chunks: [[SIMD2<Float>]] = []
+  private var totalFrames = 0
   private var reachedEndOfFile = false
 
   /// - Parameters:
@@ -72,32 +77,36 @@ final class SpinBufferSource {
     }
   }
 
-  // MARK: - MixSource (render thread — decode/IO-free)
+  // MARK: - Reads (decode/IO-free)
 
+  /// Frame lookup for tests; the render path reads `snapshot()` instead. Walks the (few) chunks.
   func stereoFrame(atSourceOffset offset: Int64) -> SIMD2<Float>? {
-    guard offset >= windowStart else { return nil }
-    let index = Int(offset - windowStart)
-    guard index < frames.count else { return nil }
-    return frames[index]
+    var rel = Int(offset - windowStart)
+    guard rel >= 0 else { return nil }
+    for chunk in chunks {
+      if rel < chunk.count { return chunk[rel] }
+      rel -= chunk.count
+    }
+    return nil
   }
 
   /// A cheap immutable snapshot of the currently-decoded window, for the render side.
   ///
   /// The decode queue owns and mutates a `SpinBufferSource`; the render callback must never touch it
-  /// (it isn't `Sendable` and its `frames` are mutated on the decode queue). Instead the decode driver
-  /// publishes a `SpinPCMWindow` — a `Sendable` `MixSource` the renderer installs on its own serial
-  /// queue (PHASE_5_PLAN §4 / Codex design 019feda9). `frames` shares storage via copy-on-write until
-  /// the next decode append, so snapshotting is O(1) in the common case.
+  /// (it isn't `Sendable`, and it mutates on the decode queue). It publishes a `SpinPCMWindow` — a
+  /// `Sendable` `MixSource` the renderer installs on its own serial queue (PHASE_5_PLAN §4 / Codex design
+  /// 019feda9). The snapshot shares the immutable chunk list by reference; the next decode appends a NEW
+  /// chunk (which only COW-copies the small array-of-references), never the PCM — so this is cheap.
   func snapshot() -> SpinPCMWindow {
     SpinPCMWindow(
       spinID: spinID, startFrame: startFrame, envelope: envelope,
-      windowStart: windowStart, frames: frames)
+      windowStart: windowStart, chunks: chunks)
   }
 
   // MARK: - Decode driver (non-render executor)
 
   /// Highest source offset currently decoded and readable (exclusive upper bound).
-  var decodedThroughOffset: Int64 { windowStart + Int64(frames.count) }
+  var decodedThroughOffset: Int64 { windowStart + Int64(totalFrames) }
 
   /// True once the whole file has been decoded into (or past) the window.
   var isFullyDecoded: Bool { reachedEndOfFile }
@@ -115,14 +124,17 @@ final class SpinBufferSource {
     return produced
   }
 
-  /// Drop decoded frames strictly before `offset` to bound memory. The renderer calls this with a value
-  /// at/behind the current render position; never drops frames the renderer may still read.
+  /// Drop whole leading chunks that end at/before `offset` to bound memory (no PCM copy — just releases
+  /// the chunk). A partially-covered chunk is kept, so the window may retain up to one extra chunk behind
+  /// `offset`; the caller passes a value well behind the render position, so that is safe.
   func discard(beforeSourceOffset offset: Int64) {
-    guard offset > windowStart else { return }
-    let dropCount = min(Int(offset - windowStart), frames.count)
-    guard dropCount > 0 else { return }
-    frames.removeFirst(dropCount)
-    windowStart += Int64(dropCount)
+    while let first = chunks.first {
+      let firstEnd = windowStart + Int64(first.count)
+      guard firstEnd <= offset else { break }
+      windowStart = firstEnd
+      totalFrames -= first.count
+      chunks.removeFirst()
+    }
   }
 
   // MARK: - Private
@@ -170,10 +182,13 @@ final class SpinBufferSource {
     if outFrames > 0, let channels = outBuffer.floatChannelData {
       let left = channels[0]
       let right = mixFormat.channelCount > 1 ? channels[1] : channels[0]
-      frames.reserveCapacity(frames.count + outFrames)
+      var chunk = [SIMD2<Float>]()
+      chunk.reserveCapacity(outFrames)
       for i in 0..<outFrames {
-        frames.append(SIMD2(left[i], right[i]))
+        chunk.append(SIMD2(left[i], right[i]))
       }
+      chunks.append(chunk)  // immutable once appended — snapshots share it, never copy it
+      totalFrames += outFrames
     }
 
     if status == .endOfStream || status == .error || outFrames == 0 {
@@ -191,13 +206,53 @@ struct SpinPCMWindow: MixSource, Sendable {
   let startFrame: Int64
   let envelope: FadeEnvelope
   let windowStart: Int64
-  let frames: [SIMD2<Float>]
+  private let chunks: [[SIMD2<Float>]]
+  /// Prefix sums of chunk lengths (count + 1 entries); `prefix[i]` = frames before chunk `i`,
+  /// `prefix[count]` = total. Lets `stereoFrame` binary-search to the containing chunk.
+  private let prefix: [Int]
+
+  init(
+    spinID: String, startFrame: Int64, envelope: FadeEnvelope, windowStart: Int64,
+    chunks: [[SIMD2<Float>]]
+  ) {
+    self.spinID = spinID
+    self.startFrame = startFrame
+    self.envelope = envelope
+    self.windowStart = windowStart
+    self.chunks = chunks
+    var sums = [Int]()
+    sums.reserveCapacity(chunks.count + 1)
+    var acc = 0
+    for chunk in chunks {
+      sums.append(acc)
+      acc += chunk.count
+    }
+    sums.append(acc)
+    self.prefix = sums
+  }
+
+  /// Convenience: wrap a single flat buffer (tests / a one-chunk window).
+  init(
+    spinID: String, startFrame: Int64, envelope: FadeEnvelope, windowStart: Int64,
+    frames: [SIMD2<Float>]
+  ) {
+    self.init(
+      spinID: spinID, startFrame: startFrame, envelope: envelope, windowStart: windowStart,
+      chunks: frames.isEmpty ? [] : [frames])
+  }
 
   func stereoFrame(atSourceOffset offset: Int64) -> SIMD2<Float>? {
-    guard offset >= windowStart else { return nil }
-    let index = Int(offset - windowStart)
-    guard index < frames.count else { return nil }
-    return frames[index]
+    let rel = offset - windowStart
+    guard rel >= 0, rel < Int64(prefix[prefix.count - 1]) else { return nil }
+    let target = Int(rel)
+    // Largest chunk index whose prefix <= target.
+    var lo = 0
+    var hi = chunks.count - 1
+    while lo < hi {
+      let mid = (lo + hi + 1) / 2
+      if prefix[mid] <= target { lo = mid } else { hi = mid - 1 }
+    }
+    return chunks[lo][target - prefix[lo]]
   }
 }
 
