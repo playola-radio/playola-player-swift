@@ -241,9 +241,16 @@ public class ListeningSessionReporter {
         throw ListeningSessionError.invalidResponse("HTTP status code: \(httpResponse.statusCode)")
       }
     } catch {
-      Task {
-        await errorReporter.reportError(
-          error, context: "Error reporting listening session", level: .error)
+      // A missing/unusable auth token is a HOST configuration state (e.g. an unauthenticated demo
+      // build), not an SDK failure — don't spam the error reporter with it every heartbeat. Other
+      // errors (network, HTTP) are still reported.
+      if case ListeningSessionError.authenticationFailed = error {
+        // suppressed
+      } else {
+        Task {
+          await errorReporter.reportError(
+            error, context: "Error reporting listening session", level: .error)
+        }
       }
       throw error
     }

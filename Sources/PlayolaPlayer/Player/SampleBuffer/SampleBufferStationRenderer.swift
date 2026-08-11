@@ -57,6 +57,9 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// Coalesce the burst of auto-flushes a route change posts into ONE recovery once it goes quiet.
   private let recoveryDebounce: TimeInterval
   private var recoveryGeneration = 0
+  /// True from the first auto-flush of a route change until the single recovery fires — the pull is
+  /// paused and the timebase frozen so nothing is enqueued (and later discarded) while the route settles.
+  private var awaitingRecovery = false
 
   /// Fired (on the control domain) when a spin boundary is crossed. The OWNER's closure hops to the
   /// main actor and checks its own generation before publishing `State.playing(spin)`.
@@ -186,17 +189,22 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
         sampleBufferLog.notice("recover: ignored (already stopped)")
         return
       }
+      // A route change posts a BURST of auto-flushes over ~1s as it settles. On the FIRST one, PAUSE:
+      // stop pulling and freeze the timebase, so nothing is enqueued (then discarded by a later flush —
+      // the play/stop/replay you hear). Recover exactly ONCE after `recoveryDebounce` of quiet; each new
+      // auto-flush bumps `gen` and pushes the wait out.
+      if !awaitingRecovery {
+        awaitingRecovery = true
+        renderer.stopRequestingMediaData()
+        synchronizer.setRate(0, time: synchronizer.currentTime)
+        sampleBufferLog.notice("recover: paused for route settle")
+      }
       recoveryGeneration += 1
       let gen = recoveryGeneration
       guard recoveryDebounce > 0 else {
         performRecovery()
         return
       }
-      // A route change posts a BURST of auto-flushes as it settles. Reacting to each with
-      // flush+refill+setRate starves the AirPlay pipeline so it never plays. Coalesce: recover once,
-      // after `recoveryDebounce` of quiet. Each new auto-flush bumps `gen` and cancels the earlier wait.
-      sampleBufferLog.notice(
-        "recover: debounced (#\(gen)); waiting \(self.recoveryDebounce)s for quiet")
       requestQueue.asyncAfter(deadline: .now() + recoveryDebounce) { [weak self] in
         guard let self, !self.stopped, self.recoveryGeneration == gen else { return }
         self.performRecovery()
@@ -204,18 +212,20 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     }
   }
 
-  /// The actual pause-refill-resume, run once per settled route change (on the control domain).
+  /// The single pause-refill-resume, run once the route has settled (on the control domain). The
+  /// timebase was frozen during settling, so resuming at the frozen playhead skips no content.
   private func performRecovery() {
-    let playhead = playheadFrame()
-    sampleBufferLog.notice(
-      "recover: begin playhead=\(playhead) ready=\(self.renderer.isReadyForMoreMediaData)")
+    guard awaitingRecovery else { return }
+    awaitingRecovery = false
     renderer.flush()
     startedSpinIDs.removeAll()
+    let playhead = playheadFrame()
     nextOutputFrame = playhead
+    sampleBufferLog.notice("recover: begin playhead=\(playhead)")
+    // Re-arm the media pull (paused during settling), refill from the frozen playhead, then resume.
+    renderer.requestMediaDataWhenReady(on: requestQueue) { [weak self] in self?.fill() }
     fillLocked()
-    // Resume at the timebase's CURRENT position, not the pre-fill `playhead` — refilling took a few ms
-    // and re-anchoring backward would jump the timebase, an audible glitch right after a switch.
-    synchronizer.setRate(1.0, time: synchronizer.currentTime)
+    synchronizer.setRate(1.0, time: cmTime(playhead))
     let enqueuedAhead = nextOutputFrame - playhead
     sampleBufferLog.notice(
       "recover: resumed rate=1.0 at \(playhead); refilled \(enqueuedAhead) frames ahead (\(enqueuedAhead == 0 ? "NOTHING ENQUEUED — will be silent" : "ok"))"
@@ -230,7 +240,7 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   }
 
   private func fillLocked() {
-    guard !stopped else { return }
+    guard !stopped, !awaitingRecovery else { return }
     let gen = generation
     while renderer.isReadyForMoreMediaData {
       // Never backfill (§4.4): if the playhead ran past the write cursor (delayed callback / route
