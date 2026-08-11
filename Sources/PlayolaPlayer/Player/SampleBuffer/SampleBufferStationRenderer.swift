@@ -54,6 +54,9 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   private var boundaryTokens: [Any] = []
   private var startedSpinIDs: Set<String> = []
   private var stopped = false
+  /// Coalesce the burst of auto-flushes a route change posts into ONE recovery once it goes quiet.
+  private let recoveryDebounce: TimeInterval
+  private var recoveryGeneration = 0
 
   /// Fired (on the control domain) when a spin boundary is crossed. The OWNER's closure hops to the
   /// main actor and checks its own generation before publishing `State.playing(spin)`.
@@ -74,7 +77,8 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     sampleRate: Double = MixFormat.sampleRate,
     framesPerBuffer: Int = 4_096,
     requestQueue: DispatchQueue = DispatchQueue(label: "fm.playola.samplebuffer.request"),
-    control: RenderControlExecutor? = nil
+    control: RenderControlExecutor? = nil,
+    recoveryDebounce: TimeInterval = 0.35
   ) {
     self.synchronizer = synchronizer
     self.renderer = renderer
@@ -85,6 +89,7 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     self.maxEnqueueAheadFrames = Int64(sampleRate * 1.0)
     self.requestQueue = requestQueue
     self.control = control ?? QueueControlExecutor(queue: requestQueue)
+    self.recoveryDebounce = recoveryDebounce
   }
 
   // MARK: - Control (all hop onto the serial control domain)
@@ -178,19 +183,38 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
         sampleBufferLog.notice("recover: ignored (already stopped)")
         return
       }
-      let playhead = playheadFrame()
+      recoveryGeneration += 1
+      let gen = recoveryGeneration
+      guard recoveryDebounce > 0 else {
+        performRecovery()
+        return
+      }
+      // A route change posts a BURST of auto-flushes as it settles. Reacting to each with
+      // flush+refill+setRate starves the AirPlay pipeline so it never plays. Coalesce: recover once,
+      // after `recoveryDebounce` of quiet. Each new auto-flush bumps `gen` and cancels the earlier wait.
       sampleBufferLog.notice(
-        "recover: begin playhead=\(playhead) ready=\(self.renderer.isReadyForMoreMediaData)")
-      renderer.flush()
-      startedSpinIDs.removeAll()
-      nextOutputFrame = playhead
-      fillLocked()
-      synchronizer.setRate(1.0, time: cmTime(playhead))
-      let enqueuedAhead = nextOutputFrame - playhead
-      sampleBufferLog.notice(
-        "recover: resumed rate=1.0 at \(playhead); refilled \(enqueuedAhead) frames ahead (\(enqueuedAhead == 0 ? "NOTHING ENQUEUED — will be silent" : "ok"))"
-      )
+        "recover: debounced (#\(gen)); waiting \(self.recoveryDebounce)s for quiet")
+      requestQueue.asyncAfter(deadline: .now() + recoveryDebounce) { [weak self] in
+        guard let self, !self.stopped, self.recoveryGeneration == gen else { return }
+        self.performRecovery()
+      }
     }
+  }
+
+  /// The actual pause-refill-resume, run once per settled route change (on the control domain).
+  private func performRecovery() {
+    let playhead = playheadFrame()
+    sampleBufferLog.notice(
+      "recover: begin playhead=\(playhead) ready=\(self.renderer.isReadyForMoreMediaData)")
+    renderer.flush()
+    startedSpinIDs.removeAll()
+    nextOutputFrame = playhead
+    fillLocked()
+    synchronizer.setRate(1.0, time: cmTime(playhead))
+    let enqueuedAhead = nextOutputFrame - playhead
+    sampleBufferLog.notice(
+      "recover: resumed rate=1.0 at \(playhead); refilled \(enqueuedAhead) frames ahead (\(enqueuedAhead == 0 ? "NOTHING ENQUEUED — will be silent" : "ok"))"
+    )
   }
 
   // MARK: - Media pull (runs on the control domain)

@@ -38,7 +38,8 @@ struct SampleBufferStationRendererTests {
       startFrame: startFrame,
       sampleRate: sampleRate,
       framesPerBuffer: framesPerBuffer,
-      control: ImmediateControlExecutor())
+      control: ImmediateControlExecutor(),
+      recoveryDebounce: 0)  // synchronous recovery in tests
   }
 
   private func unity(_ v: Float = 1.0) -> FadeEnvelope {
