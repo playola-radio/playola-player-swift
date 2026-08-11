@@ -239,20 +239,27 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     fillLocked()
   }
 
+  /// How far decode is driven BEYOND the enqueue window, so each range is decoded and its snapshot
+  /// published before the mixer reaches it (snapshot publication lags a fill; without this lead the
+  /// leading edge of each fill mixes to silence — frequent little stutters).
+  private var decodeLeadFrames: Int64 { Int64(sampleRate * 1.0) }
+
   private func fillLocked() {
     guard !stopped, !awaitingRecovery else { return }
     let gen = generation
+
+    // Drive decode once, comfortably ahead of everything we'll enqueue this pass (non-blocking; the
+    // owner dispatches it to the decode queue). The mix step only reads already-ready snapshots.
+    decodeAhead?(playheadFrame() + maxEnqueueAheadFrames + decodeLeadFrames)
+
     while renderer.isReadyForMoreMediaData {
       // Never backfill (§4.4): if the playhead ran past the write cursor (delayed callback / route
       // change), rejoin at the playhead rather than enqueue buffers whose PTS is already in the past.
       let playhead = playheadFrame()
       if nextOutputFrame < playhead { nextOutputFrame = playhead }
       guard nextOutputFrame - playhead < maxEnqueueAheadFrames else { break }
-      let range = nextOutputFrame..<(nextOutputFrame + Int64(framesPerBuffer))
-
-      // Signal decode to run ahead (non-blocking); the mix step below only reads ready snapshots.
-      decodeAhead?(range.upperBound + Int64(framesPerBuffer))
       guard gen == generation else { return }
+      let range = nextOutputFrame..<(nextOutputFrame + Int64(framesPerBuffer))
 
       var scratch = [Float](repeating: 0, count: framesPerBuffer * 2)
       mixer.render(outputFrameRange: range, sources: scheduled.map { $0.source }, into: &scratch)
