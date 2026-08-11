@@ -54,6 +54,8 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   private var boundaryTokens: [Any] = []
   private var startedSpinIDs: Set<String> = []
   private var stopped = false
+  /// Reusable mix output buffer (sized to `framesPerBuffer`), to avoid a per-buffer allocation.
+  private var frameScratch: [SIMD2<Float>] = []
 
   /// Fired (on the control domain) when a spin boundary is crossed. The OWNER's closure hops to the
   /// main actor and checks its own generation before publishing `State.playing(spin)`.
@@ -227,6 +229,12 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     // owner dispatches it to the decode queue). The mix step only reads already-ready snapshots.
     decodeAhead?(playheadFrame() + maxEnqueueAheadFrames + decodeLeadFrames)
 
+    // Compute the source snapshots once per pass (not per buffer), and keep a reusable frame buffer.
+    let currentSources = scheduled.map { $0.source }
+    if frameScratch.count != framesPerBuffer {
+      frameScratch = [SIMD2<Float>](repeating: .zero, count: framesPerBuffer)
+    }
+
     var cappedWhileReady = false
     while renderer.isReadyForMoreMediaData {
       // Never backfill (§4.4): if the playhead ran past the write cursor (delayed callback / route
@@ -240,16 +248,12 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
       guard gen == generation else { return }
       let range = nextOutputFrame..<(nextOutputFrame + Int64(framesPerBuffer))
 
-      var scratch = [Float](repeating: 0, count: framesPerBuffer * 2)
-      mixer.render(outputFrameRange: range, sources: scheduled.map { $0.source }, into: &scratch)
-
-      var frames = [SIMD2<Float>]()
-      frames.reserveCapacity(framesPerBuffer)
-      for i in 0..<framesPerBuffer {
-        frames.append(SIMD2(scratch[i * 2], scratch[i * 2 + 1]))
-      }
+      // Reuse one frame buffer across the pass and mix straight into it (no per-buffer scratch alloc,
+      // zeroing, or float→SIMD2 conversion). The live sink copies it into a CMBlockBuffer synchronously,
+      // so it's free to overwrite next iteration; the fake test sink retains it (COW keeps them distinct).
+      mixer.render(outputFrameRange: range, sources: currentSources, intoFrames: &frameScratch)
       renderer.enqueue(
-        RenderBuffer(startFrame: range.lowerBound, sampleRate: sampleRate, frames: frames))
+        RenderBuffer(startFrame: range.lowerBound, sampleRate: sampleRate, frames: frameScratch))
       nextOutputFrame = range.upperBound
     }
 

@@ -39,38 +39,55 @@ struct TimelineMixer: Sendable {
     self.sampleRate = sampleRate
   }
 
-  /// Render `outputFrameRange` (mix-timeline frames) into `output`, an interleaved stereo float32 buffer
-  /// that MUST have `outputFrameRange.count * 2` elements. `output` is fully overwritten (zeroed first).
+  /// Render into `output`, an interleaved stereo float32 buffer that MUST have
+  /// `outputFrameRange.count * 2` elements. `output` is fully overwritten (zeroed first).
   func render(outputFrameRange: Range<Int64>, sources: [MixSource], into output: inout [Float]) {
-    let frameCount = Int(outputFrameRange.count)
-    let sampleCount = frameCount * 2
     precondition(
-      output.count == sampleCount,
+      output.count == Int(outputFrameRange.count) * 2,
       "output buffer must hold outputFrameRange.count * 2 samples")
+    output.withUnsafeMutableBufferPointer { renderCore(outputFrameRange, sources, into: $0) }
+  }
 
-    output.withUnsafeMutableBufferPointer { out in
-      for i in 0..<sampleCount { out[i] = 0 }
+  /// Render straight into a reusable `[SIMD2<Float>]` frame buffer (its memory is interleaved L,R… — the
+  /// exact CMSampleBuffer layout), so the render path avoids a per-buffer scratch alloc + float→SIMD2
+  /// conversion pass. MUST have `outputFrameRange.count` elements.
+  func render(
+    outputFrameRange: Range<Int64>, sources: [MixSource], intoFrames frames: inout [SIMD2<Float>]
+  ) {
+    precondition(
+      frames.count == Int(outputFrameRange.count),
+      "frame buffer must hold outputFrameRange.count frames")
+    frames.withUnsafeMutableBytes { raw in
+      renderCore(outputFrameRange, sources, into: raw.bindMemory(to: Float.self))
+    }
+  }
 
-      for source in sources {
-        // Skip frames before this source starts (offset would be negative).
-        let firstFrame = max(outputFrameRange.lowerBound, source.startFrame)
-        var f = firstFrame
-        while f < outputFrameRange.upperBound {
-          let offset = f - source.startFrame  // >= 0, position within the spin
-          if let sample = source.stereoFrame(atSourceOffset: offset) {
-            let gain = source.envelope.gain(atFrame: offset, sampleRate: sampleRate)
-            let outIndex = Int(f - outputFrameRange.lowerBound) * 2
-            out[outIndex] += sample.x * gain
-            out[outIndex + 1] += sample.y * gain
-          }
-          f += 1
+  private func renderCore(
+    _ range: Range<Int64>, _ sources: [MixSource], into out: UnsafeMutableBufferPointer<Float>
+  ) {
+    let sampleCount = Int(range.count) * 2
+    for i in 0..<sampleCount { out[i] = 0 }
+
+    let lower = range.lowerBound
+    let upper = range.upperBound
+    for source in sources {
+      // Hoist protocol/property access out of the per-sample loop (each was a witness call per frame).
+      let sourceStart = source.startFrame
+      let envelope = source.envelope
+      var f = max(lower, sourceStart)  // skip frames before this source starts (offset would be negative)
+      while f < upper {
+        let offset = f - sourceStart  // >= 0, position within the spin
+        if let sample = source.stereoFrame(atSourceOffset: offset) {
+          let gain = envelope.gain(atFrame: offset, sampleRate: sampleRate)
+          let outIndex = Int(f - lower) * 2
+          out[outIndex] += sample.x * gain
+          out[outIndex + 1] += sample.y * gain
         }
-      }
-
-      // Clip-protection on the summed program (no limiter/mastering in slice 1).
-      for i in 0..<sampleCount {
-        out[i] = min(1.0, max(-1.0, out[i]))
+        f += 1
       }
     }
+
+    // Clip-protection on the summed program (no limiter/mastering in slice 1).
+    for i in 0..<sampleCount { out[i] = min(1.0, max(-1.0, out[i])) }
   }
 }
