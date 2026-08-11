@@ -84,19 +84,43 @@ final class LiveSampleBufferSink {
   var onAutoFlush: (@Sendable () -> Void)?
 
   private var flushObserver: (any NSObjectProtocol)?
+  private var statusObserver: NSKeyValueObservation?
 
   init() {
     synchronizer.addRenderer(renderer)
+    sampleBufferLog.info("sink created")
+
+    // Observe the renderer's status — a route change can silently drive it to .failed, after which every
+    // enqueue is a no-op (silent playback failure). Logging it is the first thing we need to see.
+    statusObserver = renderer.observe(\.status, options: [.new]) { renderer, _ in
+      switch renderer.status {
+      case .failed:
+        sampleBufferLog.error(
+          "renderer status=FAILED error=\(String(describing: renderer.error), privacy: .public)")
+      case .rendering:
+        sampleBufferLog.info("renderer status=rendering")
+      case .unknown:
+        sampleBufferLog.info("renderer status=unknown")
+      @unknown default:
+        sampleBufferLog.info("renderer status=@unknown(\(renderer.status.rawValue))")
+      }
+    }
+
     flushObserver = NotificationCenter.default.addObserver(
       forName: .AVSampleBufferAudioRendererWasFlushedAutomatically,
       object: renderer, queue: nil
     ) { [weak self] _ in
-      self?.onAutoFlush?()
+      guard let self else { return }
+      sampleBufferLog.notice(
+        "AUTO-FLUSH (route change): status=\(self.renderer.status.rawValue) rate=\(self.synchronizer.rate) ready=\(self.renderer.isReadyForMoreMediaData) syncTime=\(CMTimeGetSeconds(self.synchronizer.currentTime()))"
+      )
+      self.onAutoFlush?()
     }
   }
 
   deinit {
     if let flushObserver { NotificationCenter.default.removeObserver(flushObserver) }
+    statusObserver?.invalidate()
   }
 }
 

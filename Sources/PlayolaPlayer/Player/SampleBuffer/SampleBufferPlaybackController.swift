@@ -65,6 +65,8 @@ final class SampleBufferPlaybackController {
       anchorDate: anchorDate, scheduleOffset: 0, sampleRate: sampleRate)
 
     let latencyFrames = Int64((max(0, outputLatency) * sampleRate).rounded())
+    sampleBufferLog.info(
+      "controller init: outputLatency=\(outputLatency)s -> startFrame=\(latencyFrames)")
     let sink = LiveSampleBufferSink()
     self.sink = sink
     let renderer = SampleBufferStationRenderer(
@@ -79,6 +81,7 @@ final class SampleBufferPlaybackController {
     renderer.onSpinStarted = { [weak self] spin in
       Task { @MainActor in
         self?.reanchor()  // A1: re-pin the mapping to the live playhead at each boundary
+        sampleBufferLog.info("boundary: spin \(spin.id, privacy: .public) started")
         self?.onSpinStarted?(spin)
       }
     }
@@ -106,10 +109,16 @@ final class SampleBufferPlaybackController {
   /// startup hole into the shallow queue before any audio is decoded.
   func start(with spins: [Spin]) {
     let scheduled = spins.compactMap { ingest($0) }
+    sampleBufferLog.info(
+      "controller.start: \(scheduled.count)/\(spins.count) spins scheduled; waiting for first decode"
+    )
     renderer.setSchedule(scheduled)
     scheduleInstalled = true
     Task { [weak self] in
       try? await Task.sleep(nanoseconds: Self.startupDeadline)
+      if self?.rendererStarted == false {
+        sampleBufferLog.notice("controller: startup deadline hit before any decode landed")
+      }
       self?.startRendererIfNeeded()
     }
   }
@@ -117,6 +126,7 @@ final class SampleBufferPlaybackController {
   private func startRendererIfNeeded() {
     guard !rendererStarted else { return }
     rendererStarted = true
+    sampleBufferLog.notice("controller: starting renderer (first audio ready or deadline)")
     renderer.start()
     onPlaybackStarted?()
   }

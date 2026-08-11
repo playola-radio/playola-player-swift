@@ -132,6 +132,7 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   func start() {
     control.execute { [self] in
       guard !stopped else { return }
+      sampleBufferLog.info("start: anchor timebase at frame=\(self.nextOutputFrame)")
       synchronizer.setRate(1.0, time: cmTime(nextOutputFrame))
     }
     renderer.requestMediaDataWhenReady(on: requestQueue) { [weak self] in
@@ -173,13 +174,22 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// past → silence; Apple's pause option is what works (§13). Never backfill: rejoin at the playhead.
   func recoverAfterAutoFlush() {
     control.execute { [self] in
-      guard !stopped else { return }
+      guard !stopped else {
+        sampleBufferLog.notice("recover: ignored (already stopped)")
+        return
+      }
       let playhead = playheadFrame()
+      sampleBufferLog.notice(
+        "recover: begin playhead=\(playhead) ready=\(self.renderer.isReadyForMoreMediaData)")
       renderer.flush()
       startedSpinIDs.removeAll()
       nextOutputFrame = playhead
       fillLocked()
       synchronizer.setRate(1.0, time: cmTime(playhead))
+      let enqueuedAhead = nextOutputFrame - playhead
+      sampleBufferLog.notice(
+        "recover: resumed rate=1.0 at \(playhead); refilled \(enqueuedAhead) frames ahead (\(enqueuedAhead == 0 ? "NOTHING ENQUEUED — will be silent" : "ok"))"
+      )
     }
   }
 
