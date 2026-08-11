@@ -152,4 +152,57 @@ struct TimelineMixerTests {
     mixer.render(outputFrameRange: 10..<13, sources: [], into: &out)
     #expect(out.allSatisfy { $0 == 0.0 })
   }
+
+  // MARK: - Chunked SpinPCMWindow fast path parity (followup-15)
+
+  /// A multi-chunk `SpinPCMWindow` (production hot path, block-read) and a flat per-frame `ArrayMixSource`
+  /// built from the same frames must mix byte-for-byte identically. This locks the `withDecodedRuns`
+  /// override against the coalescing fallback the test double uses.
+  @Test("chunked window mixes byte-identically to a flat per-frame source (with fades + overlap)")
+  func chunkedWindowMatchesFlatSource() {
+    let mixer = TimelineMixer(sampleRate: sampleRate)
+    // A fading spin so the per-frame gain actually varies across the run and across chunk boundaries.
+    let fadingSpin = Spin.mockWith(
+      startingVolume: 1.0,
+      fades: [Fade(atMS: 0, toVolume: 0.2)])  // 1.5s linear ramp 1.0 -> 0.2 from the start
+    let envelope = FadeEnvelope(spin: fadingSpin)
+
+    let flat: [SIMD2<Float>] = (0..<9).map { SIMD2(Float($0) / 10 + 0.05, Float($0) / 10 - 0.03) }
+    // Same frames (source offsets 0..9), split into uneven chunks to cross chunk boundaries mid-run.
+    let chunked = SpinPCMWindow(
+      spinID: "x", startFrame: 100, envelope: envelope, windowStart: 0,
+      chunks: [Array(flat[0..<2]), Array(flat[2..<7]), Array(flat[7..<9])])
+    let reference = ArrayMixSource(startFrame: 100, envelope: envelope, frames: flat)
+
+    // A second constant source that overlaps, so we also exercise cross-source summation order.
+    let bed = constantSource(start: 100, value: SIMD2(0.1, -0.1), length: 9, volume: 0.8)
+
+    let renderRange: Range<Int64> = 100..<109
+    var chunkedOut = [Float](repeating: .nan, count: 9 * 2)
+    var referenceOut = [Float](repeating: .nan, count: 9 * 2)
+    mixer.render(outputFrameRange: renderRange, sources: [bed, chunked], into: &chunkedOut)
+    mixer.render(outputFrameRange: renderRange, sources: [bed, reference], into: &referenceOut)
+
+    #expect(chunkedOut == referenceOut)  // exact equality: same FP ops in the same order
+  }
+
+  @Test("chunked window renders an undecoded tail as silence, matching the flat source")
+  func chunkedWindowPartialTailMatchesFlat() {
+    let mixer = TimelineMixer(sampleRate: sampleRate)
+    let env = unityEnvelope()
+    // Only 4 of 8 output frames decoded.
+    let flat = [SIMD2<Float>](repeating: SIMD2(0.5, 0.5), count: 4)
+    let chunked = SpinPCMWindow(
+      spinID: "x", startFrame: 0, envelope: env, windowStart: 0,
+      chunks: [Array(flat[0..<2]), Array(flat[2..<4])])
+    let reference = ArrayMixSource(startFrame: 0, envelope: env, frames: flat)
+
+    var chunkedOut = [Float](repeating: .nan, count: 8 * 2)
+    var referenceOut = [Float](repeating: .nan, count: 8 * 2)
+    mixer.render(outputFrameRange: 0..<8, sources: [chunked], into: &chunkedOut)
+    mixer.render(outputFrameRange: 0..<8, sources: [reference], into: &referenceOut)
+
+    #expect(chunkedOut == referenceOut)
+    #expect(frame(chunkedOut, 5).x == 0.0)  // undecoded tail is silence, not garbage
+  }
 }

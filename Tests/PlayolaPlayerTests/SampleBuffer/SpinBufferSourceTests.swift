@@ -138,4 +138,61 @@ struct SpinBufferSourceTests {
     #expect(source.stereoFrame(atSourceOffset: 3_000) == nil)  // in the dropped chunk
     #expect(source.stereoFrame(atSourceOffset: 9_000) == before)  // still readable
   }
+
+  // MARK: - withDecodedRuns block read (followup-15 mixer hot-path primitive)
+
+  private func window(
+    windowStart: Int64, chunks: [[SIMD2<Float>]], startFrame: Int64 = 0
+  ) -> SpinPCMWindow {
+    SpinPCMWindow(
+      spinID: "s", startFrame: startFrame,
+      envelope: FadeEnvelope(spin: Spin.mockWith(startingVolume: 1.0, fades: [])),
+      windowStart: windowStart, chunks: chunks)
+  }
+
+  private func frame(_ i: Int) -> SIMD2<Float> { SIMD2(Float(i), Float(-i)) }
+
+  /// Reads every source offset in `range` via `withDecodedRuns`, returning a dense map offset -> frame.
+  /// Any offset not covered by a run is absent (i.e. the mixer would render it as silence).
+  private func collectRuns(_ w: SpinPCMWindow, _ range: Range<Int64>) -> [Int64: SIMD2<Float>] {
+    var out: [Int64: SIMD2<Float>] = [:]
+    w.withDecodedRuns(inSourceOffsets: range) { runStart, ptr in
+      for j in 0..<ptr.count { out[runStart + Int64(j)] = ptr[j] }
+    }
+    return out
+  }
+
+  @Test("withDecodedRuns yields every decoded frame, matching stereoFrame across chunk boundaries")
+  func decodedRunsMatchStereoFramePerChunk() {
+    // Three chunks: [0,2), [2,5), [5,6) — a boundary run must not drop or duplicate frames.
+    let w = window(
+      windowStart: 0,
+      chunks: [[frame(0), frame(1)], [frame(2), frame(3), frame(4)], [frame(5)]])
+    let collected = collectRuns(w, 0..<6)
+    for offset in Int64(0)..<6 {
+      #expect(collected[offset] == w.stereoFrame(atSourceOffset: offset))
+      #expect(collected[offset] == frame(Int(offset)))
+    }
+  }
+
+  @Test("withDecodedRuns clamps to the decoded window and to the request range")
+  func decodedRunsClampBothEnds() {
+    // Window covers source offsets [10, 15); request the wider [8, 20).
+    let w = window(
+      windowStart: 10, chunks: [[frame(10), frame(11)], [frame(12), frame(13), frame(14)]])
+    let collected = collectRuns(w, 8..<20)
+    // Nothing before windowStart or past total.
+    #expect(collected.keys.sorted() == [10, 11, 12, 13, 14])
+    for offset in Int64(10)..<15 { #expect(collected[offset] == frame(Int(offset))) }
+
+    // A sub-range strictly inside the window is clamped on both ends.
+    let inner = collectRuns(w, 11..<13)
+    #expect(inner.keys.sorted() == [11, 12])
+  }
+
+  @Test("withDecodedRuns on an empty window yields nothing")
+  func decodedRunsEmptyWindow() {
+    let w = window(windowStart: 0, chunks: [])
+    #expect(collectRuns(w, 0..<10).isEmpty)
+  }
 }

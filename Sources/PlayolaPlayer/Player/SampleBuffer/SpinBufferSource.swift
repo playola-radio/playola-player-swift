@@ -245,14 +245,52 @@ struct SpinPCMWindow: MixSource, Sendable {
     let rel = offset - windowStart
     guard rel >= 0, rel < Int64(prefix[prefix.count - 1]) else { return nil }
     let target = Int(rel)
-    // Largest chunk index whose prefix <= target.
+    let ci = chunkIndex(forRelative: target)
+    return chunks[ci][target - prefix[ci]]
+  }
+
+  /// Copies each intersecting chunk's contiguous run straight into `body` — one call per chunk, no
+  /// per-sample witness call or binary search. Because the decoded window `[windowStart, windowStart +
+  /// total)` has no internal gaps, the runs are simply the chunk spans clamped to `range`.
+  func withDecodedRuns(
+    inSourceOffsets range: Range<Int64>,
+    _ body: (Int64, UnsafeBufferPointer<SIMD2<Float>>) -> Void
+  ) {
+    let total = prefix[prefix.count - 1]
+    guard total > 0 else { return }
+    // Clamp the request to the decoded window (source offsets outside it render as silence).
+    let lo = max(range.lowerBound, windowStart)
+    let hi = min(range.upperBound, windowStart + Int64(total))
+    guard lo < hi else { return }
+
+    var rel = Int(lo - windowStart)  // relative position within the window
+    let relEnd = Int(hi - windowStart)
+    var ci = chunkIndex(forRelative: rel)
+    while rel < relEnd {
+      let chunkStart = prefix[ci]
+      let chunkEnd = prefix[ci + 1]
+      let localStart = rel - chunkStart
+      let localEnd = min(relEnd, chunkEnd) - chunkStart
+      if localEnd > localStart {
+        chunks[ci].withUnsafeBufferPointer { full in
+          body(windowStart + Int64(rel), UnsafeBufferPointer(rebasing: full[localStart..<localEnd]))
+        }
+      }
+      rel = chunkEnd
+      ci += 1
+    }
+  }
+
+  /// Largest chunk index whose prefix-sum start is `<= target` (the chunk containing relative frame
+  /// `target`). `target` must be within `[0, totalFrames)`; `chunks` is non-empty.
+  private func chunkIndex(forRelative target: Int) -> Int {
     var lo = 0
     var hi = chunks.count - 1
     while lo < hi {
       let mid = (lo + hi + 1) / 2
       if prefix[mid] <= target { lo = mid } else { hi = mid - 1 }
     }
-    return chunks[lo][target - prefix[lo]]
+    return lo
   }
 }
 

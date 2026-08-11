@@ -22,6 +22,48 @@ protocol MixSource: Sendable {
   /// bounded on the DECODE side (`SpinBufferSource.discard` before it publishes a trimmed snapshot),
   /// not by the render path — so there is no in-place trim on the mix source.
   func stereoFrame(atSourceOffset offset: Int64) -> SIMD2<Float>?
+
+  /// Block read for the mixer's hot loop: invoke `body` once per maximal run of contiguous,
+  /// already-decoded frames intersecting source offsets `range`, delivered in ascending order.
+  /// `body(runStartOffset, ptr)` gets a pointer covering source offsets
+  /// `[runStartOffset, runStartOffset + ptr.count)`. Undecoded / out-of-range gaps are skipped (the
+  /// mixer renders them as silence), so this is exactly equivalent to reading each frame with
+  /// `stereoFrame` — just coalesced. Decode/IO-free, same real-time contract as `stereoFrame`.
+  ///
+  /// This lets the mixer make ~one call per decoded chunk instead of one witness call + binary search
+  /// per sample. The default implementation coalesces `stereoFrame` reads (correct for any source);
+  /// `SpinPCMWindow` overrides it with a per-chunk copy — the production hot path.
+  func withDecodedRuns(
+    inSourceOffsets range: Range<Int64>,
+    _ body: (Int64, UnsafeBufferPointer<SIMD2<Float>>) -> Void)
+}
+
+extension MixSource {
+  /// Correct-for-any-source fallback: walk `range` once with `stereoFrame`, coalescing each contiguous
+  /// available span into a single `body` call. Only the boundary frame that ends a run costs one extra
+  /// `stereoFrame` call; a fully-available range calls it exactly once per frame. Allocates a scratch
+  /// run buffer, so it is only for non-chunked sources (test doubles) — `SpinPCMWindow` overrides this.
+  func withDecodedRuns(
+    inSourceOffsets range: Range<Int64>,
+    _ body: (Int64, UnsafeBufferPointer<SIMD2<Float>>) -> Void
+  ) {
+    var run: [SIMD2<Float>] = []
+    var f = range.lowerBound
+    while f < range.upperBound {
+      run.removeAll(keepingCapacity: true)
+      var g = f
+      while g < range.upperBound, let sample = stereoFrame(atSourceOffset: g) {
+        run.append(sample)
+        g += 1
+      }
+      if run.isEmpty {
+        f += 1  // frame f not available — one stereoFrame(nil) probe, skip to the next
+      } else {
+        run.withUnsafeBufferPointer { body(f, $0) }
+        f = g
+      }
+    }
+  }
 }
 
 /// Pure software mixer for the sample-buffer render path (Phase 5 centerpiece).
@@ -70,20 +112,27 @@ struct TimelineMixer: Sendable {
 
     let lower = range.lowerBound
     let upper = range.upperBound
+    let rate = sampleRate
     for source in sources {
       // Hoist protocol/property access out of the per-sample loop (each was a witness call per frame).
       let sourceStart = source.startFrame
       let envelope = source.envelope
-      var f = max(lower, sourceStart)  // skip frames before this source starts (offset would be negative)
-      while f < upper {
-        let offset = f - sourceStart  // >= 0, position within the spin
-        if let sample = source.stereoFrame(atSourceOffset: offset) {
-          let gain = envelope.gain(atFrame: offset, sampleRate: sampleRate)
-          let outIndex = Int(f - lower) * 2
+      // Skip frames before this source starts (its offset would be negative there).
+      let reqLower = max(lower, sourceStart)
+      guard reqLower < upper else { continue }
+      // Source offsets (>= 0) this output window needs; the block read hands back contiguous decoded runs.
+      let offsetRange = (reqLower - sourceStart)..<(upper - sourceStart)
+      source.withDecodedRuns(inSourceOffsets: offsetRange) { runStart, ptr in
+        // Concrete per-run loop over a plain pointer: no per-sample witness call or binary search, and
+        // gain over a `FadeEnvelope` value the optimizer can inline (PHASE_5 followup-15).
+        let outFrameBase = Int(runStart + sourceStart - lower)
+        for j in 0..<ptr.count {
+          let gain = envelope.gain(atFrame: runStart + Int64(j), sampleRate: rate)
+          let sample = ptr[j]
+          let outIndex = (outFrameBase + j) * 2
           out[outIndex] += sample.x * gain
           out[outIndex + 1] += sample.y * gain
         }
-        f += 1
       }
     }
 
