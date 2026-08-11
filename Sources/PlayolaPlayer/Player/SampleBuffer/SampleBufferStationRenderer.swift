@@ -78,7 +78,8 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     framesPerBuffer: Int = 4_096,
     requestQueue: DispatchQueue = DispatchQueue(label: "fm.playola.samplebuffer.request"),
     control: RenderControlExecutor? = nil,
-    recoveryDebounce: TimeInterval = 0.35
+    recoveryDebounce: TimeInterval = 0.35,
+    enqueueAheadSeconds: Double = 3.0
   ) {
     self.synchronizer = synchronizer
     self.renderer = renderer
@@ -86,7 +87,9 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     self.nextOutputFrame = startFrame
     self.sampleRate = sampleRate
     self.framesPerBuffer = framesPerBuffer
-    self.maxEnqueueAheadFrames = Int64(sampleRate * 1.0)
+    // Keep enough audio queued ahead to cover the AirPlay presentation pipeline (~2s) with margin, so a
+    // post-route-change refill doesn't underrun (C10 — tune read-ahead vs AirPlay jitter on device).
+    self.maxEnqueueAheadFrames = Int64(sampleRate * enqueueAheadSeconds)
     self.requestQueue = requestQueue
     self.control = control ?? QueueControlExecutor(queue: requestQueue)
     self.recoveryDebounce = recoveryDebounce
@@ -210,7 +213,9 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     startedSpinIDs.removeAll()
     nextOutputFrame = playhead
     fillLocked()
-    synchronizer.setRate(1.0, time: cmTime(playhead))
+    // Resume at the timebase's CURRENT position, not the pre-fill `playhead` — refilling took a few ms
+    // and re-anchoring backward would jump the timebase, an audible glitch right after a switch.
+    synchronizer.setRate(1.0, time: synchronizer.currentTime)
     let enqueuedAhead = nextOutputFrame - playhead
     sampleBufferLog.notice(
       "recover: resumed rate=1.0 at \(playhead); refilled \(enqueuedAhead) frames ahead (\(enqueuedAhead == 0 ? "NOTHING ENQUEUED — will be silent" : "ok"))"
