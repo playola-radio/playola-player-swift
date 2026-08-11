@@ -21,6 +21,7 @@ struct RenderBuffer: Sendable, Equatable {
 /// without CoreMedia. The fake records `setRate`/time and fires boundary observers deterministically.
 protocol RenderSynchronizing: AnyObject {
   var currentTime: CMTime { get }
+  var rate: Float { get }
   func setRate(_ rate: Float, time: CMTime)
   func addBoundaryObserver(forTimes times: [CMTime], _ block: @escaping @Sendable () -> Void) -> Any
   func removeObserver(_ token: Any)

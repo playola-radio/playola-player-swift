@@ -132,6 +132,7 @@ final class LiveRenderSynchronizer: RenderSynchronizing {
   }
 
   var currentTime: CMTime { synchronizer.currentTime() }
+  var rate: Float { synchronizer.rate }
 
   func setRate(_ rate: Float, time: CMTime) {
     synchronizer.setRate(rate, time: time)

@@ -54,12 +54,6 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   private var boundaryTokens: [Any] = []
   private var startedSpinIDs: Set<String> = []
   private var stopped = false
-  /// Coalesce the burst of auto-flushes a route change posts into ONE recovery once it goes quiet.
-  private let recoveryDebounce: TimeInterval
-  private var recoveryGeneration = 0
-  /// True from the first auto-flush of a route change until the single recovery fires — the pull is
-  /// paused and the timebase frozen so nothing is enqueued (and later discarded) while the route settles.
-  private var awaitingRecovery = false
 
   /// Fired (on the control domain) when a spin boundary is crossed. The OWNER's closure hops to the
   /// main actor and checks its own generation before publishing `State.playing(spin)`.
@@ -81,7 +75,6 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     framesPerBuffer: Int = 4_096,
     requestQueue: DispatchQueue = DispatchQueue(label: "fm.playola.samplebuffer.request"),
     control: RenderControlExecutor? = nil,
-    recoveryDebounce: TimeInterval = 0.35,
     enqueueAheadSeconds: Double = 3.0
   ) {
     self.synchronizer = synchronizer
@@ -95,7 +88,6 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     self.maxEnqueueAheadFrames = Int64(sampleRate * enqueueAheadSeconds)
     self.requestQueue = requestQueue
     self.control = control ?? QueueControlExecutor(queue: requestQueue)
-    self.recoveryDebounce = recoveryDebounce
   }
 
   // MARK: - Control (all hop onto the serial control domain)
@@ -180,56 +172,24 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     }
   }
 
-  /// Pause-refill-resume recovery after `AVSampleBufferAudioRendererWasFlushedAutomatically` (route
-  /// change). At real AirPlay latency the "keep-running, re-enqueue-from-now" option lands audio in the
-  /// past → silence; Apple's pause option is what works (§13). Never backfill: rejoin at the playhead.
+  /// Minimal recovery after `AVSampleBufferAudioRendererWasFlushedAutomatically` (route change). The
+  /// renderer flushed its own queue but keeps rendering at rate 1.0 — the ONLY thing it needs from us is
+  /// to re-point the write cursor to the current playhead (the flushed buffers are gone) and let the
+  /// media-pull loop refill from there. We deliberately do NOT manually flush or re-issue setRate:
+  /// during an unsettled route those repeat every ~0.3s and each one restarts the timebase / discards the
+  /// just-refilled audio, which is the warble/stutter. Only resume the timebase if it's actually paused.
   func recoverAfterAutoFlush() {
     control.execute { [self] in
-      guard !stopped else {
-        sampleBufferLog.notice("recover: ignored (already stopped)")
-        return
+      guard !stopped else { return }
+      let playhead = playheadFrame()
+      nextOutputFrame = playhead  // never backfill (§4.4); refill from where the timebase actually is
+      fillLocked()
+      if synchronizer.rate != 1.0 {
+        synchronizer.setRate(1.0, time: synchronizer.currentTime)
       }
-      // A route change posts a BURST of auto-flushes over ~1s as it settles. On the FIRST one, PAUSE:
-      // stop pulling and freeze the timebase, so nothing is enqueued (then discarded by a later flush —
-      // the play/stop/replay you hear). Recover exactly ONCE after `recoveryDebounce` of quiet; each new
-      // auto-flush bumps `gen` and pushes the wait out.
-      if !awaitingRecovery {
-        awaitingRecovery = true
-        renderer.stopRequestingMediaData()
-        synchronizer.setRate(0, time: synchronizer.currentTime)
-        sampleBufferLog.notice("recover: paused for route settle")
-      }
-      recoveryGeneration += 1
-      let gen = recoveryGeneration
-      guard recoveryDebounce > 0 else {
-        performRecovery()
-        return
-      }
-      requestQueue.asyncAfter(deadline: .now() + recoveryDebounce) { [weak self] in
-        guard let self, !self.stopped, self.recoveryGeneration == gen else { return }
-        self.performRecovery()
-      }
+      sampleBufferLog.notice(
+        "recover: re-anchored to \(playhead), refilled \(self.nextOutputFrame - playhead) ahead")
     }
-  }
-
-  /// The single pause-refill-resume, run once the route has settled (on the control domain). The
-  /// timebase was frozen during settling, so resuming at the frozen playhead skips no content.
-  private func performRecovery() {
-    guard awaitingRecovery else { return }
-    awaitingRecovery = false
-    renderer.flush()
-    startedSpinIDs.removeAll()
-    let playhead = playheadFrame()
-    nextOutputFrame = playhead
-    sampleBufferLog.notice("recover: begin playhead=\(playhead)")
-    // Re-arm the media pull (paused during settling), refill from the frozen playhead, then resume.
-    renderer.requestMediaDataWhenReady(on: requestQueue) { [weak self] in self?.fill() }
-    fillLocked()
-    synchronizer.setRate(1.0, time: cmTime(playhead))
-    let enqueuedAhead = nextOutputFrame - playhead
-    sampleBufferLog.notice(
-      "recover: resumed rate=1.0 at \(playhead); refilled \(enqueuedAhead) frames ahead (\(enqueuedAhead == 0 ? "NOTHING ENQUEUED — will be silent" : "ok"))"
-    )
   }
 
   // MARK: - Media pull (runs on the control domain)
@@ -245,7 +205,7 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   private var decodeLeadFrames: Int64 { Int64(sampleRate * 1.0) }
 
   private func fillLocked() {
-    guard !stopped, !awaitingRecovery else { return }
+    guard !stopped else { return }
     let gen = generation
 
     // Drive decode once, comfortably ahead of everything we'll enqueue this pass (non-blocking; the

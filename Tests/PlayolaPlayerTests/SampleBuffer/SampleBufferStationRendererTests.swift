@@ -39,7 +39,6 @@ struct SampleBufferStationRendererTests {
       sampleRate: sampleRate,
       framesPerBuffer: framesPerBuffer,
       control: ImmediateControlExecutor(),
-      recoveryDebounce: 0,  // synchronous recovery in tests
       enqueueAheadSeconds: 1.0)  // deterministic 1s window for the frame assertions below
   }
 
@@ -195,8 +194,29 @@ struct SampleBufferStationRendererTests {
     #expect(abs(sink.enqueued[0].frames[0].x - 0.5) < 0.0001)
   }
 
-  @Test("recovery flushes, rejoins at the current playhead, and resumes")
-  func recoveryPauseRefillResume() {
+  @Test("recovery re-anchors to the playhead and refills, without a manual flush or setRate")
+  func recoveryReanchorsAndRefills() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
+    renderer.start()
+    sink.pump()
+    let flushesBefore = sink.flushCount
+    let setRatesBefore = sync.setRateCalls.count
+
+    sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))  // timebase advanced
+    renderer.recoverAfterAutoFlush()
+
+    // Refilled from where the timebase actually is (no backfill) …
+    #expect(sink.enqueued.contains { $0.startFrame == 96_000 })
+    // … and did NOT thrash the renderer (no manual flush; rate already 1.0 so no re-issue).
+    #expect(sink.flushCount == flushesBefore)
+    #expect(sync.setRateCalls.count == setRatesBefore)
+  }
+
+  @Test("recovery resumes the timebase only if it was paused")
+  func recoveryResumesOnlyIfPaused() {
     let sync = FakeRenderSynchronizer()
     let sink = FakeSampleBufferRenderer()
     let renderer = makeRenderer(sync: sync, sink: sink)
@@ -205,14 +225,12 @@ struct SampleBufferStationRendererTests {
     sink.pump()
 
     sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
-    let flushesBefore = sink.flushCount
+    sync.rate = 0  // an auto-flush left the synchronizer paused
     renderer.recoverAfterAutoFlush()
 
-    #expect(sink.flushCount == flushesBefore + 1)
-    #expect(sink.enqueued.contains { $0.startFrame == 96_000 })
     let resume = sync.setRateCalls.last
     #expect(resume?.rate == 1.0)
-    #expect(resume.map { CMTimeGetSeconds($0.time) } == 2.0)
+    #expect(resume.map { CMTimeGetSeconds($0.time) } == 2.0)  // resume at the current time
   }
 
   @Test("stop tears down: no further boundary publishes, sink stopped and flushed")

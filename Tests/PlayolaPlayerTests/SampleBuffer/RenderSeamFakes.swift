@@ -54,11 +54,13 @@ final class FakeSampleBufferRenderer: SampleBufferRendering, @unchecked Sendable
 final class FakeRenderSynchronizer: RenderSynchronizing, @unchecked Sendable {
   private(set) var setRateCalls: [(rate: Float, time: CMTime)] = []
   var currentTime: CMTime = .zero
+  var rate: Float = 1.0
 
   private var observers: [(times: [CMTime], block: @Sendable () -> Void)] = []
 
   func setRate(_ rate: Float, time: CMTime) {
     setRateCalls.append((rate, time))
+    self.rate = rate
   }
 
   func addBoundaryObserver(
