@@ -216,6 +216,9 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// leading edge of each fill mixes to silence — frequent little stutters).
   private var decodeLeadFrames: Int64 { Int64(sampleRate * 1.0) }
 
+  /// How often we top up when already `maxEnqueueAheadFrames` ahead (see `fillLocked`).
+  private let topUpInterval: TimeInterval = 0.2
+
   private func fillLocked() {
     guard !stopped else { return }
     let gen = generation
@@ -224,12 +227,16 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     // owner dispatches it to the decode queue). The mix step only reads already-ready snapshots.
     decodeAhead?(playheadFrame() + maxEnqueueAheadFrames + decodeLeadFrames)
 
+    var cappedWhileReady = false
     while renderer.isReadyForMoreMediaData {
       // Never backfill (§4.4): if the playhead ran past the write cursor (delayed callback / route
       // change), rejoin at the playhead rather than enqueue buffers whose PTS is already in the past.
       let playhead = playheadFrame()
       if nextOutputFrame < playhead { nextOutputFrame = playhead }
-      guard nextOutputFrame - playhead < maxEnqueueAheadFrames else { break }
+      if nextOutputFrame - playhead >= maxEnqueueAheadFrames {
+        cappedWhileReady = true
+        break
+      }
       guard gen == generation else { return }
       let range = nextOutputFrame..<(nextOutputFrame + Int64(framesPerBuffer))
 
@@ -244,6 +251,19 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
       renderer.enqueue(
         RenderBuffer(startFrame: range.lowerBound, sampleRate: sampleRate, frames: frames))
       nextOutputFrame = range.upperBound
+    }
+
+    // Energy: if we stopped because WE'RE far enough ahead (not because the renderer is full), do NOT
+    // just return — the renderer is still `isReadyForMoreMediaData` and would busy-call this block
+    // continuously (a spinning core, esp. on AirPlay whose appetite exceeds our shallow queue). Instead
+    // stop being polled and top up again shortly.
+    if cappedWhileReady {
+      renderer.stopRequestingMediaData()
+      requestQueue.asyncAfter(deadline: .now() + topUpInterval) { [weak self] in
+        guard let self, !self.stopped else { return }
+        self.renderer.requestMediaDataWhenReady(on: self.requestQueue) { [weak self] in self?.fill()
+        }
+      }
     }
   }
 
