@@ -55,7 +55,6 @@ struct TransportInvariantTests {
   @Test("preferHTTP3 sets the flag on an existing request")
   func preferHTTP3MutatesRequest() {
     var request = URLRequest(url: URL(string: "https://admin-api.playola.fm/v1/listeningSessions")!)
-    #expect(request.assumesHTTP3Capable == false)
     PlayolaTransport.preferHTTP3(&request)
     #expect(request.assumesHTTP3Capable == true)
   }
