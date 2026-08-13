@@ -89,7 +89,8 @@ public class ListeningSessionReporter {
 
   init(
     stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil,
-    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session),
+    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(
+      wrapping: PlayolaTransport.APISession),
     baseURL: URL = URL(string: "https://admin-api.playola.fm")!
   ) {
     self.stationPlayer = stationPlayer
@@ -370,6 +371,7 @@ public class ListeningSessionReporter {
     request.addValue("Bearer \(userToken)", forHTTPHeaderField: "Authorization")
 
     request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+    PlayolaTransport.preferHTTP3(&request)
     return request
   }
 
@@ -377,7 +379,8 @@ public class ListeningSessionReporter {
   #if DEBUG
     internal init(
       authProvider: PlayolaAuthenticationProvider? = nil,
-      urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session),
+      urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(
+        wrapping: PlayolaTransport.APISession),
       baseURL: URL = URL(string: "https://admin-api.playola.fm")!
     ) {
       self.stationPlayer = nil

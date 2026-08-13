@@ -34,7 +34,7 @@ public actor FileDownloaderAsync {
   public func download(from url: URL, to destinationURL: URL) async throws -> DownloadResult {
     guard !isCancelled else { throw URLError(.cancelled) }
 
-    let configuration = makeTLS12Configuration()
+    let configuration = PlayolaTransport.makeDownloadConfiguration()
     configuration.timeoutIntervalForRequest = 30
     configuration.timeoutIntervalForResource = 300
     configuration.waitsForConnectivity = true
@@ -84,7 +84,7 @@ public actor FileDownloaderAsync {
         logger: logger
       )
 
-      let configuration = makeTLS12Configuration()
+      let configuration = PlayolaTransport.makeDownloadConfiguration()
       configuration.timeoutIntervalForRequest = 30
       configuration.timeoutIntervalForResource = 300
       configuration.waitsForConnectivity = true
