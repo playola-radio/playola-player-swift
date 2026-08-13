@@ -90,7 +90,7 @@ public class ListeningSessionReporter {
   init(
     stationPlayer: PlayolaStationPlayer, authProvider: PlayolaAuthenticationProvider? = nil,
     urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(
-      wrapping: PlayolaTransport.apiSession),
+      wrapping: PlayolaTransport.APISession),
     baseURL: URL = URL(string: "https://admin-api.playola.fm")!
   ) {
     self.stationPlayer = stationPlayer
@@ -380,7 +380,7 @@ public class ListeningSessionReporter {
     internal init(
       authProvider: PlayolaAuthenticationProvider? = nil,
       urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(
-        wrapping: PlayolaTransport.apiSession),
+        wrapping: PlayolaTransport.APISession),
       baseURL: URL = URL(string: "https://admin-api.playola.fm")!
     ) {
       self.stationPlayer = nil

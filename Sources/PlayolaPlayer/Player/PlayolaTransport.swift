@@ -20,7 +20,7 @@ import Foundation
 enum PlayolaTransport {
   /// Uncapped session for first-party Playola API calls (schedule fetch,
   /// listening-session reports). Replaces the old TLS-1.2-capped `tls12Session`.
-  static let apiSession: URLSession = URLSession(configuration: .default)
+  static let APISession: URLSession = URLSession(configuration: .default)
 
   /// Marks a request to a Playola API host (`admin-api.playola.fm`) as
   /// HTTP/3-preferring. Every request the SDK issues to its API host should be
@@ -30,7 +30,7 @@ enum PlayolaTransport {
   }
 
   /// A request to a Playola API host with HTTP/3 already preferred.
-  static func apiRequest(url: URL) -> URLRequest {
+  static func makeAPIRequest(url: URL) -> URLRequest {
     var request = URLRequest(url: url)
     preferHTTP3(&request)
     return request

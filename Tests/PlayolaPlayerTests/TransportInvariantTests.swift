@@ -48,7 +48,7 @@ struct TransportInvariantTests {
   @Test("API requests prefer HTTP/3")
   func apiRequestPrefersHTTP3() {
     let url = URL(string: "https://admin-api.playola.fm/v1/stations/x/schedule")!
-    let request = PlayolaTransport.apiRequest(url: url)
+    let request = PlayolaTransport.makeAPIRequest(url: url)
     #expect(request.assumesHTTP3Capable == true)
   }
 
