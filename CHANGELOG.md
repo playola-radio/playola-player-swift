@@ -5,6 +5,23 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
 minor version.
 
+## Unreleased
+
+### Fixed
+
+- **Networks that block Playola over TCP now play via HTTP/3 (QUIC).** Some
+  listeners sit behind routers / SSL-inspection middleboxes that interfere with
+  TCP connections to `*.playola.fm` specifically (host/SNI-targeted resets)
+  while leaving UDP/QUIC alone. The previous mitigation capped URLSession to
+  TLS 1.2 to shrink the ClientHello, but that is still TCP, so it never helped
+  these users (Sentry `tls13_probe` diagnosis `http3Rescues`: both TLS 1.2 and
+  TLS 1.3 over TCP fail while HTTP/3 succeeds). The TLS 1.2 cap is removed and
+  the SDK now prefers HTTP/3 (`assumesHTTP3Capable`) on Playola API requests
+  (schedule fetch, listening-session reports), which races QUIC on the first
+  request and falls back to HTTP/2 over TCP automatically. S3 audio downloads
+  are intentionally left uncapped and non-HTTP/3 (S3 has no QUIC). See
+  `PlayolaTransport`. (Shipped on the maintenance line as 0.20.3.)
+
 ## 0.20.1
 
 ### Added

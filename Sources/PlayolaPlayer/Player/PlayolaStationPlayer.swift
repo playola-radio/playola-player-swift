@@ -173,7 +173,8 @@ final public class PlayolaStationPlayer: ObservableObject {
   @MainActor
   internal init(
     fileDownloadManager: FileDownloadManaging? = nil,
-    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(wrapping: tls12Session)
+    urlSession: URLSessionProtocol = PlayolaNetworkLoggingSession(
+      wrapping: PlayolaTransport.apiSession)
   ) {
     self.fileDownloadManager = fileDownloadManager ?? FileDownloadManagerAsync.shared
     self.urlSession = urlSession
@@ -533,7 +534,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     let url = createScheduleURL(for: stationId)
 
     do {
-      let (data, response) = try await urlSession.data(for: URLRequest(url: url))
+      let (data, response) = try await urlSession.data(for: PlayolaTransport.apiRequest(url: url))
       let httpResponse = try validateHTTPResponse(response, url: url)
       try await validateStatusCode(httpResponse, data: data, stationId: stationId)
 
