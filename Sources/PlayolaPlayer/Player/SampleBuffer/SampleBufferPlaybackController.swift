@@ -24,6 +24,10 @@ final class SampleBufferPlaybackController {
   private let fileDownloadManager: FileDownloadManaging
   private let errorReporter: PlayolaErrorReporter
   private let sampleRate: Double
+  /// The timebase's deliberate head start (see `init` outputLatency): the synchronizer timeline runs
+  /// this many frames AHEAD of the acoustic (speaker) timeline. Any wall-clock ↔ playhead pinning must
+  /// subtract it, or every re-anchored spin presents `outputLatency` late (~2s on AirPlay).
+  private let latencyFrames: Int64
   /// Re-anchored at each spin boundary from the live playhead (eng-review A1) so poll-discovered future
   /// spins are authored against fresh wall clock; main-actor confined (only `ingest`/`reanchor` touch it).
   private var mapper: TimelineMapper
@@ -68,6 +72,7 @@ final class SampleBufferPlaybackController {
       anchorDate: anchorDate, scheduleOffset: 0, sampleRate: sampleRate)
 
     let latencyFrames = Int64((max(0, outputLatency) * sampleRate).rounded())
+    self.latencyFrames = latencyFrames
     sampleBufferLog.info(
       "controller init: outputLatency=\(outputLatency)s -> startFrame=\(latencyFrames)")
     let sink = LiveSampleBufferSink()
@@ -203,7 +208,10 @@ final class SampleBufferPlaybackController {
   private func reanchor() {
     let seconds = CMTimeGetSeconds(sink.synchronizer.currentTime())
     guard seconds.isFinite else { return }
-    let playhead = Int64((seconds * sampleRate).rounded())
+    // currentTime() is the renderer timeline, which starts `latencyFrames` ahead of the acoustic
+    // timeline (init's outputLatency head start). Pin wall clock to the ACOUSTIC playhead, or every
+    // spin mapped after this boundary presents `outputLatency` late (~2s on AirPlay).
+    let playhead = Int64((seconds * sampleRate).rounded()) - latencyFrames
     mapper = mapper.reanchored(now: Date(), currentStationFrame: playhead)
   }
 
