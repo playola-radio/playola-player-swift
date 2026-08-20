@@ -45,6 +45,7 @@ struct ScheduleViewer: View {
   @ObservedObject var player = PlayolaStationPlayer.shared
   @Environment(\.dismiss) var dismiss
   let selectedStationId: String
+  let useSampleBufferRenderer: Bool
   @State private var schedule: Schedule?
   @State private var isLoading = true
   @State private var selectedSpin: Spin?
@@ -629,6 +630,7 @@ struct ScheduleViewer: View {
     // Play from the calculated date/time
     Task {
       do {
+        player.prepareForPlay(useSampleBufferRenderer: useSampleBufferRenderer)
         try await player.play(stationId: stationId, atDate: targetTime)
       } catch {
         print("Error starting playback: \(error)")
@@ -1000,7 +1002,9 @@ struct DetailSpinVisualization: View {
 }
 
 #Preview {
-  ScheduleViewer(selectedStationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c")
+  ScheduleViewer(
+    selectedStationId: "9d79fd38-1940-4312-8fe8-3b9b50d49c6c",
+    useSampleBufferRenderer: false)
 }
 
 // swiftlint:enable file_length
