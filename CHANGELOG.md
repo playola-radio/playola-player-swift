@@ -10,16 +10,30 @@ minor version.
 Pre-release for the Phase 5 render path. The new backend is **dormant by
 default** — apps that don't opt in get the exact same runtime behavior as
 0.20.x. Merging/pinning this version does not change what listeners hear;
-flipping the backend on is a separate, server-flagged app-side step gated on
-the device QA matrix.
+flipping the backend on is a separate, server-flagged app-side step.
+
+**Verification status (what this beta does and does not claim):**
+
+- **Device-verified on Apple TV** (fixed-route AirPlay-2 long-form: routing,
+  latency-compensated start, gapless boundaries, interruption recovery, bounded
+  memory over a long session). **HomePod and Sonos are expected-compatible but
+  unverified** — they speak the same AirPlay-2 long-form protocol, but no
+  hardware pass has been run against them yet.
+- **Fixed-route only.** Output-latency compensation is read once per `play()`,
+  when the playback pipeline starts. A device that switches routes mid-session
+  (e.g. local speaker → AirPlay, ~18 ms → ~2000 ms) recovers playback but is
+  mis-compensated by the latency delta until the next `play()`. Live
+  route-switch re-sync (and with it any broader multi-room simultaneity claim)
+  is deferred to `0.21.0-beta.3`.
 
 ### Added
 
 - **Sample-buffer render backend (AirPlay-2 long-form), opt-in.** A second
   render path built on a custom software `TimelineMixer` feeding one
   `AVSampleBufferAudioRenderer` + `AVSampleBufferRenderSynchronizer`, so a
-  Playola station routes as AirPlay-2 **long-form** audio (HomePod / Apple TV /
-  Sonos multi-room) — something the `AVAudioEngine` path cannot do. Selected
+  Playola station routes as AirPlay-2 **long-form** audio (device-verified on
+  Apple TV; HomePod/Sonos expected-compatible, unverified — see the
+  verification status above) — something the `AVAudioEngine` path cannot do. Selected
   via the new `renderBackend:` parameter on `configure(...)` (or the
   `setRenderBackend(_:)` helper): defaults to `.legacyEngine` and locks at the
   first `play()`, so the proven engine path remains the byte-for-byte runtime
@@ -37,9 +51,10 @@ the device QA matrix.
     slow download can never stall the station.
   - Mid-file join, route-change recovery (pause → refill → resume, verified on
     hardware against real ~2s AirPlay latency), and host-fed output-latency
-    compensation for cross-device simultaneity
-    (`outputLatencyCompensation`) — the SDK still touches `AVAudioSession`
-    **nowhere** (the seam-invariant test now also covers the new files).
+    compensation for cross-device simultaneity at play start
+    (`outputLatencyCompensation`, read once per `play()` at pipeline start —
+    see the fixed-route note above) — the SDK still touches `AVAudioSession` **nowhere** (the
+    seam-invariant test now also covers the new files).
 - **`PlayolaRenderBackend`** public enum (`.legacyEngine` / `.sampleBuffer`)
   and **`isRenderBackendLocked`** for QA UIs.
 - **`setRenderBackend(_:)`** for selecting the backend without calling
@@ -47,6 +62,17 @@ the device QA matrix.
   output-latency compensation on the `.sampleBuffer` backend.
 
 ### Fixed
+
+- **`pruneCache(maxSize:excludeFilepaths:)` now honors `excludeFilepaths`.**
+  The implementation previously ignored the exclusion list (and fire-and-forgot
+  the prune inside a `Task`, silently dropping errors), so under cache pressure
+  on a long session it could delete an audio file that was actively playing.
+  Both render backends pass their active files' paths and were affected. The
+  method is now `async throws`: exclusions are honored (with path
+  normalization, so `/private/var` vs `/var` forms can't defeat them), excluded
+  files still count toward the size total, and deletion errors propagate to the
+  caller. Callers implementing `FileDownloadManaging` must adopt the new
+  signature.
 
 - **Networks that block Playola over TCP now play via HTTP/3 (QUIC).** Some
   listeners sit behind routers / SSL-inspection middleboxes that interfere with
