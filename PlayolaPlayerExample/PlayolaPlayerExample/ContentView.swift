@@ -48,7 +48,6 @@ struct ContentView: View {
   @StateObject private var threadMonitor = MainThreadMonitor()
   @State private var showingStationPicker = false
   @State private var showingScheduleViewer = false
-  @State private var showingPhase5Spike = false
   /// Phase 5 QA: choose the SDK render backend before the first play(). Locks on play; relaunch to switch.
   @State private var useSampleBufferRenderer = false
   @State private var selectedStationId: String = "9d79fd38-1940-4312-8fe8-3b9b50d49c6c"
@@ -259,18 +258,6 @@ struct ContentView: View {
           .tint(.blue)
           .disabled(player.isRenderBackendLocked)
           .padding(.horizontal)
-
-          // Phase 5 slice-0 AirPlay renderer spike (unmissable full-width entry)
-          Button(action: { showingPhase5Spike.toggle() }) {
-            Label("Phase 5 AirPlay Spike", systemImage: "airplayaudio")
-              .font(.headline)
-              .foregroundColor(.white)
-              .frame(maxWidth: .infinity)
-              .padding()
-              .background(Color.blue.opacity(0.4))
-              .clipShape(RoundedRectangle(cornerRadius: 12))
-          }
-          .padding(.horizontal)
         }
 
         Spacer()
@@ -281,9 +268,6 @@ struct ContentView: View {
     }
     .sheet(isPresented: $showingScheduleViewer) {
       ScheduleViewer(selectedStationId: selectedStationId)
-    }
-    .sheet(isPresented: $showingPhase5Spike) {
-      Phase5SpikeView()
     }
   }
 
