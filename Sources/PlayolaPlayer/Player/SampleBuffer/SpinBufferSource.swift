@@ -186,21 +186,27 @@ final class SpinBufferSource {
 
     let outFrames = Int(outBuffer.frameLength)
     if outFrames > 0, let channels = outBuffer.floatChannelData {
-      let left = channels[0]
-      let right = mixFormat.channelCount > 1 ? channels[1] : channels[0]
-      var chunk = [SIMD2<Float>]()
-      chunk.reserveCapacity(outFrames)
-      for i in 0..<outFrames {
-        chunk.append(SIMD2(left[i], right[i]))
-      }
-      chunks.append(chunk)  // immutable once appended — snapshots share it, never copy it
-      totalFrames += outFrames
+      appendChunk(from: channels, frameCount: outFrames)
     }
 
     if status == .endOfStream || outFrames == 0 {
       reachedEndOfFile = true
     }
     return outFrames
+  }
+
+  private func appendChunk(
+    from channels: UnsafePointer<UnsafeMutablePointer<Float>>, frameCount: Int
+  ) {
+    let left = channels[0]
+    let right = mixFormat.channelCount > 1 ? channels[1] : channels[0]
+    var chunk = [SIMD2<Float>]()
+    chunk.reserveCapacity(frameCount)
+    for i in 0..<frameCount {
+      chunk.append(SIMD2(left[i], right[i]))
+    }
+    chunks.append(chunk)  // immutable once appended — snapshots share it, never copy it
+    totalFrames += frameCount
   }
 }
 

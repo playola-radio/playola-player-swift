@@ -7,13 +7,11 @@ import Foundation
 /// `AVSampleBufferAudioRenderer` requires (PHASE_5_PLAN §12/C12). Pure with respect to the render sink,
 /// so it is unit-testable on macOS without a device.
 enum SampleBufferAuthoring {
-  static func makeSampleBuffer(from buffer: RenderBuffer) -> CMSampleBuffer? {
-    let frameCount = buffer.frameCount
-    guard frameCount > 0 else { return nil }
-    let bytesPerFrame = 8  // 2 channels * 4 bytes (float32), interleaved
+  private static let bytesPerFrame = 8  // 2 channels * 4 bytes (float32), interleaved
 
+  private static func makeFormatDescription(sampleRate: Double) -> CMAudioFormatDescription? {
     var asbd = AudioStreamBasicDescription(
-      mSampleRate: buffer.sampleRate,
+      mSampleRate: sampleRate,
       mFormatID: kAudioFormatLinearPCM,
       mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
       mBytesPerPacket: UInt32(bytesPerFrame),
@@ -28,11 +26,14 @@ enum SampleBufferAuthoring {
       CMAudioFormatDescriptionCreate(
         allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
         magicCookieSize: 0, magicCookie: nil, extensions: nil,
-        formatDescriptionOut: &formatDescription) == noErr,
-      let formatDescription
+        formatDescriptionOut: &formatDescription) == noErr
     else { return nil }
+    return formatDescription
+  }
 
-    let dataByteSize = frameCount * bytesPerFrame
+  private static func makeBlockBuffer(from buffer: RenderBuffer, dataByteSize: Int)
+    -> CMBlockBuffer?
+  {
     var blockBuffer: CMBlockBuffer?
     guard
       CMBlockBufferCreateWithMemoryBlock(
@@ -49,6 +50,21 @@ enum SampleBufferAuthoring {
         with: base, blockBuffer: blockBuffer, offsetIntoDestination: 0, dataLength: dataByteSize)
     }
     guard copyStatus == kCMBlockBufferNoErr else { return nil }
+    return blockBuffer
+  }
+
+  static func makeSampleBuffer(from buffer: RenderBuffer) -> CMSampleBuffer? {
+    let frameCount = buffer.frameCount
+    guard frameCount > 0 else { return nil }
+
+    guard let formatDescription = makeFormatDescription(sampleRate: buffer.sampleRate) else {
+      return nil
+    }
+
+    let dataByteSize = frameCount * bytesPerFrame
+    guard let blockBuffer = makeBlockBuffer(from: buffer, dataByteSize: dataByteSize) else {
+      return nil
+    }
 
     var timing = CMSampleTimingInfo(
       duration: CMTime(value: 1, timescale: Int32(buffer.sampleRate)),
@@ -118,7 +134,11 @@ final class LiveSampleBufferSink {
     ) { [weak self] _ in
       guard let self else { return }
       sampleBufferLog.notice(
-        "AUTO-FLUSH (route change): status=\(self.renderer.status.rawValue) rate=\(self.synchronizer.rate) ready=\(self.renderer.isReadyForMoreMediaData) syncTime=\(CMTimeGetSeconds(self.synchronizer.currentTime()))"
+        """
+        AUTO-FLUSH (route change): status=\(self.renderer.status.rawValue) \
+        rate=\(self.synchronizer.rate) ready=\(self.renderer.isReadyForMoreMediaData) \
+        syncTime=\(CMTimeGetSeconds(self.synchronizer.currentTime()))
+        """
       )
       self.onAutoFlush?()
     }

@@ -42,8 +42,8 @@ struct SampleBufferStationRendererTests {
       enqueueAheadSeconds: 1.0)  // deterministic 1s window for the frame assertions below
   }
 
-  private func unity(_ v: Float = 1.0) -> FadeEnvelope {
-    FadeEnvelope(spin: Spin.mockWith(startingVolume: v, fades: []))
+  private func unity(_ volume: Float = 1.0) -> FadeEnvelope {
+    FadeEnvelope(spin: Spin.mockWith(startingVolume: volume, fades: []))
   }
 
   private func stub(startFrame: Int64, value: SIMD2<Float> = SIMD2(0.5, 0.5)) -> StubMixSource {

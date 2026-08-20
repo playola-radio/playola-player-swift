@@ -48,19 +48,19 @@ extension MixSource {
     _ body: (Int64, UnsafeBufferPointer<SIMD2<Float>>) -> Void
   ) {
     var run: [SIMD2<Float>] = []
-    var f = range.lowerBound
-    while f < range.upperBound {
+    var frame = range.lowerBound
+    while frame < range.upperBound {
       run.removeAll(keepingCapacity: true)
-      var g = f
-      while g < range.upperBound, let sample = stereoFrame(atSourceOffset: g) {
+      var cursor = frame
+      while cursor < range.upperBound, let sample = stereoFrame(atSourceOffset: cursor) {
         run.append(sample)
-        g += 1
+        cursor += 1
       }
       if run.isEmpty {
-        f += 1  // frame f not available — one stereoFrame(nil) probe, skip to the next
+        frame += 1  // frame not available — one stereoFrame(nil) probe, skip to the next
       } else {
-        run.withUnsafeBufferPointer { body(f, $0) }
-        f = g
+        run.withUnsafeBufferPointer { body(frame, $0) }
+        frame = cursor
       }
     }
   }
@@ -76,10 +76,6 @@ extension MixSource {
 struct TimelineMixer: Sendable {
   /// Mixed-output sample rate (frames per second). All sources are resampled to this during decode.
   let sampleRate: Double
-
-  init(sampleRate: Double) {
-    self.sampleRate = sampleRate
-  }
 
   /// Render into `output`, an interleaved stereo float32 buffer that MUST have
   /// `outputFrameRange.count * 2` elements. `output` is fully overwritten (zeroed first).

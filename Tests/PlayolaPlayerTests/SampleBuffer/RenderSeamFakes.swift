@@ -56,7 +56,13 @@ final class FakeRenderSynchronizer: RenderSynchronizing, @unchecked Sendable {
   var currentTime: CMTime = .zero
   var rate: Float = 1.0
 
-  private var observers: [(token: UUID, times: [CMTime], block: @Sendable () -> Void)] = []
+  private struct BoundaryObserver {
+    let token: UUID
+    let times: [CMTime]
+    let block: @Sendable () -> Void
+  }
+
+  private var observers: [BoundaryObserver] = []
 
   /// Every boundary time currently installed via `addBoundaryObserver` (in install order).
   var installedBoundaryTimes: [CMTime] { observers.flatMap(\.times) }
@@ -70,7 +76,7 @@ final class FakeRenderSynchronizer: RenderSynchronizing, @unchecked Sendable {
     forTimes times: [CMTime], _ block: @escaping @Sendable () -> Void
   ) -> Any {
     let token = UUID()
-    observers.append((token, times, block))
+    observers.append(BoundaryObserver(token: token, times: times, block: block))
     return token
   }
 

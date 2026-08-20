@@ -40,23 +40,23 @@ struct TimelineMixerTests {
       frames: Array(repeating: value, count: length))
   }
 
-  /// Reads interleaved output frame `f` (0-based within the rendered range) as (L, R).
-  private func frame(_ out: [Float], _ f: Int) -> SIMD2<Float> {
-    SIMD2(out[f * 2], out[f * 2 + 1])
+  /// Reads interleaved output frame `index` (0-based within the rendered range) as (L, R).
+  private func frame(_ out: [Float], _ index: Int) -> SIMD2<Float> {
+    SIMD2(out[index * 2], out[index * 2 + 1])
   }
 
   @Test("two overlapping sources sum sample-for-sample")
   func overlappingSourcesSum() {
     let mixer = TimelineMixer(sampleRate: sampleRate)
-    let a = constantSource(start: 0, value: SIMD2(0.5, 0.5), length: 4)
-    let b = constantSource(start: 0, value: SIMD2(0.2, -0.1), length: 4)
+    let sourceA = constantSource(start: 0, value: SIMD2(0.5, 0.5), length: 4)
+    let sourceB = constantSource(start: 0, value: SIMD2(0.2, -0.1), length: 4)
     var out = [Float](repeating: .nan, count: 4 * 2)
 
-    mixer.render(outputFrameRange: 0..<4, sources: [a, b], into: &out)
+    mixer.render(outputFrameRange: 0..<4, sources: [sourceA, sourceB], into: &out)
 
-    for f in 0..<4 {
-      #expect(abs(frame(out, f).x - 0.7) < 0.0001)
-      #expect(abs(frame(out, f).y - 0.4) < 0.0001)
+    for index in 0..<4 {
+      #expect(abs(frame(out, index).x - 0.7) < 0.0001)
+      #expect(abs(frame(out, index).y - 0.4) < 0.0001)
     }
   }
 
@@ -84,8 +84,8 @@ struct TimelineMixerTests {
     mixer.render(outputFrameRange: 0..<4, sources: [ready, notReady], into: &out)
 
     // Only the ready source is heard; the empty source adds nothing.
-    for f in 0..<4 {
-      #expect(abs(frame(out, f).x - 0.3) < 0.0001)
+    for index in 0..<4 {
+      #expect(abs(frame(out, index).x - 0.3) < 0.0001)
     }
   }
 
@@ -135,11 +135,11 @@ struct TimelineMixerTests {
   @Test("summed peaks are clip-protected to [-1, 1]")
   func clipProtection() {
     let mixer = TimelineMixer(sampleRate: sampleRate)
-    let a = constantSource(start: 0, value: SIMD2(0.8, -0.8), length: 2)
-    let b = constantSource(start: 0, value: SIMD2(0.8, -0.8), length: 2)
+    let sourceA = constantSource(start: 0, value: SIMD2(0.8, -0.8), length: 2)
+    let sourceB = constantSource(start: 0, value: SIMD2(0.8, -0.8), length: 2)
     var out = [Float](repeating: 0, count: 2 * 2)
 
-    mixer.render(outputFrameRange: 0..<2, sources: [a, b], into: &out)
+    mixer.render(outputFrameRange: 0..<2, sources: [sourceA, sourceB], into: &out)
 
     #expect(frame(out, 0).x == 1.0)  // 1.6 clipped
     #expect(frame(out, 0).y == -1.0)  // -1.6 clipped

@@ -98,6 +98,14 @@ final class SampleBufferPlaybackController {
     self.renderer = renderer
     self.pump = DecodePump(publish: { [weak renderer] window in renderer?.updateSnapshot(window) })
 
+    wireRenderPipeline()
+  }
+
+  private func wireRenderPipeline() {
+    let renderer = self.renderer
+    let pump = self.pump
+    let sink = self.sink
+    let errorReporter = self.errorReporter
     renderer.onSpinStarted = { [weak self] spin in
       Task { @MainActor in
         self?.reanchor()  // A1: re-pin the mapping to the live playhead at each boundary
