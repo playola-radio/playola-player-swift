@@ -1199,14 +1199,15 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
     schedulingTask?.cancel()
     schedulingTask = Task { [generation = playGeneration] in
       do {
-        await self.scheduleUpcomingSpins(generation: generation)
-
-        // Get a list of active file paths to exclude from pruning
+        // Prune before entering the scheduling loop (which doesn't return while
+        // playback is live), so the cache is bounded at every spin start rather
+        // than only when a superseding play()/stop() cancels this task.
         let activePaths = self._spinPlayers
           .compactMap { $0.localUrl?.path }
 
-        // Use the new pruning method with proper error handling
         try await self.fileDownloadManager.pruneCache(maxSize: nil, excludeFilepaths: activePaths)
+
+        await self.scheduleUpcomingSpins(generation: generation)
       } catch {
         Task {
           await errorReporter.reportError(

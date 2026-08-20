@@ -169,6 +169,8 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     }
   #endif
 
+  /// Creates a download manager backed by the default per-platform cache directory,
+  /// creating that directory if it doesn't already exist.
   public init() {
     self.cacheDirectoryOverride = nil
     createCacheDirectoryIfNeeded()
