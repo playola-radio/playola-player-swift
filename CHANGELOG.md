@@ -42,6 +42,9 @@ the device QA matrix.
     **nowhere** (the seam-invariant test now also covers the new files).
 - **`PlayolaRenderBackend`** public enum (`.legacyEngine` / `.sampleBuffer`)
   and **`isRenderBackendLocked`** for QA UIs.
+- **`setRenderBackend(_:)`** for selecting the backend without calling
+  `configure(...)`, and **`outputLatencyCompensation`** for host-fed
+  output-latency compensation on the `.sampleBuffer` backend.
 
 ### Fixed
 

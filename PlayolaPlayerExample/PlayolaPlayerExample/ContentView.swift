@@ -309,6 +309,8 @@ struct ContentView: View {
 
       do {
         player.setRenderBackend(useSampleBufferRenderer ? .sampleBuffer : .legacyEngine)
+        // Match playOrPause(): compensate for this device's current-route output latency.
+        player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
         try await player.play(
           stationId: selectedStationId,
           atDate: atDate

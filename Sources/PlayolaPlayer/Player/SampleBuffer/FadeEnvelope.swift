@@ -45,20 +45,27 @@ struct FadeEnvelope: Sendable, Equatable {
     let positionMS = seconds * 1_000
     var level = startingVolume  // plateau carried into the next ramp
 
-    for fade in fades {
+    for (index, fade) in fades.enumerated() {
       let rampStart = Double(fade.atMS)
-      let rampEnd = rampStart + Self.rampDurationMS
+      // A later fade preempts this ramp (fades < rampDuration apart): stop it where the next begins
+      // and carry the level actually reached, like the legacy AU ramp (which ramps from the CURRENT
+      // value) — otherwise the gain jumps discontinuously at the preempted ramp's nominal end.
+      let nextStart =
+        index + 1 < fades.count ? Double(fades[index + 1].atMS) : Double.infinity
+      let rampEnd = min(rampStart + Self.rampDurationMS, nextStart)
 
       if positionMS < rampStart {
         // Before this ramp begins: hold the current plateau.
         return level
       } else if positionMS < rampEnd {
-        // Within the ramp: linear interpolate from the plateau to the target.
+        // Within the ramp: linear interpolate from the plateau to the target (full-ramp slope).
         let progress = Float((positionMS - rampStart) / Self.rampDurationMS)
         return level + progress * (fade.toVolume - level)
       }
-      // Ramp complete: advance the plateau and consider the next fade.
-      level = fade.toVolume
+      // Ramp ended: a COMPLETED ramp lands exactly on its target (float-exact, matching
+      // Spin.volumeAtMS at plateaus); a PREEMPTED one carries the level actually reached.
+      let reached = Float(min(1, (rampEnd - rampStart) / Self.rampDurationMS))
+      level = reached >= 1 ? fade.toVolume : level + reached * (fade.toVolume - level)
     }
 
     return level

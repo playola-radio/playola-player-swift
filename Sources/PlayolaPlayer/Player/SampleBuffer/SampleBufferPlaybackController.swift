@@ -39,8 +39,16 @@ final class SampleBufferPlaybackController {
   /// Ingested spins by id, so ended ones can be pruned (freeing their decode buffers + boundary observers).
   private var activeSpins: [String: Spin] = [:]
   private var downloadTasks: [String: Task<Void, Never>] = [:]
+  /// Downloaded local file path per spin, so the owner can exclude in-use files from cache pruning.
+  private var localFilePaths: [String: String] = [:]
   private var scheduleInstalled = false
   private var rendererStarted = false
+  private var isStopped = false
+  private var startupDeadlineTask: Task<Void, Never>?
+
+  /// Local paths of files still referenced by this session (owner feeds these to `pruneCache` as
+  /// exclusions so an in-use spin's audio can't be evicted mid-play).
+  var activeLocalFilePaths: [String] { Array(localFilePaths.values) }
 
   /// Called (on the main actor) when a spin boundary is crossed — maps to `State.playing(spin)`.
   var onSpinStarted: ((Spin) -> Void)?
@@ -111,8 +119,14 @@ final class SampleBufferPlaybackController {
     sink.onRendererFailed = { [weak self] error in
       Task { @MainActor in self?.onRendererFailed?(error) }
     }
-    pump.onFirstData = { [weak self] in
-      Task { @MainActor in self?.startRendererIfNeeded() }
+    // §4.4: only a CURRENTLY-AUDIBLE source's first decode starts playback — a future spin decoding
+    // first would start the renderer into a silent startup hole. The startup deadline stays as the
+    // slow/missing-download fallback.
+    pump.onDataPrepared = { [weak self] window in
+      Task { @MainActor in
+        guard let self, window.startFrame <= self.latencyFrames else { return }
+        self.startRendererIfNeeded()
+      }
     }
     // §4.4: a failed decode renders as silence and the station continues — but it must be REPORTED,
     // not swallowed (a corrupt/unsupported file would otherwise be an invisible dead spin).
@@ -139,8 +153,9 @@ final class SampleBufferPlaybackController {
     )
     renderer.setSchedule(scheduled)
     scheduleInstalled = true
-    Task { [weak self] in
+    startupDeadlineTask = Task { [weak self] in
       try? await Task.sleep(nanoseconds: Self.startupDeadline)
+      guard !Task.isCancelled else { return }
       if self?.rendererStarted == false {
         sampleBufferLog.notice("controller: startup deadline hit before any decode landed")
       }
@@ -149,7 +164,7 @@ final class SampleBufferPlaybackController {
   }
 
   private func startRendererIfNeeded() {
-    guard !rendererStarted else { return }
+    guard !isStopped, !rendererStarted else { return }
     rendererStarted = true
     sampleBufferLog.notice("controller: starting renderer (first audio ready or deadline)")
     renderer.start()
@@ -170,9 +185,13 @@ final class SampleBufferPlaybackController {
   }
 
   func stop() {
+    isStopped = true
+    startupDeadlineTask?.cancel()
+    startupDeadlineTask = nil
     renderer.halt()  // freeze audio immediately, before any re-play starts a fresh sink
     for task in downloadTasks.values { task.cancel() }
     downloadTasks.removeAll()
+    localFilePaths.removeAll()
     knownSpinIDs.removeAll()
     renderer.stop()
     pump.cancelAll()
@@ -191,7 +210,11 @@ final class SampleBufferPlaybackController {
     activeSpins[spin.id] = spin
 
     let startFrame = mapper.frame(for: spin.airtime)
-    let initialOffset = max(0, -startFrame)  // mid-file join for an already-airing spin
+    // The first authored output frame is `latencyFrames` (the timebase's head start), so the first
+    // source offset actually rendered is `latencyFrames - startFrame` — decode from there, not from
+    // the mapper origin, or a high-latency route's first window mixes to silence (mid-file join
+    // included: frames before the write cursor are never enqueued).
+    let initialOffset = max(0, latencyFrames - startFrame)
     let envelope = FadeEnvelope(spin: spin)
     let placeholder = SpinPCMWindow(
       spinID: spin.id, startFrame: startFrame, envelope: envelope,
@@ -200,6 +223,7 @@ final class SampleBufferPlaybackController {
     downloadTasks[spin.id] = Task { [weak self] in
       await self?.download(
         spin: spin, remoteUrl: remoteUrl, startFrame: startFrame, offset: initialOffset)
+      self?.downloadTasks[spin.id] = nil  // release the finished task (spin ids are never re-ingested)
     }
 
     return SampleBufferStationRenderer.Scheduled(spin: spin, source: placeholder)
@@ -210,6 +234,7 @@ final class SampleBufferPlaybackController {
       let localUrl = try await fileDownloadManager.downloadFileAsync(
         remoteUrl: remoteUrl, progressHandler: nil)
       if Task.isCancelled { return }
+      localFilePaths[spin.id] = localUrl.path
       pump.prepare(spin: spin, fileURL: localUrl, startFrame: startFrame, initialOffset: offset)
     } catch {
       if !(error is CancellationError) {
@@ -261,7 +286,6 @@ final class SampleBufferPlaybackController {
 private final class DecodePump: @unchecked Sendable {
   private let queue = DispatchQueue(label: "fm.playola.samplebuffer.decode", qos: .userInitiated)
   private var sources: [String: SpinBufferSource] = [:]  // queue-confined
-  private var firstDataSignaled = false  // queue-confined
   private let publish: @Sendable (SpinPCMWindow) -> Void
   /// Coalesce decode requests: fill signals every ~85ms, but only ONE decode pass need be queued at a
   /// time (it always decodes to the latest target). Without this the decode queue backs up and the only
@@ -269,9 +293,10 @@ private final class DecodePump: @unchecked Sendable {
   private let decodeRequest = OSAllocatedUnfairLock<(scheduled: Bool, target: Int64)>(
     initialState: (false, 0))
 
-  /// Fired once, after the first source decodes some PCM — the controller uses it to start the renderer
-  /// (avoids a silent startup hole). Set before any decode begins.
-  var onFirstData: (@Sendable () -> Void)?
+  /// Fired after each source's initial decode lands, with that source's snapshot — the controller
+  /// starts the renderer on the first CURRENTLY-AUDIBLE one (avoids both a silent startup hole and a
+  /// premature start when a future spin decodes first). Set before any decode begins.
+  var onDataPrepared: (@Sendable (SpinPCMWindow) -> Void)?
   /// Fired at most once per spin when its decode fails (setup or incremental); the spin renders as
   /// silence (§4.4) but the failure is surfaced instead of swallowed.
   var onDecodeFailed: (@Sendable (_ spinID: String, _ error: Error) -> Void)?
@@ -289,11 +314,9 @@ private final class DecodePump: @unchecked Sendable {
         try source.decode(
           throughSourceOffset: initialOffset + Int64(SpinBufferSource.readAheadFrames))
         sources[spin.id] = source
-        publish(source.snapshot())
-        if !firstDataSignaled {
-          firstDataSignaled = true
-          onFirstData?()
-        }
+        let window = source.snapshot()
+        publish(window)
+        onDataPrepared?(window)
       } catch {
         // A failed decode contributes silence (the mixer renders nil frames); the station continues.
         if reportedDecodeFailures.insert(spin.id).inserted {

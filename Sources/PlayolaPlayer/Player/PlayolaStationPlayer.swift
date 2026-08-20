@@ -144,20 +144,23 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// activate it (category `.playback`) before calling `play(stationId:)` or
   /// `resumeAfterInterruption()`, and owns all interruption/route-change policy.
   /// See the README "Audio session" section.
-  ///   - renderBackend: Which audio render path to use (Phase 5). Defaults to the proven
-  ///     `.legacyEngine`. Set this once, before the first `play()`; it is locked afterward (a later
-  ///     change is a release-mode no-op — see `setRenderBackend`). The app flips it to `.sampleBuffer`
-  ///     behind a server flag.
+  ///   - renderBackend: Which audio render path to use (Phase 5). The player starts on the proven
+  ///     `.legacyEngine`; OMITTING this argument leaves the current selection unchanged (so a prior
+  ///     `setRenderBackend(_:)` is never silently reverted). Set once, before the first `play()`; it
+  ///     is locked afterward (a later change is a release-mode no-op — see `setRenderBackend`). The
+  ///     app flips it to `.sampleBuffer` behind a server flag.
   public func configure(
     authProvider: PlayolaAuthenticationProvider,
     baseURL: URL = URL(string: "https://admin-api.playola.fm")!,
-    renderBackend: PlayolaRenderBackend = .legacyEngine
+    renderBackend: PlayolaRenderBackend? = nil
   ) {
     self.authProvider = authProvider
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
     self.baseUrl = baseURL
-    setRenderBackend(renderBackend)
+    // Only an explicit argument changes the backend; omitting it preserves a prior
+    // setRenderBackend(_:) selection instead of silently reverting to the default.
+    if let renderBackend { setRenderBackend(renderBackend) }
   }
 
   /// The active render backend (Phase 5). Defaults to `.legacyEngine`; locked after first `play()`.
@@ -915,6 +918,19 @@ final public class PlayolaStationPlayer: ObservableObject {
         let updated = try await getUpdatedSchedule(stationId: stationId)
         guard isCurrentGeneration(generation) else { return }
         sampleBufferController?.addUpcoming(sampleBufferSpins(from: updated))
+        // Bound the on-disk cache during long sample-buffer sessions, mirroring the legacy loop's
+        // prune (active files excluded so an in-use spin can't be evicted).
+        if let controller = sampleBufferController {
+          do {
+            try fileDownloadManager.pruneCache(
+              maxSize: nil, excludeFilepaths: controller.activeLocalFilePaths)
+          } catch {
+            Task {
+              await errorReporter.reportError(
+                error, context: "Error during cache pruning (sample-buffer poll)", level: .warning)
+            }
+          }
+        }
       } catch is CancellationError {
         return
       } catch {

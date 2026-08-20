@@ -19,10 +19,14 @@ struct LiveSampleBufferSinkTests {
     var fired = false
     sink.onAutoFlush = { fired = true }
 
-    NotificationCenter.default.post(
-      name: .AVSampleBufferAudioRendererWasFlushedAutomatically,
-      object: sink.renderer)
+    // The sink's observer captures it weakly — pin its lifetime through the assertion so an
+    // optimizing build can't release it before the notification is delivered.
+    withExtendedLifetime(sink) {
+      NotificationCenter.default.post(
+        name: .AVSampleBufferAudioRendererWasFlushedAutomatically,
+        object: sink.renderer)
 
-    #expect(fired)
+      #expect(fired)
+    }
   }
 }

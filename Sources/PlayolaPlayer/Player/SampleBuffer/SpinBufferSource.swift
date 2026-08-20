@@ -147,7 +147,8 @@ final class SpinBufferSource {
 
     let inputFormat = audioFile.processingFormat
     var readError: Error?
-    let status = converter.convert(to: outBuffer, error: nil) {
+    var convertError: NSError?
+    let status = converter.convert(to: outBuffer, error: &convertError) {
       [audioFile] inNumPackets, outStatus in
       // At/after end-of-file, reading throws on macOS — report EOS without reading.
       guard audioFile.framePosition < audioFile.length else {
@@ -177,6 +178,11 @@ final class SpinBufferSource {
     }
 
     if let readError { throw readError }
+    if status == .error {
+      // A converter failure is a decode ERROR, not end-of-file — propagate it (the pump reports it
+      // and the spin renders as silence) instead of silently truncating the tail.
+      throw convertError ?? SpinBufferSourceError.decodeFailed
+    }
 
     let outFrames = Int(outBuffer.frameLength)
     if outFrames > 0, let channels = outBuffer.floatChannelData {
@@ -191,7 +197,7 @@ final class SpinBufferSource {
       totalFrames += outFrames
     }
 
-    if status == .endOfStream || status == .error || outFrames == 0 {
+    if status == .endOfStream || outFrames == 0 {
       reachedEndOfFile = true
     }
     return outFrames
@@ -297,6 +303,8 @@ struct SpinPCMWindow: MixSource, Sendable {
 enum SpinBufferSourceError: Error, CustomStringConvertible {
   case converterUnavailable(from: AVAudioFormat, to: AVAudioFormat)
   case bufferAllocationFailed
+  /// The converter returned `.error` without populating its `NSError` out-param.
+  case decodeFailed
 
   var description: String {
     switch self {
@@ -304,6 +312,8 @@ enum SpinBufferSourceError: Error, CustomStringConvertible {
       return "AVAudioConverter unavailable from \(from) to \(to)"
     case .bufferAllocationFailed:
       return "Failed to allocate mix PCM buffer"
+    case .decodeFailed:
+      return "AVAudioConverter returned .error with no underlying NSError"
     }
   }
 }

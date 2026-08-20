@@ -68,4 +68,21 @@ struct FadeEnvelopeTests {
     #expect(env.gain(atMS: 0) == 0.75)
     #expect(env.gain(atMS: 60_000) == 0.75)
   }
+
+  @Test("a fade starting inside the prior ramp preempts it without a gain jump")
+  func closeFadesStayContinuous() {
+    let env = FadeEnvelope(
+      spin: Spin.mockWith(
+        startingVolume: 1.0,
+        fades: [Fade(atMS: 5_000, toVolume: 0.2), Fade(atMS: 5_500, toVolume: 1.0)]))
+    // Ramp 1 is preempted at 5_500 having reached 1/3 of the way to 0.2 (≈0.7333); ramp 2
+    // continues FROM that value (like the legacy AU ramp, which ramps from the current level).
+    #expect(abs(env.gain(atMS: 5_500) - 0.73333) < 0.001)
+    // Continuity across the preemption boundary — no single-frame jump (an audible click).
+    #expect(abs(env.gain(atMS: 5_499) - env.gain(atMS: 5_500)) < 0.001)
+    // Inside ramp 2, where the unclamped math previously jumped (~0.25 -> ~0.73 at 6_500).
+    #expect(abs(env.gain(atMS: 6_400) - 0.89333) < 0.001)
+    // Ramp 2 completes at its own pace.
+    #expect(abs(env.gain(atMS: 7_000) - 1.0) < 0.0001)
+  }
 }

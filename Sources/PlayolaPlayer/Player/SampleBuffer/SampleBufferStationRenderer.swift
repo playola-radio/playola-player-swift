@@ -1,6 +1,7 @@
 import CoreMedia
 import Foundation
 import PlayolaCore
+import os
 
 /// Serializes all sample-buffer render + control work onto one domain. Production uses the renderer's
 /// request queue (the same serial queue `requestMediaDataWhenReady` runs the fill block on), so control
@@ -171,9 +172,15 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// NOW, so a re-play starting a fresh sink cannot briefly overlap this one's audio. Safe to call from
   /// any thread (the underlying CoreMedia calls are); the ordered cleanup still runs via `stop()`.
   func halt() {
+    halted.withLock { $0 = true }
     renderer.stopRequestingMediaData()
     synchronizer.setRate(0, time: synchronizer.currentTime)
   }
+
+  /// Synchronously-visible halt fence: `stopped` only flips inside the queued `stop()` closure, so a
+  /// recovery already queued between `halt()` and that closure could otherwise setRate(1.0) a
+  /// deliberately-frozen timebase. Checked by `recoverAfterAutoFlush`.
+  private let halted = OSAllocatedUnfairLock(initialState: false)
 
   /// Ordered teardown [Codex Q3 / spike EXC_BAD_ACCESS]: supersede, stop pulling, remove observers,
   /// flush, drop the closures that publish back to the owner — before the owner releases us.
@@ -199,7 +206,7 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// just-refilled audio, which is the warble/stutter. Only resume the timebase if it's actually paused.
   func recoverAfterAutoFlush() {
     control.execute { [self] in
-      guard !stopped else { return }
+      guard !stopped, !halted.withLock({ $0 }) else { return }
       let playhead = playheadFrame()
       nextOutputFrame = playhead  // never backfill (§4.4); refill from where the timebase actually is
       fillLocked()

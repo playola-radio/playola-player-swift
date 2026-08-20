@@ -56,9 +56,9 @@ final class FakeRenderSynchronizer: RenderSynchronizing, @unchecked Sendable {
   var currentTime: CMTime = .zero
   var rate: Float = 1.0
 
-  private var observers: [(times: [CMTime], block: @Sendable () -> Void)] = []
+  private var observers: [(token: UUID, times: [CMTime], block: @Sendable () -> Void)] = []
 
-  /// Every boundary time installed via `addBoundaryObserver` (flattened, in install order).
+  /// Every boundary time currently installed via `addBoundaryObserver` (in install order).
   var installedBoundaryTimes: [CMTime] { observers.flatMap(\.times) }
 
   func setRate(_ rate: Float, time: CMTime) {
@@ -70,15 +70,16 @@ final class FakeRenderSynchronizer: RenderSynchronizing, @unchecked Sendable {
     forTimes times: [CMTime], _ block: @escaping @Sendable () -> Void
   ) -> Any {
     let token = UUID()
-    observers.append((times, block))
+    observers.append((token, times, block))
     return token
   }
 
   func removeObserver(_ token: Any) {
-    // No-op for the fake; tests fire observers explicitly via `fireBoundary`.
+    guard let token = token as? UUID else { return }
+    observers.removeAll { $0.token == token }
   }
 
-  /// Fire every registered boundary observer once (simulate the timebase crossing a boundary).
+  /// Fire every currently-installed boundary observer once (simulate the timebase crossing a boundary).
   func fireBoundary() {
     for observer in observers { observer.block() }
   }
