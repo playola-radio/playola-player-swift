@@ -5,6 +5,7 @@
 //  Created by Brian D Keane on 12/29/24.
 //
 
+import AVFoundation
 import PlayolaPlayer
 import SwiftUI
 
@@ -47,6 +48,8 @@ struct ContentView: View {
   @StateObject private var threadMonitor = MainThreadMonitor()
   @State private var showingStationPicker = false
   @State private var showingScheduleViewer = false
+  /// Phase 5 QA: choose the SDK render backend before the first play(). Locks on play; relaunch to switch.
+  @State private var useSampleBufferRenderer = false
   @State private var selectedStationId: String = "9d79fd38-1940-4312-8fe8-3b9b50d49c6c"
 
   var body: some View {
@@ -237,6 +240,24 @@ struct ContentView: View {
                   .foregroundColor(.white.opacity(0.8))
               })
           }
+
+          // Phase 5 render-backend picker (QA). Set before the first play(); locks once playing.
+          Toggle(isOn: $useSampleBufferRenderer) {
+            VStack(alignment: .leading, spacing: 2) {
+              Text("Sample-buffer renderer")
+                .font(.subheadline)
+                .foregroundColor(.white)
+              Text(
+                player.isRenderBackendLocked
+                  ? "Locked (relaunch to switch)" : "AirPlay-2 long-form (set before play)"
+              )
+              .font(.caption2)
+              .foregroundColor(.white.opacity(0.6))
+            }
+          }
+          .tint(.blue)
+          .disabled(player.isRenderBackendLocked)
+          .padding(.horizontal)
         }
 
         Spacer()
@@ -263,6 +284,11 @@ struct ContentView: View {
         // Start (or retry after a failed start / resume after a pause —
         // play() re-fetches the schedule and re-syncs to now)
         do {
+          // Phase 5 QA: select the render backend before the first play() (no-op once locked).
+          player.setRenderBackend(useSampleBufferRenderer ? .sampleBuffer : .legacyEngine)
+          // Feed this device's current-route output latency so multiple devices play in sync
+          // (local ~18ms, AirPlay ~2s). Host reads it; the SDK doesn't touch AVAudioSession.
+          player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
           try await player.play(stationId: selectedStationId)
         } catch {
           // Handle errors gracefully (including cancellation during loading).
@@ -282,6 +308,9 @@ struct ContentView: View {
       let atDate = Date().addingTimeInterval(offsetSeconds)
 
       do {
+        player.setRenderBackend(useSampleBufferRenderer ? .sampleBuffer : .legacyEngine)
+        // Match playOrPause(): compensate for this device's current-route output latency.
+        player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
         try await player.play(
           stationId: selectedStationId,
           atDate: atDate

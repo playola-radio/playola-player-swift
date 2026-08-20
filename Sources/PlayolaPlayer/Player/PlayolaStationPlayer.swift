@@ -35,6 +35,15 @@ public enum StationPlayerError: Error, LocalizedError, Sendable {
   }
 }
 
+/// Selects the SDK's audio render backend (Phase 5). `.legacyEngine` is the proven per-spin
+/// `AVAudioEngine` graph (the default); `.sampleBuffer` is the custom software mixer →
+/// `AVSampleBufferAudioRenderer` path that casts AirPlay-2 long-form. Chosen via
+/// `configure(renderBackend:)`, set once before first `play()` and locked thereafter.
+public enum PlayolaRenderBackend: Sendable, Equatable {
+  case legacyEngine
+  case sampleBuffer
+}
+
 /// A player for Playola stations that manages audio playback, scheduling, and stream management.
 ///
 /// `PlayolaStationPlayer` is the main entry point for apps integrating with the Playola platform.
@@ -104,6 +113,10 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   public weak var delegate: PlayolaStationPlayerDelegate?
 
+  /// Active sample-buffer playback (Phase 5). Non-nil only while the `.sampleBuffer` backend is playing;
+  /// the legacy `.legacyEngine` path leaves this nil and uses `_spinPlayers` exactly as before.
+  private var sampleBufferController: SampleBufferPlaybackController?
+
   // Thread-safe access to spin players - all access must be on main actor
   private var _spinPlayers: [SpinPlayer] = []
 
@@ -131,14 +144,65 @@ final public class PlayolaStationPlayer: ObservableObject {
   /// activate it (category `.playback`) before calling `play(stationId:)` or
   /// `resumeAfterInterruption()`, and owns all interruption/route-change policy.
   /// See the README "Audio session" section.
+  ///   - renderBackend: Which audio render path to use (Phase 5). The player starts on the proven
+  ///     `.legacyEngine`; OMITTING this argument leaves the current selection unchanged (so a prior
+  ///     `setRenderBackend(_:)` is never silently reverted). Set once, before the first `play()`; it
+  ///     is locked afterward (a later change is a release-mode no-op — see `setRenderBackend`). The
+  ///     app flips it to `.sampleBuffer` behind a server flag.
   public func configure(
     authProvider: PlayolaAuthenticationProvider,
-    baseURL: URL = URL(string: "https://admin-api.playola.fm")!
+    baseURL: URL = URL(string: "https://admin-api.playola.fm")!,
+    renderBackend: PlayolaRenderBackend? = nil
   ) {
     self.authProvider = authProvider
     self.listeningSessionReporter = ListeningSessionReporter(
       stationPlayer: self, authProvider: authProvider, baseURL: baseURL)
     self.baseUrl = baseURL
+    // Only an explicit argument changes the backend; omitting it preserves a prior
+    // setRenderBackend(_:) selection instead of silently reverting to the default.
+    if let renderBackend { setRenderBackend(renderBackend) }
+  }
+
+  /// The active render backend (Phase 5). Defaults to `.legacyEngine`; locked after first `play()`.
+  /// `private(set)` so tests in the module can read it.
+  private(set) var renderBackend: PlayolaRenderBackend = .legacyEngine
+  /// Set once playback has begun; further backend changes are ignored (release-mode no-op, [C5]).
+  private var renderBackendLocked = false
+
+  /// Whether the render backend is locked (playback has started). A UI selecting the backend should
+  /// disable itself once this is true — `setRenderBackend` is a no-op thereafter.
+  public var isRenderBackendLocked: Bool { renderBackendLocked }
+
+  /// Acoustic output latency (seconds) of the host's CURRENT audio route, fed in by the host (the SDK
+  /// cannot read `AVAudioSession`). The `.sampleBuffer` backend starts its timebase this far ahead so
+  /// audio for wall-clock T reaches the speaker at T — so two devices, each compensating its own route
+  /// (local ~18 ms, AirPlay ~2 s), play the same content at the same instant. Read at each `play()`;
+  /// set it before playing. 0 = no compensation. No effect on the legacy backend. (Route changes
+  /// mid-session need re-compensation — see PHASE_5_FOLLOWUPS.md FU-2.)
+  public var outputLatencyCompensation: TimeInterval = 0
+
+  /// Selects the render backend (Phase 5). A no-op once playback has started (avoids an accidental
+  /// mid-session switch on the pervasively-shared `.shared` instance). Instance-scoped so the same
+  /// mechanism works on `.shared` now and on any future app-owned instance (eng-review A3).
+  ///
+  /// Use this when you configure auth elsewhere (or not at all); otherwise pass `renderBackend:` to
+  /// `configure(authProvider:…)`. Set it BEFORE the first `play()`; to switch afterward, create a fresh
+  /// player (or relaunch) — live switching is intentionally unsupported.
+  public func setRenderBackend(_ backend: PlayolaRenderBackend) {
+    // Real no-op once locked — in ALL build configs, not just an assertionFailure that vanishes in
+    // release and would let the switch through (C5).
+    guard !renderBackendLocked else { return }
+    renderBackend = backend
+  }
+
+  /// Locks the render backend for the rest of this player's life. Called at the first `play()`.
+  private func lockRenderBackend() {
+    renderBackendLocked = true
+  }
+
+  /// Test seam: simulate the first-play lock without driving the network.
+  func lockRenderBackendForTesting() {
+    lockRenderBackend()
   }
 
   public enum State: Sendable {
@@ -703,6 +767,9 @@ final public class PlayolaStationPlayer: ObservableObject {
   ///   - Missing audio content in the schedule
   ///   - File download failures
   public func play(stationId: String, atDate: Date? = nil) async throws {
+    // Lock the render backend on the first play() so it can't switch mid-session (Phase 5, A3/C5).
+    lockRenderBackend()
+
     // Reset any stale interruption state when explicitly starting playback.
     // This ensures CarPlay and other external callers always get a clean start.
     isSuspended = false
@@ -753,6 +820,14 @@ final public class PlayolaStationPlayer: ObservableObject {
         "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info,
         stationId)
 
+      // Phase 5: the sample-buffer backend drives its own pipeline (download -> decode -> mixer ->
+      // AVSampleBufferAudioRenderer) instead of the legacy per-spin SpinPlayer graph. The wall-clock
+      // schedule fetch/poll above is shared; only the render sink differs. Legacy path is untouched.
+      if renderBackend == .sampleBuffer {
+        startSampleBufferPlayback(generation: generation, firstSpin: spinToPlay)
+        return
+      }
+
       // Schedule the first spin with progress shown
       try await scheduleSpin(spin: spinToPlay, generation: generation, showProgress: true)
 
@@ -780,6 +855,101 @@ final public class PlayolaStationPlayer: ObservableObject {
       }
       throw error
     }
+  }
+
+  // MARK: - Sample-buffer backend (Phase 5)
+
+  /// Spins currently airing or due within the lookahead window, filtered as the legacy path does.
+  private func sampleBufferSpins(from schedule: Schedule?) -> [Spin] {
+    (schedule?.current(offsetTimeInterval: scheduleOffset) ?? []).filter {
+      $0.airtime < .now + TimeInterval(600)
+    }
+  }
+
+  /// Starts the sample-buffer render pipeline for the current schedule and begins polling for upcoming
+  /// spins. The already-airing `firstSpin` is published immediately (its boundary is in the past);
+  /// later spins publish `.playing` as their boundaries are crossed.
+  private func startSampleBufferPlayback(generation: Int, firstSpin: Spin) {
+    // A second play() (station switch) with no intervening stop() must tear the previous controller
+    // down in order before replacing it — otherwise its renderer/pump can outlive ownership.
+    teardownSampleBufferPlayback()
+
+    let controller = SampleBufferPlaybackController(
+      anchorDate: Date(),
+      fileDownloadManager: fileDownloadManager,
+      outputLatency: outputLatencyCompensation)
+    controller.onSpinStarted = { [weak self] spin in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      self.state = .playing(spin)
+    }
+    // Stay .loading until the first decode actually starts playback (§4.4), then publish the airing spin.
+    controller.onPlaybackStarted = { [weak self] in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      self.state = .playing(firstSpin)
+    }
+    // C13: a terminal renderer failure (status .failed) makes every enqueue a silent no-op — surface
+    // `.error` and tear the dead pipeline down instead of staying in a silent `.playing` forever.
+    controller.onRendererFailed = { [weak self] error in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      let stationError = StationPlayerError.playbackError(
+        "Sample-buffer renderer failed: \(error?.localizedDescription ?? "unknown")")
+      self.teardownSampleBufferPlayback()
+      self.schedulingTask?.cancel()
+      self.schedulingTask = nil
+      self.state = .error(stationError)
+      Task { await self.errorReporter.reportError(stationError, level: .error) }
+    }
+    self.sampleBufferController = controller
+
+    controller.start(with: sampleBufferSpins(from: currentSchedule))
+
+    schedulingTask?.cancel()
+    schedulingTask = Task { [generation] in
+      await pollAndFeedSampleBuffer(generation: generation)
+    }
+  }
+
+  /// Reuses the wall-clock 20s poll to feed newly-appeared upcoming spins into the running sample-buffer
+  /// renderer (the controller de-dupes and appends beyond the enqueue horizon).
+  private func pollAndFeedSampleBuffer(generation: Int) async {
+    guard let stationId else { return }
+    while !Task.isCancelled && generation == playGeneration {
+      do {
+        let updated = try await getUpdatedSchedule(stationId: stationId)
+        guard isCurrentGeneration(generation) else { return }
+        sampleBufferController?.addUpcoming(sampleBufferSpins(from: updated))
+        // Bound the on-disk cache during long sample-buffer sessions, mirroring the legacy loop's
+        // prune (active files excluded so an in-use spin can't be evicted).
+        if let controller = sampleBufferController {
+          do {
+            try fileDownloadManager.pruneCache(
+              maxSize: nil, excludeFilepaths: controller.activeLocalFilePaths)
+          } catch {
+            Task {
+              await errorReporter.reportError(
+                error, context: "Error during cache pruning (sample-buffer poll)", level: .warning)
+            }
+          }
+        }
+      } catch is CancellationError {
+        return
+      } catch {
+        Task {
+          await errorReporter.reportError(
+            error, context: "Failed to poll schedule (sample-buffer)", level: .error)
+        }
+      }
+      do {
+        try await Task.sleep(nanoseconds: schedulePollingInterval)
+      } catch {
+        return
+      }
+    }
+  }
+
+  private func teardownSampleBufferPlayback() {
+    sampleBufferController?.stop()
+    sampleBufferController = nil
   }
 
   // Internal for testability. Kept consistent with `shouldSkipRetry`: a
@@ -821,6 +991,9 @@ final public class PlayolaStationPlayer: ObservableObject {
     // Supersede any in-flight play()/scheduling work so it can't publish state
     // after we go idle.
     playGeneration += 1
+
+    // Phase 5: tear down the sample-buffer pipeline if it was active (no-op for the legacy path).
+    teardownSampleBufferPlayback()
 
     // Log current state before stopping
     os_log(
@@ -892,6 +1065,8 @@ final public class PlayolaStationPlayer: ObservableObject {
     isSuspended = true
     schedulingTask?.cancel()
     schedulingTask = nil
+    // Phase 5: tear down the sample-buffer pipeline if it was active (no-op for the legacy path).
+    teardownSampleBufferPlayback()
     for player in _spinPlayers { player.stop() }
     for (_, downloadId) in activeDownloadIds {
       _ = fileDownloadManager.cancelDownload(id: downloadId)
@@ -929,10 +1104,13 @@ final public class PlayolaStationPlayer: ObservableObject {
     // restartEngine() before play(): after an interruption the engine may be in
     // a stopped-but-stale CoreAudio state; play()'s lazy engine start does not
     // re-prepare a torn-down graph. restartEngine() (stop+prepare+start) is
-    // idempotent when healthy.
+    // idempotent when healthy. The sample-buffer backend uses no AVAudioEngine, so
+    // skip it there — an unrelated engine failure must not block a sample-buffer resume.
     let generation = playGeneration
     do {
-      try await mainMixer.restartEngine()
+      if renderBackend == .legacyEngine {
+        try await mainMixer.restartEngine()
+      }
     } catch {
       // Mirror play()'s error path so a host observing $state isn't left on a
       // stale .paused with no working resume — but only if a host stop()/play()

@@ -1,0 +1,212 @@
+import AVFoundation
+import CoreMedia
+import Foundation
+
+/// Authors a `CMSampleBuffer` from a `RenderBuffer` (interleaved stereo float32 PCM on the station
+/// timeline). Specifies the exact ASBD, format description, block-buffer backing, and sample timing the
+/// `AVSampleBufferAudioRenderer` requires (PHASE_5_PLAN §12/C12). Pure with respect to the render sink,
+/// so it is unit-testable on macOS without a device.
+enum SampleBufferAuthoring {
+  private static let bytesPerFrame = 8  // 2 channels * 4 bytes (float32), interleaved
+
+  private static func makeFormatDescription(sampleRate: Double) -> CMAudioFormatDescription? {
+    var asbd = AudioStreamBasicDescription(
+      mSampleRate: sampleRate,
+      mFormatID: kAudioFormatLinearPCM,
+      mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+      mBytesPerPacket: UInt32(bytesPerFrame),
+      mFramesPerPacket: 1,
+      mBytesPerFrame: UInt32(bytesPerFrame),
+      mChannelsPerFrame: 2,
+      mBitsPerChannel: 32,
+      mReserved: 0)
+
+    var formatDescription: CMAudioFormatDescription?
+    guard
+      CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault, asbd: &asbd, layoutSize: 0, layout: nil,
+        magicCookieSize: 0, magicCookie: nil, extensions: nil,
+        formatDescriptionOut: &formatDescription) == noErr
+    else { return nil }
+    return formatDescription
+  }
+
+  private static func makeBlockBuffer(from buffer: RenderBuffer, dataByteSize: Int)
+    -> CMBlockBuffer?
+  {
+    var blockBuffer: CMBlockBuffer?
+    guard
+      CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: dataByteSize,
+        blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0,
+        dataLength: dataByteSize, flags: kCMBlockBufferAssureMemoryNowFlag,
+        blockBufferOut: &blockBuffer) == kCMBlockBufferNoErr,
+      let blockBuffer
+    else { return nil }
+
+    let copyStatus = buffer.frames.withUnsafeBytes { raw -> OSStatus in
+      guard let base = raw.baseAddress else { return -1 }
+      return CMBlockBufferReplaceDataBytes(
+        with: base, blockBuffer: blockBuffer, offsetIntoDestination: 0, dataLength: dataByteSize)
+    }
+    guard copyStatus == kCMBlockBufferNoErr else { return nil }
+    return blockBuffer
+  }
+
+  static func makeSampleBuffer(from buffer: RenderBuffer) -> CMSampleBuffer? {
+    let frameCount = buffer.frameCount
+    guard frameCount > 0 else { return nil }
+
+    guard let formatDescription = makeFormatDescription(sampleRate: buffer.sampleRate) else {
+      return nil
+    }
+
+    let dataByteSize = frameCount * bytesPerFrame
+    guard let blockBuffer = makeBlockBuffer(from: buffer, dataByteSize: dataByteSize) else {
+      return nil
+    }
+
+    var timing = CMSampleTimingInfo(
+      duration: CMTime(value: 1, timescale: Int32(buffer.sampleRate)),
+      presentationTimeStamp: buffer.presentationTimeStamp,
+      decodeTimeStamp: .invalid)
+    var sampleSize = bytesPerFrame
+
+    var sampleBuffer: CMSampleBuffer?
+    guard
+      CMSampleBufferCreate(
+        allocator: kCFAllocatorDefault, dataBuffer: blockBuffer, dataReady: true,
+        makeDataReadyCallback: nil, refcon: nil, formatDescription: formatDescription,
+        sampleCount: frameCount, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+        sampleSizeEntryCount: 1, sampleSizeArray: &sampleSize,
+        sampleBufferOut: &sampleBuffer) == noErr
+    else { return nil }
+
+    return sampleBuffer
+  }
+}
+
+/// Live `RenderSynchronizing` + `SampleBufferRendering` over one `AVSampleBufferRenderSynchronizer` and
+/// one `AVSampleBufferAudioRenderer`. The SDK owns the media stack here but NOT the `AVAudioSession`
+/// (host-owned — that is exactly what lets this route AirPlay-2 long-form). Device-verified separately.
+final class LiveSampleBufferSink {
+  let synchronizer = AVSampleBufferRenderSynchronizer()
+  let renderer = AVSampleBufferAudioRenderer()
+
+  /// Invoked when the renderer auto-flushes on a route change
+  /// (`AVSampleBufferAudioRendererWasFlushedAutomatically`). The owner wires this to
+  /// `SampleBufferStationRenderer.recoverAfterAutoFlush()` — the device-proven pause-refill-resume
+  /// recovery (PHASE_5_PLAN §13). Without it the stream goes silent after an AirPlay route switch.
+  var onAutoFlush: (@Sendable () -> Void)?
+
+  /// Invoked when the renderer's status flips to `.failed` (e.g. terminal route loss). Every enqueue
+  /// after that is a silent no-op, so the owner must surface it (`State.error`) instead of staying in
+  /// a silent `.playing` forever (PHASE_5_PLAN §12 C13).
+  var onRendererFailed: (@Sendable (Error?) -> Void)?
+
+  private var flushObserver: (any NSObjectProtocol)?
+  private var statusObserver: NSKeyValueObservation?
+
+  init() {
+    synchronizer.addRenderer(renderer)
+    sampleBufferLog.info("sink created")
+
+    // Observe the renderer's status — a route change can silently drive it to .failed, after which every
+    // enqueue is a no-op (silent playback failure). Logging it is the first thing we need to see.
+    statusObserver = renderer.observe(\.status, options: [.new]) { [weak self] renderer, _ in
+      switch renderer.status {
+      case .failed:
+        sampleBufferLog.error(
+          "renderer status=FAILED error=\(String(describing: renderer.error), privacy: .public)")
+        self?.onRendererFailed?(renderer.error)
+      case .rendering:
+        sampleBufferLog.info("renderer status=rendering")
+      case .unknown:
+        sampleBufferLog.info("renderer status=unknown")
+      @unknown default:
+        sampleBufferLog.info("renderer status=@unknown(\(renderer.status.rawValue))")
+      }
+    }
+
+    flushObserver = NotificationCenter.default.addObserver(
+      forName: .AVSampleBufferAudioRendererWasFlushedAutomatically,
+      object: renderer, queue: nil
+    ) { [weak self] _ in
+      guard let self else { return }
+      sampleBufferLog.notice(
+        """
+        AUTO-FLUSH (route change): status=\(self.renderer.status.rawValue) \
+        rate=\(self.synchronizer.rate) ready=\(self.renderer.isReadyForMoreMediaData) \
+        syncTime=\(CMTimeGetSeconds(self.synchronizer.currentTime()))
+        """
+      )
+      self.onAutoFlush?()
+    }
+  }
+
+  deinit {
+    if let flushObserver { NotificationCenter.default.removeObserver(flushObserver) }
+    statusObserver?.invalidate()
+  }
+}
+
+final class LiveRenderSynchronizer: RenderSynchronizing {
+  private let synchronizer: AVSampleBufferRenderSynchronizer
+
+  init(_ synchronizer: AVSampleBufferRenderSynchronizer) {
+    self.synchronizer = synchronizer
+  }
+
+  var currentTime: CMTime { synchronizer.currentTime() }
+  var rate: Float { synchronizer.rate }
+
+  func setRate(_ rate: Float, time: CMTime) {
+    synchronizer.setRate(rate, time: time)
+  }
+
+  func addBoundaryObserver(
+    forTimes times: [CMTime], _ block: @escaping @Sendable () -> Void
+  ) -> Any {
+    synchronizer.addBoundaryTimeObserver(
+      forTimes: times.map { NSValue(time: $0) }, queue: nil, using: block)
+  }
+
+  func removeObserver(_ token: Any) {
+    synchronizer.removeTimeObserver(token)
+  }
+}
+
+final class LiveSampleBufferRenderer: SampleBufferRendering {
+  private let renderer: AVSampleBufferAudioRenderer
+
+  init(_ renderer: AVSampleBufferAudioRenderer) {
+    self.renderer = renderer
+  }
+
+  var isReadyForMoreMediaData: Bool { renderer.isReadyForMoreMediaData }
+
+  func enqueue(_ buffer: RenderBuffer) {
+    guard let sampleBuffer = SampleBufferAuthoring.makeSampleBuffer(from: buffer) else {
+      // CMSampleBuffer authoring failure (allocation). The fill loop deliberately advances anyway —
+      // never stall the station (§4.4) — so this range renders as a logged gap, not a freeze.
+      sampleBufferLog.error(
+        "enqueue: sample-buffer authoring failed at frame \(buffer.startFrame) — range skipped")
+      return
+    }
+    renderer.enqueue(sampleBuffer)
+  }
+
+  func flush() {
+    renderer.flush()
+  }
+
+  func requestMediaDataWhenReady(
+    on queue: DispatchQueue, using block: @escaping @Sendable () -> Void
+  ) {
+    renderer.requestMediaDataWhenReady(on: queue, using: block)
+  }
+
+  func stopRequestingMediaData() {
+    renderer.stopRequestingMediaData()
+  }
+}

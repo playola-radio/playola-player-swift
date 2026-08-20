@@ -5,7 +5,46 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
 minor version.
 
-## Unreleased
+## 0.21.0-beta.2
+
+Pre-release for the Phase 5 render path. The new backend is **dormant by
+default** — apps that don't opt in get the exact same runtime behavior as
+0.20.x. Merging/pinning this version does not change what listeners hear;
+flipping the backend on is a separate, server-flagged app-side step gated on
+the device QA matrix.
+
+### Added
+
+- **Sample-buffer render backend (AirPlay-2 long-form), opt-in.** A second
+  render path built on a custom software `TimelineMixer` feeding one
+  `AVSampleBufferAudioRenderer` + `AVSampleBufferRenderSynchronizer`, so a
+  Playola station routes as AirPlay-2 **long-form** audio (HomePod / Apple TV /
+  Sonos multi-room) — something the `AVAudioEngine` path cannot do. Selected
+  via the new `renderBackend:` parameter on `configure(...)` (or the
+  `setRenderBackend(_:)` helper): defaults to `.legacyEngine` and locks at the
+  first `play()`, so the proven engine path remains the byte-for-byte runtime
+  default. Scheduling, downloads, generation supersession, and the outward
+  `State`/delegate contract are unchanged — only the render sink is new.
+  Highlights of the new path:
+  - Wall-clock → PTS timeline mapping with boundary re-anchoring, so audio
+    stays in sync with the schedule over long sessions (no cumulative drift).
+  - Concurrent ducked mixing (voicetrack over song) driven by the same
+    `Spin.volumeAt*` fade truth as the legacy path, reproducing the legacy
+    ~1.5s ramps.
+  - Decode/IO-free, allocation-light render hot path: per-spin
+    `SpinBufferSource`s pre-decode into bounded PCM ring buffers; the mixer
+    only sums ready PCM. A source that isn't ready contributes silence — one
+    slow download can never stall the station.
+  - Mid-file join, route-change recovery (pause → refill → resume, verified on
+    hardware against real ~2s AirPlay latency), and host-fed output-latency
+    compensation for cross-device simultaneity
+    (`outputLatencyCompensation`) — the SDK still touches `AVAudioSession`
+    **nowhere** (the seam-invariant test now also covers the new files).
+- **`PlayolaRenderBackend`** public enum (`.legacyEngine` / `.sampleBuffer`)
+  and **`isRenderBackendLocked`** for QA UIs.
+- **`setRenderBackend(_:)`** for selecting the backend without calling
+  `configure(...)`, and **`outputLatencyCompensation`** for host-fed
+  output-latency compensation on the `.sampleBuffer` backend.
 
 ### Fixed
 
