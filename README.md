@@ -648,8 +648,10 @@ try await player.play(stationId: stationId)
 
 Contract and limitation (as of 0.21.0-beta.2):
 
-- The value is **read at `play()`** and baked into the render timeline. Update
-  it before each `play()` call.
+- The value is **read once per `play()`, when the playback pipeline starts**
+  (after the schedule loads, just before audio begins) and baked into the
+  render timeline. Set it before calling `play()`; changing it during playback
+  has no effect until the next `play()`.
 - **Fixed-route only.** If the route changes mid-session (e.g. the listener
   moves playback from the phone speaker to an AirPlay target), playback
   recovers automatically, but the compensation still reflects the old route —

@@ -19,11 +19,12 @@ flipping the backend on is a separate, server-flagged app-side step.
   memory over a long session). **HomePod and Sonos are expected-compatible but
   unverified** — they speak the same AirPlay-2 long-form protocol, but no
   hardware pass has been run against them yet.
-- **Fixed-route only.** Output-latency compensation is read at `play()`. A
-  device that switches routes mid-session (e.g. local speaker → AirPlay,
-  ~18 ms → ~2000 ms) recovers playback but is mis-compensated by the latency
-  delta until the next `play()`. Live route-switch re-sync (and with it any
-  broader multi-room simultaneity claim) is deferred to `0.21.0-beta.3`.
+- **Fixed-route only.** Output-latency compensation is read once per `play()`,
+  when the playback pipeline starts. A device that switches routes mid-session
+  (e.g. local speaker → AirPlay, ~18 ms → ~2000 ms) recovers playback but is
+  mis-compensated by the latency delta until the next `play()`. Live
+  route-switch re-sync (and with it any broader multi-room simultaneity claim)
+  is deferred to `0.21.0-beta.3`.
 
 ### Added
 
@@ -51,8 +52,8 @@ flipping the backend on is a separate, server-flagged app-side step.
   - Mid-file join, route-change recovery (pause → refill → resume, verified on
     hardware against real ~2s AirPlay latency), and host-fed output-latency
     compensation for cross-device simultaneity at play start
-    (`outputLatencyCompensation`, read at `play()` — see the fixed-route note
-    above) — the SDK still touches `AVAudioSession` **nowhere** (the
+    (`outputLatencyCompensation`, read once per `play()` at pipeline start —
+    see the fixed-route note above) — the SDK still touches `AVAudioSession` **nowhere** (the
     seam-invariant test now also covers the new files).
 - **`PlayolaRenderBackend`** public enum (`.legacyEngine` / `.sampleBuffer`)
   and **`isRenderBackendLocked`** for QA UIs.
