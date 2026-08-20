@@ -242,6 +242,9 @@ final class SampleBufferPlaybackController {
       let localUrl = try await fileDownloadManager.downloadFileAsync(
         remoteUrl: remoteUrl, progressHandler: nil)
       if Task.isCancelled { return }
+      // A download that lands after the spin was stopped/pruned must NOT re-register a stale path or
+      // prepare a source the renderer no longer knows about.
+      guard !isStopped, activeSpins[spin.id] != nil else { return }
       localFilePaths[spin.id] = localUrl.path
       pump.prepare(spin: spin, fileURL: localUrl, startFrame: startFrame, initialOffset: offset)
     } catch {
@@ -272,7 +275,14 @@ final class SampleBufferPlaybackController {
     let cutoff = Date().addingTimeInterval(-8)  // generous grace past playback/AirPlay latency
     let ended = Set(activeSpins.filter { $0.value.endtime < cutoff }.keys)
     guard !ended.isEmpty else { return }
-    for id in ended { activeSpins[id] = nil }
+    for id in ended {
+      activeSpins[id] = nil
+      // Drop the download task + cached path too, or `activeLocalFilePaths` keeps excluding every
+      // finished file from cache pruning for the whole session (the retained-cache leak).
+      downloadTasks[id]?.cancel()
+      downloadTasks[id] = nil
+      localFilePaths[id] = nil
+    }
     renderer.removeSpins(ended)
     pump.removeSources(ended)
     sampleBufferLog.info("pruned \(ended.count) ended spins (active=\(self.activeSpins.count))")

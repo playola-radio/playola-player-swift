@@ -25,9 +25,13 @@ final class FakeSampleBufferRenderer: SampleBufferRendering, @unchecked Sendable
   private(set) var stopRequestCount = 0
   var isReadyForMoreMediaData = true
   private var requestBlock: (@Sendable () -> Void)?
+  /// Test hook fired on every `enqueue` — lets a test inject a concurrent event (e.g. `halt()`)
+  /// mid-refill, deterministically.
+  var onEnqueue: (() -> Void)?
 
   func enqueue(_ buffer: RenderBuffer) {
     enqueued.append(buffer)
+    onEnqueue?()
   }
 
   func flush() {

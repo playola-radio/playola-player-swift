@@ -248,6 +248,48 @@ struct SampleBufferStationRendererTests {
     #expect(resume.map { CMTimeGetSeconds($0.time) } == 2.0)  // resume at the current time
   }
 
+  @Test("halt during a recovery refill wins: the timebase stays frozen, not resumed")
+  func haltDuringRecoveryKeepsTimebaseFrozen() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
+    renderer.start()
+    sink.pump()
+
+    // Simulate halt() landing after recovery's initial fence check but before its resume: fire it from
+    // inside the refill's first enqueue (once), exactly the interleaving the lock must serialize.
+    var didHalt = false
+    sink.onEnqueue = {
+      if !didHalt {
+        didHalt = true
+        renderer.halt()
+      }
+    }
+
+    sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
+    renderer.recoverAfterAutoFlush()
+
+    #expect(didHalt)
+    // halt() froze the timebase; recovery must NOT have un-frozen it with a trailing setRate(1.0).
+    #expect(sync.rate == 0)
+    #expect(sync.setRateCalls.last?.rate == 0)
+  }
+
+  @Test("start after a halt does not un-freeze the timebase")
+  func startAfterHaltStaysFrozen() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 0))])
+
+    renderer.halt()  // deliberate freeze (teardown-before-replacement)
+    renderer.start()  // a late/queued start must not resume the frozen timebase
+
+    #expect(sync.rate == 0)
+    #expect(sync.setRateCalls.last?.rate == 0)
+  }
+
   @Test("stop tears down: no further boundary publishes, sink stopped and flushed")
   func stopTearsDown() {
     let sync = FakeRenderSynchronizer()

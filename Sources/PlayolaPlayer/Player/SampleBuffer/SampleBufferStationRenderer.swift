@@ -156,7 +156,13 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     control.execute { [self] in
       guard !stopped else { return }
       sampleBufferLog.info("start: anchor timebase at frame=\(self.nextOutputFrame)")
-      synchronizer.setRate(1.0, time: cmTime(nextOutputFrame))
+      // Respect the halt fence under the same lock halt() freezes with: a synchronous halt() that
+      // landed after this block was queued has deliberately frozen the timebase, so this queued start
+      // must not race its setRate(0) and un-freeze it.
+      halted.withLock { isHalted in
+        guard !isHalted else { return }
+        synchronizer.setRate(1.0, time: cmTime(nextOutputFrame))
+      }
     }
     renderer.requestMediaDataWhenReady(on: requestQueue) { [weak self] in
       self?.fill()  // runs on requestQueue == control domain
@@ -172,9 +178,14 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// NOW, so a re-play starting a fresh sink cannot briefly overlap this one's audio. Safe to call from
   /// any thread (the underlying CoreMedia calls are); the ordered cleanup still runs via `stop()`.
   func halt() {
-    halted.withLock { $0 = true }
     renderer.stopRequestingMediaData()
-    synchronizer.setRate(0, time: synchronizer.currentTime)
+    // Flip the fence AND freeze the timebase under one lock, so a concurrent
+    // `recoverAfterAutoFlush` can't slip its resuming setRate(1.0) between the two and un-freeze a
+    // deliberately-halted synchronizer.
+    halted.withLock { isHalted in
+      isHalted = true
+      synchronizer.setRate(0, time: synchronizer.currentTime)
+    }
   }
 
   /// Synchronously-visible halt fence: `stopped` only flips inside the queued `stop()` closure, so a
@@ -210,8 +221,19 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
       let playhead = playheadFrame()
       nextOutputFrame = playhead  // never backfill (§4.4); refill from where the timebase actually is
       fillLocked()
-      if synchronizer.rate != 1.0 {
-        synchronizer.setRate(1.0, time: synchronizer.currentTime)
+      // Re-check the fence and resume under the SAME lock halt() holds while it freezes, so a halt()
+      // landing after the guard above (during the refill) wins: it leaves the timebase at rate 0
+      // instead of this resume racing its setRate(0) and un-freezing it.
+      let resumed = halted.withLock { isHalted -> Bool in
+        guard !isHalted else { return false }
+        if synchronizer.rate != 1.0 {
+          synchronizer.setRate(1.0, time: synchronizer.currentTime)
+        }
+        return true
+      }
+      guard resumed else {
+        sampleBufferLog.notice("recover: aborted — halted during refill")
+        return
       }
       sampleBufferLog.notice(
         "recover: re-anchored to \(playhead), refilled \(self.nextOutputFrame - playhead) ahead")
