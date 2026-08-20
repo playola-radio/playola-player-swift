@@ -50,6 +50,9 @@ struct ContentView: View {
   @State private var showingScheduleViewer = false
   /// Phase 5 QA: choose the SDK render backend before the first play(). Locks on play; relaunch to switch.
   @State private var useSampleBufferRenderer = false
+  /// Phase 5 QA readout: this route's output latency and name, for the two-device sync rows.
+  @State private var routeOutputLatency: TimeInterval = 0
+  @State private var routeName: String = "—"
   @State private var selectedStationId: String = "9d79fd38-1940-4312-8fe8-3b9b50d49c6c"
 
   var body: some View {
@@ -258,6 +261,18 @@ struct ContentView: View {
           .tint(.blue)
           .disabled(player.isRenderBackendLocked)
           .padding(.horizontal)
+
+          // Phase 5 QA readout: active backend + current route latency (feeds the sync matrix).
+          VStack(alignment: .leading, spacing: 2) {
+            Text(
+              "Backend: \(useSampleBufferRenderer ? "sampleBuffer" : "legacyEngine")"
+                + (player.isRenderBackendLocked ? " (locked)" : " (pending)"))
+            Text("Route: \(routeName) — outputLatency: \(Int(routeOutputLatency * 1000)) ms")
+          }
+          .font(.caption2.monospaced())
+          .foregroundColor(.white.opacity(0.7))
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal)
         }
 
         Spacer()
@@ -269,6 +284,18 @@ struct ContentView: View {
     .sheet(isPresented: $showingScheduleViewer) {
       ScheduleViewer(selectedStationId: selectedStationId)
     }
+    .onAppear { refreshRouteReadout() }
+    .onReceive(
+      NotificationCenter.default
+        .publisher(for: AVAudioSession.routeChangeNotification)
+        .receive(on: RunLoop.main)
+    ) { _ in refreshRouteReadout() }
+  }
+
+  private func refreshRouteReadout() {
+    let session = AVAudioSession.sharedInstance()
+    routeOutputLatency = session.outputLatency
+    routeName = session.currentRoute.outputs.map(\.portName).joined(separator: ", ")
   }
 
   func playOrPause() {
