@@ -12,9 +12,11 @@ AVSampleBufferAudioRenderer + AVSampleBufferRenderSynchronizer).
 
 1. **Open the example app on a real device** (simulators can't AirPlay):
    - Open `PlayolaPlayerExample/PlayolaPlayerExample.xcodeproj` in Xcode.
-   - The local-package path in `project.pbxproj` has ALREADY been tweaked in this worktree to
-     `relativePath = ..` (uncommitted — do NOT commit it; the committed value only resolves when
-     the repo folder is literally named `PlayolaPlayer`).
+   - **Local-package path check:** the committed `project.pbxproj` references the SDK at
+     `relativePath = ../../PlayolaPlayer`, which only resolves when the repo folder is
+     literally named `PlayolaPlayer`. If your checkout has a different folder name (e.g. a
+     Conductor worktree), temporarily edit the `XCLocalSwiftPackageReference` to
+     `relativePath = ..` — and do NOT commit that edit.
    - Sign in to the dev account in Xcode ▸ Settings ▸ Accounts if prompted (CLI signing was
      unavailable; GUI signing is required), select your iPhone, unlock it, Run.
 2. **Console logging** — on the Mac, either Console.app filtered to subsystem
@@ -55,15 +57,22 @@ changelog wording must carry this scoping.
 | # | Row | How | Pass criteria | Result (Apple TV) |
 |---|-----|-----|---------------|-------------------|
 | A1 | Long-form routes, no -50 | Toggle sample-buffer → play → AirPlay-pick the Apple TV | Plays continuously; NO `-50`/session error in Console; keeps playing with screen LOCKED / app backgrounded | ✅ PASS (2026-08-20) — latency comp engaged (`outputLatency=2.0s -> startFrame=96000`), `renderer status=rendering`, no `-50`/errors, survived lock + background |
-| A2 | Two-device simultaneity | Same station on two devices, fixed routes from start (e.g. iPhone local + iPhone→Apple TV, or vs a Mac running the example app) | Perceptually in sync, no worse than legacy baseline | ✅ PASS (2026-08-20) |
+| A2 | Two-device simultaneity | Same station on two devices, fixed routes from start (e.g. iPhone local + iPhone→Apple TV, or vs a Mac running the example app) | Perceptually in sync, no worse than legacy baseline | ✅ PASS (2026-08-20) — perceptual judgment by the operator; per-run details (second device, route pair, offset estimate) and the legacy baseline were not captured contemporaneously, so this row is not independently auditable. Re-run WITH captured detail in the Stage 4 two-device session, whose instrumentation (needed to verify FU-2 anyway) will make sync measurable rather than perceptual. |
 | A3 | Gapless boundaries | Listen across ≥3 song→voicetrack→song transitions on the Apple TV route | No click/gap/overlap vs `endOfMessageMS`; sounds like legacy | ✅ PASS (2026-08-20) — `boundary: spin … started` events observed at transitions |
 | A4 | Interruption recovery | Trigger a call / Siri / alarm mid-playback on the Apple TV route, then end it | Resumes (pause→refill→resume), back in sync, no permanent silence | ✅ PASS (2026-08-20) |
-| A5 | Memory bounded (also validates Stage 0) | 30+ min session, watch Xcode memory graph under cache pressure | Memory plateaus; no unbounded growth / jetsam; no active-file prune dropout | ✅ PASS (2026-08-20) — validates Stage 0 pruneCache fix in the field |
+| A5 | Memory bounded (also validates Stage 0) | 30+ min session, watch Xcode memory graph under cache pressure | Memory plateaus; no unbounded growth / jetsam; no active-file prune dropout | ✅ PASS at reduced coverage (2026-08-20) — passed this runbook's 30+ min criterion on the Apple TV route. NOTE: the stage plan's original bar was stricter (≥2 h, one local + one AirPlay run, oldest supported device class); that fuller soak was NOT run for beta.2. Residual durability risk is accepted for an opt-in, server-flagged beta and carried forward: run the ≥2 h dual-route soak during the app-side beta soak / Stage 4 device session before any GA claim. Stage 0's exclusion fix is unit-tested; this run adds field evidence at 30-min scale only. |
 
 **MATRIX RESULT: Class A green on Apple TV (all 5 rows), B1 quantified (≈1983 ms). Stage 1
 COMPLETE under the Apple TV scoping. Gate for `0.21.0-beta.2` is OPEN.** QA'd SDK SHA:
 `929c2b4` (develop tip; working tree carried only the example-app pbxproj path tweak,
 which is not SDK code).
+
+**Evidence caveats carried forward (do before any GA / non-beta claim):**
+- A5 passed at 30-min scale only — the ≥2 h dual-route (local + AirPlay) soak from the
+  stage plan is still owed (app-side beta soak or Stage 4 device session).
+- A2 is a perceptual pass without captured per-run detail — re-run measurably in the
+  Stage 4 two-device session (its FU-2 instrumentation makes sync quantifiable).
+- Legacy-baseline table below was not filled contemporaneously.
 
 Legacy baselines (fill in first):
 

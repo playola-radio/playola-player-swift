@@ -118,9 +118,12 @@ available — Class A runs on Apple TV only; beta.2 ships as "device-verified on
 HomePod/Sonos expected-compatible but unverified"; Sonos hardware verification moves to
 the Stage 4 multi-room session. Stage 3 changelog must carry this scoping.**
 **COMPLETE (2026-08-20): A1–A5 all PASS on Apple TV** (latency comp engaged, no `-50`,
-survived lock/background, boundaries gapless, interruption recovered, memory bounded —
-A5 field-validates Stage 0). B1 drift ≈ 1983 ms banked for Stage 4. QA'd SDK SHA: `929c2b4`.
-Gate 1 device requirement satisfied under Apple TV scoping.
+survived lock/background, boundaries gapless, interruption recovered, memory bounded).
+B1 drift ≈ 1983 ms banked for Stage 4. QA'd SDK SHA: `929c2b4`. Gate 1 device requirement
+satisfied under Apple TV scoping. **Evidence caveats (PR #110 review, carried to Stage 4 /
+pre-GA):** A5 ran at 30-min scale, not this stage's original ≥2 h dual-route soak — owed
+before GA; A2 was a perceptual pass without captured detail — re-run measurably with
+Stage 4's FU-2 instrumentation. See `PHASE_5_QA_MATRIX.md`.
 Signing note: CLI signing unavailable — run from Xcode GUI (Settings ▸ Accounts), phone
 unlocked; ignore the editor-only "No such module 'PlayolaPlayer'" diagnostic.
 
