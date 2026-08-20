@@ -922,7 +922,7 @@ final public class PlayolaStationPlayer: ObservableObject {
         // prune (active files excluded so an in-use spin can't be evicted).
         if let controller = sampleBufferController {
           do {
-            try fileDownloadManager.pruneCache(
+            try await fileDownloadManager.pruneCache(
               maxSize: nil, excludeFilepaths: controller.activeLocalFilePaths)
           } catch {
             Task {
@@ -1206,7 +1206,7 @@ extension PlayolaStationPlayer: SpinPlayerDelegate {
           .compactMap { $0.localUrl?.path }
 
         // Use the new pruning method with proper error handling
-        try self.fileDownloadManager.pruneCache(maxSize: nil, excludeFilepaths: activePaths)
+        try await self.fileDownloadManager.pruneCache(maxSize: nil, excludeFilepaths: activePaths)
       } catch {
         Task {
           await errorReporter.reportError(
