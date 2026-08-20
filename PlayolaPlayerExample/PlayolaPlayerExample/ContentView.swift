@@ -9,6 +9,18 @@ import AVFoundation
 import PlayolaPlayer
 import SwiftUI
 
+// Phase 5 QA: every play path must run this before play() — otherwise the first play
+// locks the default backend regardless of the toggle, and the QA readout reports the
+// wrong backend.
+extension PlayolaStationPlayer {
+  func prepareForPlay(useSampleBufferRenderer: Bool) {
+    setRenderBackend(useSampleBufferRenderer ? .sampleBuffer : .legacyEngine)
+    // Feed this device's current-route output latency so multiple devices play in sync
+    // (local ~18ms, AirPlay ~2s). Host reads it; the SDK doesn't touch AVAudioSession.
+    outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
+  }
+}
+
 // Main thread responsiveness monitor
 class MainThreadMonitor: ObservableObject {
   @Published var isResponsive = true
@@ -279,10 +291,14 @@ struct ContentView: View {
       }
     }
     .sheet(isPresented: $showingStationPicker) {
-      StationPickerView(selectedStationId: $selectedStationId)
+      StationPickerView(
+        selectedStationId: $selectedStationId,
+        useSampleBufferRenderer: useSampleBufferRenderer)
     }
     .sheet(isPresented: $showingScheduleViewer) {
-      ScheduleViewer(selectedStationId: selectedStationId)
+      ScheduleViewer(
+        selectedStationId: selectedStationId,
+        useSampleBufferRenderer: useSampleBufferRenderer)
     }
     .onAppear { refreshRouteReadout() }
     .onReceive(
@@ -311,11 +327,7 @@ struct ContentView: View {
         // Start (or retry after a failed start / resume after a pause —
         // play() re-fetches the schedule and re-syncs to now)
         do {
-          // Phase 5 QA: select the render backend before the first play() (no-op once locked).
-          player.setRenderBackend(useSampleBufferRenderer ? .sampleBuffer : .legacyEngine)
-          // Feed this device's current-route output latency so multiple devices play in sync
-          // (local ~18ms, AirPlay ~2s). Host reads it; the SDK doesn't touch AVAudioSession.
-          player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
+          player.prepareForPlay(useSampleBufferRenderer: useSampleBufferRenderer)
           try await player.play(stationId: selectedStationId)
         } catch {
           // Handle errors gracefully (including cancellation during loading).
@@ -335,9 +347,7 @@ struct ContentView: View {
       let atDate = Date().addingTimeInterval(offsetSeconds)
 
       do {
-        player.setRenderBackend(useSampleBufferRenderer ? .sampleBuffer : .legacyEngine)
-        // Match playOrPause(): compensate for this device's current-route output latency.
-        player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
+        player.prepareForPlay(useSampleBufferRenderer: useSampleBufferRenderer)
         try await player.play(
           stationId: selectedStationId,
           atDate: atDate
@@ -441,6 +451,7 @@ struct StationInfo: Codable, Identifiable {
 struct StationPickerView: View {
   @Environment(\.dismiss) var dismiss
   @Binding var selectedStationId: String
+  let useSampleBufferRenderer: Bool
   @State private var stations: [StationInfo] = []
   @State private var isLoading = true
   @State private var errorMessage: String?
@@ -472,6 +483,8 @@ struct StationPickerView: View {
                     // Use playolaID for playola stations
                     let stationId = station.playolaID ?? station.id
                     selectedStationId = stationId
+                    PlayolaStationPlayer.shared.prepareForPlay(
+                      useSampleBufferRenderer: useSampleBufferRenderer)
                     try await PlayolaStationPlayer.shared.play(stationId: stationId)
                   } catch {
                     print("Failed to start playback: \(error)")
