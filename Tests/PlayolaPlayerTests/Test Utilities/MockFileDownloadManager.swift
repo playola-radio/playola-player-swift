@@ -47,7 +47,10 @@ class MockFileDownloadManager: FileDownloadManaging {
   nonisolated func clearCache() throws {
   }
 
-  nonisolated func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) throws {
+  private(set) var pruneCacheInvocations: [(maxSize: Int64?, excludeFilepaths: [String])] = []
+
+  func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) async throws {
+    pruneCacheInvocations.append((maxSize, excludeFilepaths))
   }
 
   nonisolated func currentCacheSize() -> Int64 {

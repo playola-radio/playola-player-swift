@@ -641,8 +641,9 @@ let localURL = downloadManager.localURL(for: audioURL)
 // Clear entire cache
 try downloadManager.clearCache()
 
-// Prune cache with size limit
-try downloadManager.pruneCache(maxSize: 100 * 1024 * 1024, excludeFilepaths: [])
+// Prune cache with size limit (excluded files are never deleted, but still
+// count toward the total when deciding how much to prune)
+try await downloadManager.pruneCache(maxSize: 100 * 1024 * 1024, excludeFilepaths: [])
 
 // Check available disk space
 if let availableSpace = downloadManager.availableDiskSpace() {
@@ -1151,7 +1152,7 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     
     // Cache management
     public func clearCache() throws
-    public func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) throws
+    public func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) async throws
     public func currentCacheSize() -> Int64
     public func availableDiskSpace() -> Int64?
 }
