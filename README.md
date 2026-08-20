@@ -609,6 +609,54 @@ PlayolaStationPlayer.shared.$state
     .store(in: &cancellables)
 ```
 
+### Render backends (AirPlay-2 long-form, opt-in)
+
+The SDK has two render backends behind one unchanged public contract
+(`State`, delegate, scheduling, downloads are identical on both):
+
+- **`.legacyEngine`** (default) — the proven `AVAudioEngine` graph. Runtime
+  behavior is byte-for-byte what shipped in 0.20.x.
+- **`.sampleBuffer`** — a custom software mixer feeding one
+  `AVSampleBufferAudioRenderer` + `AVSampleBufferRenderSynchronizer`, which
+  lets a station route as AirPlay-2 **long-form** audio (grouped/multi-room
+  targets) — something the engine path cannot do.
+
+Select the backend **before the first `play()`**; it locks for the life of the
+process once playback starts (`isRenderBackendLocked`):
+
+```swift
+let player = PlayolaStationPlayer.shared
+player.setRenderBackend(.sampleBuffer)   // or configure(renderBackend: .sampleBuffer)
+```
+
+**Verification status (0.21.0-beta.2):** device-verified on Apple TV
+(fixed-route long-form routing, gapless boundaries, interruption recovery,
+bounded memory). HomePod and Sonos speak the same protocol and are
+expected-compatible but have not had a hardware pass yet.
+
+#### Output-latency compensation (host contract)
+
+The SDK never reads `AVAudioSession` — including `outputLatency`. If you want
+multiple devices playing the same station to start in sync (local speaker
+≈ 18 ms vs AirPlay ≈ 2000 ms of presentation latency), the **host feeds the
+current route's latency** before each `play()`:
+
+```swift
+player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
+try await player.play(stationId: stationId)
+```
+
+Contract and limitation (as of 0.21.0-beta.2):
+
+- The value is **read at `play()`** and baked into the render timeline. Update
+  it before each `play()` call.
+- **Fixed-route only.** If the route changes mid-session (e.g. the listener
+  moves playback from the phone speaker to an AirPlay target), playback
+  recovers automatically, but the compensation still reflects the old route —
+  the device is offset by the latency delta until the next `play()`. Live
+  route-switch re-sync is planned for `0.21.0-beta.3`.
+- On the `.legacyEngine` backend the value is unused.
+
 ### Migrating from 0.19.x to 0.20.0
 
 `0.20.0` makes the host the sole owner of the `AVAudioSession`. Earlier versions configured, activated, and self-handled interruptions for you. This is a breaking change; both steps are required.
