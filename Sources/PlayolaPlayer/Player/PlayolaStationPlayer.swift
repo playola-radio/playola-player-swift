@@ -884,6 +884,18 @@ final public class PlayolaStationPlayer: ObservableObject {
       guard let self, self.isCurrentGeneration(generation) else { return }
       self.state = .playing(firstSpin)
     }
+    // C13: a terminal renderer failure (status .failed) makes every enqueue a silent no-op — surface
+    // `.error` and tear the dead pipeline down instead of staying in a silent `.playing` forever.
+    controller.onRendererFailed = { [weak self] error in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      let stationError = StationPlayerError.playbackError(
+        "Sample-buffer renderer failed: \(error?.localizedDescription ?? "unknown")")
+      self.teardownSampleBufferPlayback()
+      self.schedulingTask?.cancel()
+      self.schedulingTask = nil
+      self.state = .error(stationError)
+      Task { await self.errorReporter.reportError(stationError, level: .error) }
+    }
     self.sampleBufferController = controller
 
     controller.start(with: sampleBufferSpins(from: currentSchedule))

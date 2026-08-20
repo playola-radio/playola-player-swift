@@ -58,6 +58,9 @@ final class FakeRenderSynchronizer: RenderSynchronizing, @unchecked Sendable {
 
   private var observers: [(times: [CMTime], block: @Sendable () -> Void)] = []
 
+  /// Every boundary time installed via `addBoundaryObserver` (flattened, in install order).
+  var installedBoundaryTimes: [CMTime] { observers.flatMap(\.times) }
+
   func setRate(_ rate: Float, time: CMTime) {
     setRateCalls.append((rate, time))
     self.rate = rate

@@ -44,6 +44,10 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// Shallow enqueue horizon (≈ read-ahead window) so re-anchor / recovery is a cheap flush+refill and
   /// dynamically-added spins beyond it are a clean append, not queued-tail surgery (§4.1/C2, §8.8).
   private let maxEnqueueAheadFrames: Int64
+  /// The timebase's latency-compensation head start (init `startFrame`): the synchronizer timeline runs
+  /// this far AHEAD of the acoustic timeline, so anything pinned to when audio is actually HEARD
+  /// (boundary observers → `.playing(spin)`) must be shifted by it.
+  private let timebaseLeadFrames: Int64
   private let requestQueue: DispatchQueue
   private let control: RenderControlExecutor
 
@@ -83,6 +87,7 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     self.renderer = renderer
     self.mixer = mixer
     self.nextOutputFrame = startFrame
+    self.timebaseLeadFrames = startFrame
     self.sampleRate = sampleRate
     self.framesPerBuffer = framesPerBuffer
     // Keep enough audio queued ahead to cover the AirPlay presentation pipeline (~2s) with margin, so a
@@ -287,7 +292,9 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   }
 
   private func installBoundaryObserver(for item: Scheduled) {
-    let time = cmTime(item.source.startFrame)
+    // Fire when the spin is HEARD, not when its frames are presented to the route: the timebase leads
+    // the speaker by `timebaseLeadFrames` (latency compensation), so observe on the renderer timeline.
+    let time = cmTime(item.source.startFrame + timebaseLeadFrames)
     let spin = item.spin
     let gen = generation
     let token = synchronizer.addBoundaryObserver(forTimes: [time]) { [weak self] in

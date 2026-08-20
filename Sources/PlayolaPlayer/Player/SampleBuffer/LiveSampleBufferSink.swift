@@ -83,6 +83,11 @@ final class LiveSampleBufferSink {
   /// recovery (PHASE_5_PLAN §13). Without it the stream goes silent after an AirPlay route switch.
   var onAutoFlush: (@Sendable () -> Void)?
 
+  /// Invoked when the renderer's status flips to `.failed` (e.g. terminal route loss). Every enqueue
+  /// after that is a silent no-op, so the owner must surface it (`State.error`) instead of staying in
+  /// a silent `.playing` forever (PHASE_5_PLAN §12 C13).
+  var onRendererFailed: (@Sendable (Error?) -> Void)?
+
   private var flushObserver: (any NSObjectProtocol)?
   private var statusObserver: NSKeyValueObservation?
 
@@ -92,11 +97,12 @@ final class LiveSampleBufferSink {
 
     // Observe the renderer's status — a route change can silently drive it to .failed, after which every
     // enqueue is a no-op (silent playback failure). Logging it is the first thing we need to see.
-    statusObserver = renderer.observe(\.status, options: [.new]) { renderer, _ in
+    statusObserver = renderer.observe(\.status, options: [.new]) { [weak self] renderer, _ in
       switch renderer.status {
       case .failed:
         sampleBufferLog.error(
           "renderer status=FAILED error=\(String(describing: renderer.error), privacy: .public)")
+        self?.onRendererFailed?(renderer.error)
       case .rendering:
         sampleBufferLog.info("renderer status=rendering")
       case .unknown:
@@ -160,7 +166,13 @@ final class LiveSampleBufferRenderer: SampleBufferRendering {
   var isReadyForMoreMediaData: Bool { renderer.isReadyForMoreMediaData }
 
   func enqueue(_ buffer: RenderBuffer) {
-    guard let sampleBuffer = SampleBufferAuthoring.makeSampleBuffer(from: buffer) else { return }
+    guard let sampleBuffer = SampleBufferAuthoring.makeSampleBuffer(from: buffer) else {
+      // CMSampleBuffer authoring failure (allocation). The fill loop deliberately advances anyway —
+      // never stall the station (§4.4) — so this range renders as a logged gap, not a freeze.
+      sampleBufferLog.error(
+        "enqueue: sample-buffer authoring failed at frame \(buffer.startFrame) — range skipped")
+      return
+    }
     renderer.enqueue(sampleBuffer)
   }
 

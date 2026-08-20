@@ -98,6 +98,21 @@ struct SampleBufferStationRendererTests {
     #expect(sink.enqueued.first?.startFrame == latencyFrames)  // authored from the shifted frame
   }
 
+  @Test("boundary observers install on the renderer timeline (source start + timebase lead)")
+  func boundaryObserversCompensateTimebaseLead() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let latencyFrames: Int64 = 96_000  // 2s @ 48k — the timebase's head start over the acoustic timeline
+    let renderer = makeRenderer(sync: sync, sink: sink, startFrame: latencyFrames)
+    renderer.setSchedule([.init(spin: Spin.mockWith(), source: stub(startFrame: 480_000))])
+
+    // The spin becomes AUDIBLE when the timebase (running latencyFrames ahead of the speaker) reaches
+    // startFrame + latencyFrames. Observing at bare startFrame would flip `.playing` ~2s early on AirPlay.
+    #expect(
+      sync.installedBoundaryTimes.map { CMTimeGetSeconds($0) }
+        == [Double(480_000 + latencyFrames) / sampleRate])
+  }
+
   @Test("a crossed boundary reports the spin start once")
   func boundaryReportsSpinStart() {
     let sync = FakeRenderSynchronizer()

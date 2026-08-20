@@ -48,6 +48,10 @@ final class SampleBufferPlaybackController {
   /// deadline elapsed). The owner flips state to `.playing` here rather than at `start(with:)`, so a slow
   /// first download shows `.loading`, not silent `.playing` (§4.4).
   var onPlaybackStarted: (() -> Void)?
+  /// Called (on the main actor) when the live renderer reports a terminal failure (status `.failed`).
+  /// Every enqueue after that is a no-op; the owner must surface `State.error` (C13), not stay
+  /// silently `.playing`.
+  var onRendererFailed: ((Error?) -> Void)?
 
   /// - Parameters:
   ///   - anchorDate: output frame 0 on the station timeline (normally `now`). Incoming spins already
@@ -104,8 +108,20 @@ final class SampleBufferPlaybackController {
     sink.onAutoFlush = { [weak renderer] in
       renderer?.recoverAfterAutoFlush()
     }
+    sink.onRendererFailed = { [weak self] error in
+      Task { @MainActor in self?.onRendererFailed?(error) }
+    }
     pump.onFirstData = { [weak self] in
       Task { @MainActor in self?.startRendererIfNeeded() }
+    }
+    // §4.4: a failed decode renders as silence and the station continues — but it must be REPORTED,
+    // not swallowed (a corrupt/unsupported file would otherwise be an invisible dead spin).
+    pump.onDecodeFailed = { [errorReporter] spinID, error in
+      Task {
+        await errorReporter.reportError(
+          error, context: "Sample-buffer decode failed for spin \(spinID); rendering silence",
+          level: .warning)
+      }
     }
   }
 
@@ -256,6 +272,10 @@ private final class DecodePump: @unchecked Sendable {
   /// Fired once, after the first source decodes some PCM — the controller uses it to start the renderer
   /// (avoids a silent startup hole). Set before any decode begins.
   var onFirstData: (@Sendable () -> Void)?
+  /// Fired at most once per spin when its decode fails (setup or incremental); the spin renders as
+  /// silence (§4.4) but the failure is surfaced instead of swallowed.
+  var onDecodeFailed: (@Sendable (_ spinID: String, _ error: Error) -> Void)?
+  private var reportedDecodeFailures: Set<String> = []  // queue-confined
 
   init(publish: @escaping @Sendable (SpinPCMWindow) -> Void) {
     self.publish = publish
@@ -276,6 +296,9 @@ private final class DecodePump: @unchecked Sendable {
         }
       } catch {
         // A failed decode contributes silence (the mixer renders nil frames); the station continues.
+        if reportedDecodeFailures.insert(spin.id).inserted {
+          onDecodeFailed?(spin.id, error)
+        }
       }
     }
   }
@@ -293,12 +316,15 @@ private final class DecodePump: @unchecked Sendable {
         req.scheduled = false
         return req.target
       }
-      for (_, source) in sources {
+      for (id, source) in sources {
         let target = through - source.startFrame
         guard target > source.decodedThroughOffset, !source.isFullyDecoded else { continue }
         do {
           try source.decode(throughSourceOffset: target)
         } catch {
+          if reportedDecodeFailures.insert(id).inserted {
+            onDecodeFailed?(id, error)
+          }
           continue
         }
         // Bound memory: drop already-presented audio well behind the decode target.
