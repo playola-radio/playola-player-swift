@@ -115,7 +115,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   /// Active sample-buffer playback (Phase 5). Non-nil only while the `.sampleBuffer` backend is playing;
   /// the legacy `.legacyEngine` path leaves this nil and uses `_spinPlayers` exactly as before.
-  private var sampleBufferController: SampleBufferPlaybackController?
+  /// Internal (not private) so tests can observe the live controller's callback lifecycle.
+  var sampleBufferController: SampleBufferPlaybackController?
 
   // Thread-safe access to spin players - all access must be on main actor
   private var _spinPlayers: [SpinPlayer] = []
@@ -800,6 +801,17 @@ final public class PlayolaStationPlayer: ObservableObject {
       guard generation == playGeneration else { return }
       self.currentSchedule = schedule
 
+      // Phase 5: the sample-buffer backend drives its own pipeline (download -> decode -> mixer ->
+      // AVSampleBufferAudioRenderer) instead of the legacy per-spin SpinPlayer graph. The wall-clock
+      // schedule fetch/poll above is shared; only the render sink differs. Legacy path is untouched.
+      // Dispatched BEFORE the legacy spin lookup below so the sample-buffer path derives its airing
+      // spin from exactly ONE clock-dependent `current()` call — a spin boundary crossing between two
+      // lookups could otherwise select a spin here and then find an empty list inside.
+      if renderBackend == .sampleBuffer {
+        try startSampleBufferBackend(generation: generation, stationId: stationId)
+        return
+      }
+
       guard
         let spinToPlay = currentSchedule?.current(offsetTimeInterval: scheduleOffset).first
       else {
@@ -819,14 +831,6 @@ final public class PlayolaStationPlayer: ObservableObject {
       os_log(
         "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info,
         stationId)
-
-      // Phase 5: the sample-buffer backend drives its own pipeline (download -> decode -> mixer ->
-      // AVSampleBufferAudioRenderer) instead of the legacy per-spin SpinPlayer graph. The wall-clock
-      // schedule fetch/poll above is shared; only the render sink differs. Legacy path is untouched.
-      if renderBackend == .sampleBuffer {
-        startSampleBufferPlayback(generation: generation, firstSpin: spinToPlay)
-        return
-      }
 
       // Schedule the first spin with progress shown
       try await scheduleSpin(spin: spinToPlay, generation: generation, showProgress: true)
@@ -849,6 +853,10 @@ final public class PlayolaStationPlayer: ObservableObject {
       // Emit a terminal error state so consumers can render a recoverable
       // error instead of being stuck in .loading. Cancellation is not an error.
       if !isCancellation(error) {
+        // This failed attempt already superseded any prior session (generation bumped in play()). If it
+        // was a station switch, tear the previous sample-buffer controller down so it can't keep
+        // rendering audio behind an `.error` state. No-op for the legacy backend / first-ever play().
+        teardownSampleBufferPlayback()
         let stationError =
           (error as? StationPlayerError) ?? .scheduleError(error.localizedDescription)
         self.state = .error(stationError)
@@ -866,12 +874,40 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
+  /// The `.sampleBuffer` dispatch out of `play()`: take a SINGLE schedule snapshot — the only
+  /// clock-dependent `current()` lookup on this path (`play()` dispatches here before its legacy spin
+  /// lookup) — pick the airing spin from it, validate it the way the legacy path does, and start the
+  /// render pipeline from that same snapshot. Computing the list exactly once closes the TOCTOU family
+  /// where a spin boundary crossing between two lookups selects/validates one spin while a later lookup
+  /// sees a different list (a different first spin, or none at all).
+  /// Throws (→ `.error`) if there is no current spin or the airing spin is malformed (nil `downloadUrl`).
+  private func startSampleBufferBackend(generation: Int, stationId: String) throws {
+    let spins = sampleBufferSpins(from: currentSchedule)
+    guard let airingSpin = spins.first else {
+      let error = StationPlayerError.scheduleError("No available spins to play")
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Sample-buffer schedule for station \(stationId) contains no current spins",
+          level: .error)
+      }
+      throw error
+    }
+    try validateSpinForScheduling(airingSpin)
+    os_log(
+      "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info,
+      stationId)
+    startSampleBufferPlayback(generation: generation, firstSpin: airingSpin, spins: spins)
+  }
+
   /// Starts the sample-buffer render pipeline for the current schedule and begins polling for upcoming
   /// spins. The already-airing `firstSpin` is published immediately (its boundary is in the past);
-  /// later spins publish `.playing` as their boundaries are crossed.
-  private func startSampleBufferPlayback(generation: Int, firstSpin: Spin) {
+  /// later spins publish `.playing` as their boundaries are crossed. `spins` is the airing/upcoming
+  /// snapshot the airing spin was chosen from, so the controller ingests exactly that list.
+  private func startSampleBufferPlayback(generation: Int, firstSpin: Spin, spins: [Spin]) {
     // A second play() (station switch) with no intervening stop() must tear the previous controller
-    // down in order before replacing it — otherwise its renderer/pump can outlive ownership.
+    // down in order before replacing it — otherwise its renderer/pump can outlive ownership. (A play()
+    // that FAILS before reaching here is torn down by the catch in play() instead.)
     teardownSampleBufferPlayback()
 
     let controller = SampleBufferPlaybackController(
@@ -887,12 +923,22 @@ final public class PlayolaStationPlayer: ObservableObject {
       guard let self, self.isCurrentGeneration(generation) else { return }
       self.state = .playing(firstSpin)
     }
+    // Mirrors the legacy path's `loadSpinWithProgress`: the currently-airing spin's download progress
+    // drives `.loading(progress)` until playback actually starts (`onPlaybackStarted` above).
+    controller.onLoadProgress = { [weak self] progress in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      self.state = .loading(progress)
+    }
     // C13: a terminal renderer failure (status .failed) makes every enqueue a silent no-op — surface
     // `.error` and tear the dead pipeline down instead of staying in a silent `.playing` forever.
     controller.onRendererFailed = { [weak self] error in
       guard let self, self.isCurrentGeneration(generation) else { return }
       let stationError = StationPlayerError.playbackError(
         "Sample-buffer renderer failed: \(error?.localizedDescription ?? "unknown")")
+      // Supersede this generation so a late callback from the now-dead controller (its stop() Task
+      // cancellation doesn't guarantee the download progress handler won't fire once more) can't pass
+      // the generation gate and regress .error back to .loading.
+      self.playGeneration += 1
       self.teardownSampleBufferPlayback()
       self.schedulingTask?.cancel()
       self.schedulingTask = nil
@@ -901,7 +947,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
     self.sampleBufferController = controller
 
-    controller.start(with: sampleBufferSpins(from: currentSchedule))
+    controller.start(with: spins)
 
     schedulingTask?.cancel()
     schedulingTask = Task { [generation] in

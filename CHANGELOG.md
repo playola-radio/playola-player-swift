@@ -87,6 +87,35 @@ flipping the backend on is a separate, server-flagged app-side step.
   are intentionally left uncapped and non-HTTP/3 (S3 has no QUIC). See
   `PlayolaTransport`. (Shipped on the maintenance line as 0.20.3.)
 
+## 0.21.0-beta.3
+
+### Fixed
+
+- **The `.sampleBuffer` backend now reports download progress while loading.**
+  Previously it published `.loading(0)` once at `play()` and then nothing
+  until the first decode fired `.playing` — a listener could sit on a bare
+  `.loading(0)` for the whole initial download with no visible progress. The
+  currently-airing spin's download now drives `.loading(progress)` exactly
+  like the legacy path's `loadSpinWithProgress`, via a new internal
+  `onLoadProgress` seam on `SampleBufferPlaybackController`. Only that first
+  spin reports — concurrently-downloading upcoming spins never do — and once
+  playback has actually started, later/racing progress callbacks are dropped
+  so the published state can never regress from `.playing` back to
+  `.loading`. The `.legacyEngine` path and the public API are unchanged.
+- **The `.sampleBuffer` backend now validates the currently-airing spin and
+  cleans up a failed station switch, matching the legacy path.** A malformed
+  airing spin (missing `downloadUrl`) now fails `play()` with `.error` instead
+  of starting the pipeline into silent dead air under the wrong metadata — the
+  same `validateSpinForScheduling` check the `.legacyEngine` path already made.
+  The airing spin is chosen from a single schedule snapshot and threaded into
+  the controller, so the spin validated and published as `.playing` is exactly
+  the one ingested (closing a boundary-crossing TOCTOU). And any `play()` that
+  fails after superseding a prior session — malformed spin, no current spins,
+  or a schedule-fetch error — now tears the previous sample-buffer controller
+  down, so it can't keep rendering audio behind an `.error` state. Download
+  progress is also pinned to the airing spin by position rather than id, so a
+  later spin carrying a duplicate id can't inherit its progress reporting.
+
 ## 0.20.1
 
 ### Added
