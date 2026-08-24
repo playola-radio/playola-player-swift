@@ -107,6 +107,45 @@ struct SampleBufferLoadingProgressTests {
     controller.stop()
   }
 
+  @Test("a duplicate-id later spin does not inherit the malformed first spin's progress reporting")
+  func duplicateFirstSpinIdDoesNotLeakProgressToLaterCopy() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+    var progressUpdates: [Float] = []
+    controller.onLoadProgress = { progressUpdates.append($0) }
+
+    // Pathological schedule: the true first (currently-airing) spin is malformed (nil downloadUrl) AND a
+    // later spin carries the SAME id with a real URL. Progress reporting must stay pinned to the airing
+    // spin by POSITION, not id — keying on `spin.id` alone would let the later same-id copy masquerade as
+    // the airing spin (it is never dropped into knownSpinIDs because the nil-URL first copy returns early
+    // before insertion). Build the nil-URL block by hand (mockWith(downloadUrl:) can't force nil).
+    let base = AudioBlock.mock
+    let nilUrlBlock = AudioBlock(
+      id: base.id, title: base.title, artist: base.artist, durationMS: base.durationMS,
+      endOfMessageMS: base.endOfMessageMS, beginningOfOutroMS: base.beginningOfOutroMS,
+      endOfIntroMS: base.endOfIntroMS, lengthOfOutroMS: base.lengthOfOutroMS, downloadUrl: nil,
+      s3Key: base.s3Key, s3BucketName: base.s3BucketName, type: base.type,
+      createdAt: base.createdAt, updatedAt: base.updatedAt, album: base.album,
+      popularity: base.popularity, youTubeId: base.youTubeId, isrc: base.isrc,
+      spotifyId: base.spotifyId, appleId: base.appleId, imageUrl: base.imageUrl,
+      transcription: base.transcription)
+    let firstSpin = Spin.mockWith(id: "dup", audioBlock: nilUrlBlock)
+
+    let laterUrl = URL(string: "https://example.com/later.m4a")!
+    let laterCopy = Spin.mockWith(
+      id: "dup", airtime: Date().addingTimeInterval(300),
+      audioBlock: .mockWith(downloadUrl: laterUrl))
+
+    controller.start(with: [firstSpin, laterCopy])
+    await downloadManager.waitForCall(laterUrl)
+    downloadManager.fireProgress(laterUrl, 0.4)
+
+    #expect(progressUpdates.isEmpty)
+
+    downloadManager.completeDownload(laterUrl)
+    controller.stop()
+  }
+
   @Test("progress arriving after playback started is dropped")
   func progressAfterPlaybackStartedIsDropped() async {
     let downloadManager = ProgressCapturingDownloadManager()

@@ -102,6 +102,19 @@ flipping the backend on is a separate, server-flagged app-side step.
   playback has actually started, later/racing progress callbacks are dropped
   so the published state can never regress from `.playing` back to
   `.loading`. The `.legacyEngine` path and the public API are unchanged.
+- **The `.sampleBuffer` backend now validates the currently-airing spin and
+  cleans up a failed station switch, matching the legacy path.** A malformed
+  airing spin (missing `downloadUrl`) now fails `play()` with `.error` instead
+  of starting the pipeline into silent dead air under the wrong metadata — the
+  same `validateSpinForScheduling` check the `.legacyEngine` path already made.
+  The airing spin is chosen from a single schedule snapshot and threaded into
+  the controller, so the spin validated and published as `.playing` is exactly
+  the one ingested (closing a boundary-crossing TOCTOU). And any `play()` that
+  fails after superseding a prior session — malformed spin, no current spins,
+  or a schedule-fetch error — now tears the previous sample-buffer controller
+  down, so it can't keep rendering audio behind an `.error` state. Download
+  progress is also pinned to the airing spin by position rather than id, so a
+  later spin carrying a duplicate id can't inherit its progress reporting.
 
 ## 0.20.1
 

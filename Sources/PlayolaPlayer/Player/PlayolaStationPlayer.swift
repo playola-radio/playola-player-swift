@@ -825,7 +825,7 @@ final public class PlayolaStationPlayer: ObservableObject {
       // AVSampleBufferAudioRenderer) instead of the legacy per-spin SpinPlayer graph. The wall-clock
       // schedule fetch/poll above is shared; only the render sink differs. Legacy path is untouched.
       if renderBackend == .sampleBuffer {
-        startSampleBufferPlayback(generation: generation, firstSpin: spinToPlay)
+        try startSampleBufferBackend(generation: generation, stationId: stationId)
         return
       }
 
@@ -850,6 +850,10 @@ final public class PlayolaStationPlayer: ObservableObject {
       // Emit a terminal error state so consumers can render a recoverable
       // error instead of being stuck in .loading. Cancellation is not an error.
       if !isCancellation(error) {
+        // This failed attempt already superseded any prior session (generation bumped in play()). If it
+        // was a station switch, tear the previous sample-buffer controller down so it can't keep
+        // rendering audio behind an `.error` state. No-op for the legacy backend / first-ever play().
+        teardownSampleBufferPlayback()
         let stationError =
           (error as? StationPlayerError) ?? .scheduleError(error.localizedDescription)
         self.state = .error(stationError)
@@ -867,12 +871,36 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
+  /// The `.sampleBuffer` dispatch out of `play()`: take a SINGLE schedule snapshot, pick the airing spin
+  /// from it, validate it the way the legacy path does, and start the render pipeline from that same
+  /// snapshot. Computing the list once (rather than reusing `play()`'s earlier `spinToPlay` snapshot and
+  /// letting `startSampleBufferPlayback` recompute its own) closes a TOCTOU where a boundary crossing
+  /// between snapshots could validate/publish one spin while the controller ingests another as its first.
+  /// Throws (→ `.error`) if there is no current spin or the airing spin is malformed (nil `downloadUrl`).
+  private func startSampleBufferBackend(generation: Int, stationId: String) throws {
+    let spins = sampleBufferSpins(from: currentSchedule)
+    guard let airingSpin = spins.first else {
+      let error = StationPlayerError.scheduleError("No available spins to play")
+      Task {
+        await errorReporter.reportError(
+          error,
+          context: "Sample-buffer schedule for station \(stationId) contains no current spins",
+          level: .error)
+      }
+      throw error
+    }
+    try validateSpinForScheduling(airingSpin)
+    startSampleBufferPlayback(generation: generation, firstSpin: airingSpin, spins: spins)
+  }
+
   /// Starts the sample-buffer render pipeline for the current schedule and begins polling for upcoming
   /// spins. The already-airing `firstSpin` is published immediately (its boundary is in the past);
-  /// later spins publish `.playing` as their boundaries are crossed.
-  private func startSampleBufferPlayback(generation: Int, firstSpin: Spin) {
+  /// later spins publish `.playing` as their boundaries are crossed. `spins` is the airing/upcoming
+  /// snapshot the airing spin was chosen from, so the controller ingests exactly that list.
+  private func startSampleBufferPlayback(generation: Int, firstSpin: Spin, spins: [Spin]) {
     // A second play() (station switch) with no intervening stop() must tear the previous controller
-    // down in order before replacing it — otherwise its renderer/pump can outlive ownership.
+    // down in order before replacing it — otherwise its renderer/pump can outlive ownership. (A play()
+    // that FAILS before reaching here is torn down by the catch in play() instead.)
     teardownSampleBufferPlayback()
 
     let controller = SampleBufferPlaybackController(
@@ -912,7 +940,7 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
     self.sampleBufferController = controller
 
-    controller.start(with: sampleBufferSpins(from: currentSchedule))
+    controller.start(with: spins)
 
     schedulingTask?.cancel()
     schedulingTask = Task { [generation] in

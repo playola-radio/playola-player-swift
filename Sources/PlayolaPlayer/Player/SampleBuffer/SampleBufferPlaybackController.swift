@@ -45,11 +45,6 @@ final class SampleBufferPlaybackController {
   private var rendererStarted = false
   private var isStopped = false
   private var startupDeadlineTask: Task<Void, Never>?
-  /// Identity of the true first (currently-airing) spin — the first element handed to `start(with:)`,
-  /// captured BEFORE any filtering. Only this spin's download reports progress, so neither an upcoming
-  /// spin nor (when the real first spin is malformed) a later successfully-ingested spin drives
-  /// `onLoadProgress`. Tracking the id, not "first ingested", keeps progress pinned to the airing spin.
-  private var firstSpinID: String?
 
   /// Local paths of files still referenced by this session (owner feeds these to `pruneCache` as
   /// exclusions so an in-use spin's audio can't be evicted mid-play).
@@ -164,9 +159,13 @@ final class SampleBufferPlaybackController {
   /// decode lands (`pump.onFirstData`) or the startup deadline elapses, to avoid enqueuing a silent
   /// startup hole into the shallow queue before any audio is decoded.
   func start(with spins: [Spin]) {
-    // Capture the true first spin's identity before filtering: only its download reports progress.
-    firstSpinID = spins.first?.id
-    let scheduled = spins.compactMap { ingest($0) }
+    // Only the true first (currently-airing) spin's download reports progress. Pin that to POSITION, not
+    // id: the first element handed to `start(with:)` is the airing spin, and progress reporting is spent
+    // on it regardless of whether it is ingestable — so a malformed (nil-URL) airing spin does not pass
+    // its progress reporting to a later spin, even one carrying a duplicate id.
+    let scheduled = spins.enumerated().compactMap { index, spin in
+      ingest(spin, reportsProgress: index == 0)
+    }
     sampleBufferLog.info(
       "controller.start: \(scheduled.count)/\(spins.count) spins scheduled; waiting for first decode"
     )
@@ -199,7 +198,7 @@ final class SampleBufferPlaybackController {
   /// Fold in later-discovered upcoming spins (from the station player's 20s poll). Cheap append for
   /// anything beyond the enqueue horizon; the renderer ignores/reports one that lands too late.
   func addUpcoming(_ spins: [Spin]) {
-    let scheduled = spins.compactMap { ingest($0) }
+    let scheduled = spins.compactMap { ingest($0, reportsProgress: false) }
     guard !scheduled.isEmpty else { return }
     if scheduleInstalled {
       renderer.appendScheduled(scheduled)
@@ -227,13 +226,14 @@ final class SampleBufferPlaybackController {
   /// Register a spin: compute its timeline placement, hand the renderer a silent placeholder snapshot
   /// (so the boundary observer installs now), and kick off download → decode → real snapshot. Returns
   /// the placeholder `Scheduled`, or nil if already known / no URL.
-  private func ingest(_ spin: Spin) -> SampleBufferStationRenderer.Scheduled? {
+  private func ingest(_ spin: Spin, reportsProgress: Bool)
+    -> SampleBufferStationRenderer.Scheduled?
+  {
     guard !knownSpinIDs.contains(spin.id), let remoteUrl = spin.audioBlock.downloadUrl else {
       return nil
     }
     knownSpinIDs.insert(spin.id)
     activeSpins[spin.id] = spin
-    let reportsProgress = spin.id == firstSpinID
 
     let startFrame = mapper.frame(for: spin.airtime)
     // The first authored output frame is `latencyFrames` (the timebase's head start), so the first
