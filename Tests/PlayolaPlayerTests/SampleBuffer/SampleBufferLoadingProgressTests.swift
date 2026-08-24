@@ -69,6 +69,44 @@ struct SampleBufferLoadingProgressTests {
     controller.stop()
   }
 
+  @Test("a malformed first spin (nil downloadUrl) does not leak progress onto a later spin")
+  func nilUrlFirstSpinDoesNotLeakProgressToLaterSpin() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+    var progressUpdates: [Float] = []
+    controller.onLoadProgress = { progressUpdates.append($0) }
+
+    // The true first (currently-airing) spin is malformed: its audioBlock has no downloadUrl, so it
+    // can never download. A later spin with a real URL must NOT inherit "first-spin" progress reporting
+    // (progress must track the identity of the true first spin, not the first successfully-ingested one).
+    // mockWith(downloadUrl:) can't force a genuinely-nil URL (nil == omitted), so build it by hand.
+    let base = AudioBlock.mock
+    let nilUrlBlock = AudioBlock(
+      id: base.id, title: base.title, artist: base.artist, durationMS: base.durationMS,
+      endOfMessageMS: base.endOfMessageMS, beginningOfOutroMS: base.beginningOfOutroMS,
+      endOfIntroMS: base.endOfIntroMS, lengthOfOutroMS: base.lengthOfOutroMS, downloadUrl: nil,
+      s3Key: base.s3Key, s3BucketName: base.s3BucketName, type: base.type,
+      createdAt: base.createdAt, updatedAt: base.updatedAt, album: base.album,
+      popularity: base.popularity, youTubeId: base.youTubeId, isrc: base.isrc,
+      spotifyId: base.spotifyId, appleId: base.appleId, imageUrl: base.imageUrl,
+      transcription: base.transcription)
+    let firstSpin = Spin.mockWith(id: "spin-first", audioBlock: nilUrlBlock)
+
+    let laterUrl = URL(string: "https://example.com/later.m4a")!
+    let laterSpin = Spin.mockWith(
+      id: "spin-later", airtime: Date().addingTimeInterval(300),
+      audioBlock: .mockWith(downloadUrl: laterUrl))
+
+    controller.start(with: [firstSpin, laterSpin])
+    await downloadManager.waitForCall(laterUrl)
+    downloadManager.fireProgress(laterUrl, 0.4)
+
+    #expect(progressUpdates.isEmpty)
+
+    downloadManager.completeDownload(laterUrl)
+    controller.stop()
+  }
+
   @Test("progress arriving after playback started is dropped")
   func progressAfterPlaybackStartedIsDropped() async {
     let downloadManager = ProgressCapturingDownloadManager()

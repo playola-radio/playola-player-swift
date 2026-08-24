@@ -45,9 +45,11 @@ final class SampleBufferPlaybackController {
   private var rendererStarted = false
   private var isStopped = false
   private var startupDeadlineTask: Task<Void, Never>?
-  /// Set once, for the very first spin ingested (`start(with:)` always hands that spin first) — only
-  /// its download reports progress, so concurrently-downloading upcoming spins don't drive `onLoadProgress`.
-  private var firstSpinIngested = false
+  /// Identity of the true first (currently-airing) spin — the first element handed to `start(with:)`,
+  /// captured BEFORE any filtering. Only this spin's download reports progress, so neither an upcoming
+  /// spin nor (when the real first spin is malformed) a later successfully-ingested spin drives
+  /// `onLoadProgress`. Tracking the id, not "first ingested", keeps progress pinned to the airing spin.
+  private var firstSpinID: String?
 
   /// Local paths of files still referenced by this session (owner feeds these to `pruneCache` as
   /// exclusions so an in-use spin's audio can't be evicted mid-play).
@@ -162,6 +164,8 @@ final class SampleBufferPlaybackController {
   /// decode lands (`pump.onFirstData`) or the startup deadline elapses, to avoid enqueuing a silent
   /// startup hole into the shallow queue before any audio is decoded.
   func start(with spins: [Spin]) {
+    // Capture the true first spin's identity before filtering: only its download reports progress.
+    firstSpinID = spins.first?.id
     let scheduled = spins.compactMap { ingest($0) }
     sampleBufferLog.info(
       "controller.start: \(scheduled.count)/\(spins.count) spins scheduled; waiting for first decode"
@@ -229,8 +233,7 @@ final class SampleBufferPlaybackController {
     }
     knownSpinIDs.insert(spin.id)
     activeSpins[spin.id] = spin
-    let reportsProgress = !firstSpinIngested
-    firstSpinIngested = true
+    let reportsProgress = spin.id == firstSpinID
 
     let startFrame = mapper.frame(for: spin.airtime)
     // The first authored output frame is `latencyFrames` (the timebase's head start), so the first

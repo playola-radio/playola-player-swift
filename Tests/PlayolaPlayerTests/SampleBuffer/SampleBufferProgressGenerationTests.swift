@@ -66,11 +66,15 @@ struct SampleBufferProgressGenerationTests {
     // Explicit airtime near "now": Schedule.mock's default airtime is a fixed date baked into
     // MockSchedule.json, which is stale by the time tests run (its endtime is long past, so
     // Schedule.current() would filter it out and play() would throw "No available spins to play").
+    // A long endOfMessageMS keeps each spin's endtime comfortably in the future for the whole test —
+    // the default mock block is only ~8.3s long, leaving ~3.3s of margin against this live clock that
+    // a loaded CI box can blow through, filtering the spin out mid-test (flaky "No available spins").
     let now = Date()
+    let longDurationMS = 600_000
     let firstUrl = URL(string: "https://example.com/first.m4a")!
     let firstSpin = Spin.mockWith(
       id: "spin-first", airtime: now.addingTimeInterval(-5), stationId: "station-1",
-      audioBlock: .mockWith(downloadUrl: firstUrl))
+      audioBlock: .mockWith(endOfMessageMS: longDurationMS, downloadUrl: firstUrl))
     session.addResponse(data: try scheduleData(for: firstSpin), statusCode: 200)
 
     // station-1's own 20s poll loop fires ONE eager fetch immediately after play() returns (before its
@@ -81,7 +85,7 @@ struct SampleBufferProgressGenerationTests {
     let secondUrl = URL(string: "https://example.com/second.m4a")!
     let secondSpin = Spin.mockWith(
       id: "spin-second", airtime: now.addingTimeInterval(-5), stationId: "station-2",
-      audioBlock: .mockWith(downloadUrl: secondUrl))
+      audioBlock: .mockWith(endOfMessageMS: longDurationMS, downloadUrl: secondUrl))
     session.addResponse(data: try scheduleData(for: secondSpin), statusCode: 200)
 
     let player = PlayolaStationPlayer(fileDownloadManager: downloadManager, urlSession: session)

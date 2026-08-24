@@ -115,7 +115,8 @@ final public class PlayolaStationPlayer: ObservableObject {
 
   /// Active sample-buffer playback (Phase 5). Non-nil only while the `.sampleBuffer` backend is playing;
   /// the legacy `.legacyEngine` path leaves this nil and uses `_spinPlayers` exactly as before.
-  private var sampleBufferController: SampleBufferPlaybackController?
+  /// Internal (not private) so tests can observe the live controller's callback lifecycle.
+  var sampleBufferController: SampleBufferPlaybackController?
 
   // Thread-safe access to spin players - all access must be on main actor
   private var _spinPlayers: [SpinPlayer] = []
@@ -899,6 +900,10 @@ final public class PlayolaStationPlayer: ObservableObject {
       guard let self, self.isCurrentGeneration(generation) else { return }
       let stationError = StationPlayerError.playbackError(
         "Sample-buffer renderer failed: \(error?.localizedDescription ?? "unknown")")
+      // Supersede this generation so a late callback from the now-dead controller (its stop() Task
+      // cancellation doesn't guarantee the download progress handler won't fire once more) can't pass
+      // the generation gate and regress .error back to .loading.
+      self.playGeneration += 1
       self.teardownSampleBufferPlayback()
       self.schedulingTask?.cancel()
       self.schedulingTask = nil
