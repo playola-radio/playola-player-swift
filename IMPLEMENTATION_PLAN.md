@@ -198,7 +198,7 @@ route mid-song drifts until the next `play()`. This is the real remaining Sonos 
   having mutated a property before the flush callback fires is an unstated race — don't.
 **Steps**: Run a dedicated Codex consult on the seam design when this stage starts (inputs:
 Stage 1 Class B drift measurements). Implement, then verify with two devices + a live
-switch on hardware. Ship as `0.21.0-beta.3` (same tag discipline as Stage 3).
+switch on hardware. Ship as `0.21.0-beta.4` (same tag discipline as Stage 3; see tag note below).
 **Success**: Two devices stay in sync across a live route switch on hardware; re-anchor
 discontinuity measured and acceptable; boundary callbacks still fire correctly.
 **Status**: Not Started
@@ -209,9 +209,8 @@ a truthful marketed claim.
 **Tag note (2026-08-24)**: the `.sampleBuffer` backend's missing `.loading(progress)`
 reporting during initial download (unrelated to FU-2 — a small seam fix on
 `SampleBufferPlaybackController`/`PlayolaStationPlayer`, not a route-latency change) shipped
-ahead of this stage under the `0.21.0-beta.3` changelog heading. FU-2's own tag is therefore
-`0.21.0-beta.4` (or `0.21.0-beta.3` if the two land together before either ships) — whichever
-applies, keep the tag discipline above.
+ahead of this stage as `0.21.0-beta.3`. FU-2's own tag is therefore `0.21.0-beta.4` — keep
+the tag discipline above.
 
 ## Stage 5 (post-activation, in-repo, non-blocking): optimizations
 **Goal**: Round out the render path once it's live behind the flag. Neither gates AirPlay-2 correctness.

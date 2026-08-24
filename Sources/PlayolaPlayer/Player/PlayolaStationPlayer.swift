@@ -801,6 +801,17 @@ final public class PlayolaStationPlayer: ObservableObject {
       guard generation == playGeneration else { return }
       self.currentSchedule = schedule
 
+      // Phase 5: the sample-buffer backend drives its own pipeline (download -> decode -> mixer ->
+      // AVSampleBufferAudioRenderer) instead of the legacy per-spin SpinPlayer graph. The wall-clock
+      // schedule fetch/poll above is shared; only the render sink differs. Legacy path is untouched.
+      // Dispatched BEFORE the legacy spin lookup below so the sample-buffer path derives its airing
+      // spin from exactly ONE clock-dependent `current()` call — a spin boundary crossing between two
+      // lookups could otherwise select a spin here and then find an empty list inside.
+      if renderBackend == .sampleBuffer {
+        try startSampleBufferBackend(generation: generation, stationId: stationId)
+        return
+      }
+
       guard
         let spinToPlay = currentSchedule?.current(offsetTimeInterval: scheduleOffset).first
       else {
@@ -820,14 +831,6 @@ final public class PlayolaStationPlayer: ObservableObject {
       os_log(
         "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info,
         stationId)
-
-      // Phase 5: the sample-buffer backend drives its own pipeline (download -> decode -> mixer ->
-      // AVSampleBufferAudioRenderer) instead of the legacy per-spin SpinPlayer graph. The wall-clock
-      // schedule fetch/poll above is shared; only the render sink differs. Legacy path is untouched.
-      if renderBackend == .sampleBuffer {
-        try startSampleBufferBackend(generation: generation, stationId: stationId)
-        return
-      }
 
       // Schedule the first spin with progress shown
       try await scheduleSpin(spin: spinToPlay, generation: generation, showProgress: true)
@@ -871,11 +874,12 @@ final public class PlayolaStationPlayer: ObservableObject {
     }
   }
 
-  /// The `.sampleBuffer` dispatch out of `play()`: take a SINGLE schedule snapshot, pick the airing spin
-  /// from it, validate it the way the legacy path does, and start the render pipeline from that same
-  /// snapshot. Computing the list once (rather than reusing `play()`'s earlier `spinToPlay` snapshot and
-  /// letting `startSampleBufferPlayback` recompute its own) closes a TOCTOU where a boundary crossing
-  /// between snapshots could validate/publish one spin while the controller ingests another as its first.
+  /// The `.sampleBuffer` dispatch out of `play()`: take a SINGLE schedule snapshot — the only
+  /// clock-dependent `current()` lookup on this path (`play()` dispatches here before its legacy spin
+  /// lookup) — pick the airing spin from it, validate it the way the legacy path does, and start the
+  /// render pipeline from that same snapshot. Computing the list exactly once closes the TOCTOU family
+  /// where a spin boundary crossing between two lookups selects/validates one spin while a later lookup
+  /// sees a different list (a different first spin, or none at all).
   /// Throws (→ `.error`) if there is no current spin or the airing spin is malformed (nil `downloadUrl`).
   private func startSampleBufferBackend(generation: Int, stationId: String) throws {
     let spins = sampleBufferSpins(from: currentSchedule)
@@ -890,6 +894,9 @@ final public class PlayolaStationPlayer: ObservableObject {
       throw error
     }
     try validateSpinForScheduling(airingSpin)
+    os_log(
+      "Starting playback for station: %@", log: PlayolaStationPlayer.logger, type: .info,
+      stationId)
     startSampleBufferPlayback(generation: generation, firstSpin: airingSpin, spins: spins)
   }
 
