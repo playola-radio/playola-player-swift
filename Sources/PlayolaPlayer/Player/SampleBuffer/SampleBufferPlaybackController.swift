@@ -43,6 +43,47 @@ final class SampleBufferPlaybackController {
   private var localFilePaths: [String: String] = [:]
   private var scheduleInstalled = false
   private var rendererStarted = false
+  /// Whether playback has been published to the owner — either `onPlaybackStarted` fired, or a spin
+  /// boundary crossing (`onSpinStarted`) already published `.playing` for a spin OTHER than the
+  /// still-unresolved airing spin (see `handleSpinStarted`; the airing spin's own boundary crossing does
+  /// not count — it can fire before its decode lands). Distinct from `rendererStarted`: the startup
+  /// deadline can start the renderer with no decode landed yet, and the state machine must stay `.loading`
+  /// (not silently `.playing`) until playback is actually imminent — see `onPlaybackStarted`'s doc
+  /// comment. Also gates `onLoadProgress`: once true, the airing spin's download progress must never fire
+  /// again, whether it was superseded by its own audible decode/failure or by a later spin's boundary
+  /// crossing.
+  private var playbackPublished = false
+  /// Set when the airing spin's download/decode fails, so that whenever the renderer eventually starts
+  /// (now, or later at the deadline) playback publishes immediately instead of waiting forever for a
+  /// decode that will never land.
+  private var airingSpinFailed = false
+  /// Set the first time ANY decode lands for the airing spin, regardless of position — distinct from the
+  /// audible-position gate in `handleAudibleDecodeLanded`, which only fires the FAST publish path when
+  /// the decode is also at/near the current output position. If `Schedule.current` hands back a first
+  /// spin that hasn't started airing yet (nothing currently on air), its decode can land well before its
+  /// own airtime; the fast path correctly stays silent then, but `handleSpinStarted` needs this flag to
+  /// tell a LEGITIMATE later boundary crossing (decode already ready, now truly at position) apart from
+  /// the original bug's spurious one (no decode has landed at all yet).
+  private var airingSpinDecoded = false
+  /// Set when the airing spin's own boundary crossing fires while its decode has not landed yet
+  /// (the still-unresolved case `handleSpinStarted` drops). Decode-ahead is driven by the renderer's
+  /// position, not eagerly, so for a first spin scheduled well into the future the boundary can fire
+  /// before its decode does — the position gate in `handleAudibleDecodeLanded` would then drop that
+  /// decode forever too (the spin's fixed scheduled position never satisfies `startFrame <=
+  /// latencyFrames`), leaving nothing left to ever publish. This flag lets a late-landing decode
+  /// recognize that wall-clock time already passed this spin's airtime and publish anyway.
+  private var airingSpinBoundaryCrossed = false
+  /// The currently-airing spin's id, recorded only once it successfully ingests (has a download URL) —
+  /// mirrors `reportsProgress`'s position-not-id scoping (see `ingest`) so a later spin sharing the same
+  /// id as a malformed airing spin can't masquerade as it for the failure fallback below.
+  private var airingSpinID: String?
+  /// The airing spin's own scheduled position, cached at `ingest()` time (nil for a malformed spin that
+  /// never ingests). `mapper` is re-pinned at every boundary crossing (`reanchor`), so this can't be
+  /// safely recomputed later from `spin.airtime` — it must be captured once, alongside `airingSpinID`.
+  /// Used by `markAiringSpinFailed` to tell a currently-airing spin's failure (publish immediately, same
+  /// as today) apart from a future-scheduled first spin's failure (defer until its own boundary crosses —
+  /// see that method's doc comment).
+  private var airingSpinStartFrame: Int64?
   private var isStopped = false
   private var startupDeadlineTask: Task<Void, Never>?
 
@@ -52,9 +93,14 @@ final class SampleBufferPlaybackController {
 
   /// Called (on the main actor) when a spin boundary is crossed — maps to `State.playing(spin)`.
   var onSpinStarted: ((Spin) -> Void)?
-  /// Called (on the main actor) when playback actually begins — the first decode landed (or the startup
-  /// deadline elapsed). The owner flips state to `.playing` here rather than at `start(with:)`, so a slow
-  /// first download shows `.loading`, not silent `.playing` (§4.4).
+  /// Called (on the main actor) when playback is actually imminent — the airing spin's first
+  /// currently-audible decode landed, or its download/decode failed after the renderer had already
+  /// started at the startup deadline (so the state machine can't sit in `.loading` forever behind a
+  /// renderer that's silently running). NOT fired merely because the startup deadline elapsed with no
+  /// decode and no failure yet — the renderer starts silently in that case, and this fires later, from
+  /// whichever of those two events happens first. Fires at most once. The owner flips state to `.playing`
+  /// here rather than at `start(with:)`, so a slow first download shows `.loading`, not silent `.playing`
+  /// (§4.4).
   var onPlaybackStarted: (() -> Void)?
   /// Called (on the main actor) when the live renderer reports a terminal failure (status `.failed`).
   /// Every enqueue after that is a no-op; the owner must surface `State.error` (C13), not stay
@@ -62,7 +108,10 @@ final class SampleBufferPlaybackController {
   var onRendererFailed: ((Error?) -> Void)?
   /// Called (on the main actor) with the currently-airing spin's download progress (0.0–1.0), matching
   /// the legacy path's `loadSpinWithProgress`. Never fires for upcoming spins, and never fires once
-  /// `rendererStarted` (playback must not regress from `.playing` back to `.loading`).
+  /// playback has been PUBLISHED — `onPlaybackStarted` fired, OR a later spin's boundary was crossed
+  /// first (playback must not regress from `.playing` back to `.loading`, even if the airing spin's own
+  /// download never resolves) — it keeps flowing through the startup-deadline silent hole, while the
+  /// renderer is running but playback hasn't been published yet.
   var onLoadProgress: ((Float) -> Void)?
 
   /// - Parameters:
@@ -105,18 +154,90 @@ final class SampleBufferPlaybackController {
     wireRenderPipeline()
   }
 
+  /// A spin boundary crossing (`renderer.onSpinStarted`): re-pins the mapping and prunes ended spins
+  /// unconditionally, but only notifies the owner (and retires progress reporting) once the crossing is
+  /// trustworthy as proof of real audio. Main-actor confined.
+  ///
+  /// The renderer's boundary observer fires purely from a spin's SCHEDULED position on the timeline
+  /// (`SampleBufferStationRenderer.installBoundaryObserver`) — independent of whether that spin's own
+  /// decode has landed. For the STILL-UNRESOLVED airing spin with NO decode landed yet at all
+  /// (`airingSpinDecoded == false`), that position is at/near the very start of the timeline, so its
+  /// boundary can fire the instant the deadline starts the renderer, before any real audio exists.
+  /// Forwarding that to `onSpinStarted?` would republish `.playing` during the exact silent pre-decode
+  /// hole this PR exists to fix, just via a different callback than the one it guards
+  /// (`onPlaybackStarted`) — so it's dropped instead; `onPlaybackStarted` (audible decode / failure) is
+  /// this spin's real transition trigger in that case, and covers the same information for the owner.
+  ///
+  /// But if `Schedule.current` hands back a first spin that hasn't started airing yet (nothing currently
+  /// on air), its decode can land well BEFORE its own airtime — `handleAudibleDecodeLanded` correctly
+  /// stays silent then (not yet at the audible position), but sets `airingSpinDecoded`. When the boundary
+  /// later fires for that spin, the decode is already ready and real audio genuinely starts — dropping it
+  /// too would leave the state machine stuck in `.loading` forever, since nothing else would ever publish
+  /// for it. So a crossing IS trusted once `airingSpinDecoded` is true, even before `playbackPublished`.
+  ///
+  /// For a later spin, the boundary crossing is trusted as-is (pre-existing, unchanged semantics) and
+  /// also retires progress reporting (`playbackPublished = true`) WITHOUT firing `onPlaybackStarted`: an
+  /// upcoming spin can decode early while non-audible (`handleAudibleDecodeLanded` silently drops that
+  /// notification) and then become the first audible audio via its own boundary crossing, independent of
+  /// whether the airing spin's own download/decode ever resolves; if progress stayed gated on the airing
+  /// spin's own resolution, a stale/never-resolving download could keep firing `.loading(progress)` after
+  /// the owner already published `.playing` for that later spin — regressing state backward.
+  /// `onPlaybackStarted` must NOT also fire here: the owner already treats `onSpinStarted` as its own
+  /// `.playing` transition, and firing `onPlaybackStarted` afterward would republish a stale
+  /// `.playing(firstSpin)` on top of it.
+  ///
+  /// The airing spin's own boundary is also dropped once playback is already published — by whichever
+  /// path got there first (audible decode, failure fallback, or an earlier legitimate crossing). The
+  /// boundary observer fires purely from scheduled position, with no memory of whether it already fired
+  /// for this spin, so without this it would forward `onSpinStarted?(spin)` a second time for the exact
+  /// same spin the owner already published via `onPlaybackStarted` — a stale duplicate, not a new
+  /// transition.
+  ///
+  /// A crossing is likewise trusted once `airingSpinFailed` is true, even before a decode: a future first
+  /// spin's failure defers publish until its own position is reached (see `markAiringSpinFailed`), and
+  /// this is that deferred publish firing. It publishes via `onPlaybackStarted`, not by falling through to
+  /// `onSpinStarted?(spin)` below — a failed spin never has real audio to report as "started."
+  private func handleSpinStarted(_ spin: Spin) {
+    reanchor()  // A1: re-pin the mapping to the live playhead at each boundary
+    pruneEndedSpins()  // free finished sources so a long session doesn't leak/degrade
+    if spin.id == airingSpinID {
+      guard !playbackPublished else {
+        sampleBufferLog.notice(
+          "boundary: spin \(spin.id, privacy: .public) ignored (already published)")
+        return
+      }
+      // A failed airing spin never gets real audio — publish via `onPlaybackStarted` (this spin's
+      // failure fallback), not by falling through to `onSpinStarted?(spin)` below, which would tell
+      // the owner audio for this exact spin is starting.
+      guard !airingSpinFailed else {
+        publishPlaybackStarted()
+        return
+      }
+      guard airingSpinDecoded else {
+        airingSpinBoundaryCrossed = true
+        sampleBufferLog.notice(
+          "boundary: spin \(spin.id, privacy: .public) ignored (airing spin not yet decoded)")
+        return
+      }
+    }
+    sampleBufferLog.info("boundary: spin \(spin.id, privacy: .public) started")
+    playbackPublished = true
+    onSpinStarted?(spin)
+  }
+
+  /// Test seam: simulates a spin boundary crossing without a real renderer/synchronizer (device-verified,
+  /// not unit-tested — see the type doc comment).
+  func simulateSpinBoundaryForTesting(_ spin: Spin) {
+    handleSpinStarted(spin)
+  }
+
   private func wireRenderPipeline() {
     let renderer = self.renderer
     let pump = self.pump
     let sink = self.sink
     let errorReporter = self.errorReporter
     renderer.onSpinStarted = { [weak self] spin in
-      Task { @MainActor in
-        self?.reanchor()  // A1: re-pin the mapping to the live playhead at each boundary
-        self?.pruneEndedSpins()  // free finished sources so a long session doesn't leak/degrade
-        sampleBufferLog.info("boundary: spin \(spin.id, privacy: .public) started")
-        self?.onSpinStarted?(spin)
-      }
+      Task { @MainActor in self?.handleSpinStarted(spin) }
     }
     renderer.onLateSpinIgnored = { [weak self] spin in
       // Fires on the renderer's control queue; hop to the main actor (like onSpinStarted).
@@ -136,13 +257,15 @@ final class SampleBufferPlaybackController {
     // slow/missing-download fallback.
     pump.onDataPrepared = { [weak self] window in
       Task { @MainActor in
-        guard let self, window.startFrame <= self.latencyFrames else { return }
-        self.startRendererIfNeeded()
+        self?.handleAudibleDecodeLanded(spinID: window.spinID, startFrame: window.startFrame)
       }
     }
     // §4.4: a failed decode renders as silence and the station continues — but it must be REPORTED,
-    // not swallowed (a corrupt/unsupported file would otherwise be an invisible dead spin).
-    pump.onDecodeFailed = { [errorReporter] spinID, error in
+    // not swallowed (a corrupt/unsupported file would otherwise be an invisible dead spin). If it's the
+    // AIRING spin, this may also be the only thing that will ever unstick a deadline-started renderer
+    // (no decode is ever coming for it), so it also feeds the failure fallback below.
+    pump.onDecodeFailed = { [weak self, errorReporter] spinID, error in
+      Task { @MainActor in self?.handleAiringSpinFailure(spinID: spinID) }
       Task {
         await errorReporter.reportError(
           error, context: "Sample-buffer decode failed for spin \(spinID); rendering silence",
@@ -186,13 +309,99 @@ final class SampleBufferPlaybackController {
     rendererStarted = true
     sampleBufferLog.notice("controller: starting renderer (first audio ready or deadline)")
     renderer.start()
-    onPlaybackStarted?()
+    // The airing spin may have already failed while we were waiting on the deadline — publish now if
+    // that failure is due (see `publishFailureIfDue`), rather than leaving the state machine stuck in
+    // `.loading` behind a renderer that's already running.
+    publishFailureIfDue()
   }
 
-  /// Test seam: simulates playback having started, without a real decode pipeline (device-verified,
-  /// not unit-tested — see the type doc comment).
+  /// Test seam: simulates the startup deadline starting the renderer, without a real decode pipeline
+  /// (device-verified, not unit-tested — see the type doc comment). Deliberately does NOT publish
+  /// playback on its own — see `onPlaybackStarted`'s doc comment.
   func startRendererIfNeededForTesting() {
     startRendererIfNeeded()
+  }
+
+  /// §4.4: only a CURRENTLY-AUDIBLE source's first decode starts playback — a future spin decoding first
+  /// would start the renderer into a silent startup hole. Starts the renderer if needed (idempotent
+  /// no-op if the deadline already did) and publishes playback — covers both the fast path (decode lands
+  /// before the deadline) and the deferred deadline path (decode lands after the deadline already
+  /// started the renderer silently).
+  ///
+  /// Position alone (`startFrame <= latencyFrames`) is not sufficient identity proof: on a high-latency
+  /// route (e.g. AirPlay, ~2s), a LATER spin scheduled within that latency-compensation window could
+  /// decode before the airing spin's own download/decode finishes and satisfy the position check too —
+  /// so this also requires `spinID == airingSpinID`, the same identity guard `handleAiringSpinFailure`
+  /// already uses.
+  private func handleAudibleDecodeLanded(spinID: String, startFrame: Int64) {
+    guard spinID == airingSpinID else { return }
+    airingSpinDecoded = true
+    // Normally only a position at/near the current output frame is "audible." But if this spin's
+    // own boundary already crossed with no decode landed, wall-clock time has already passed its
+    // scheduled position — the position check would never be satisfied for it, so this late-landing
+    // decode is the only remaining signal that will ever publish for it.
+    guard startFrame <= latencyFrames || airingSpinBoundaryCrossed else { return }
+    startRendererIfNeeded()
+    publishPlaybackStarted()
+  }
+
+  /// Test seam: simulates a decode landing at the given output start frame for a spin (the airing spin
+  /// by default) — the same audible/non-audible gate production uses to decide whether to publish
+  /// playback — without a real decode pipeline (device-verified, not unit-tested — see the type doc
+  /// comment).
+  func simulateDecodeLandedForTesting(spinID: String? = nil, startFrame: Int64) {
+    handleAudibleDecodeLanded(spinID: spinID ?? airingSpinID ?? "", startFrame: startFrame)
+  }
+
+  /// §4.4 item 3: if the airing spin's download or decode fails, the state machine must never be able to
+  /// sit in `.loading` forever behind a renderer that's already running — publish immediately if it is.
+  /// If the renderer hasn't started yet (the failure raced ahead of the startup deadline), audio behavior
+  /// must not change: just remember it, so the eventual deadline-triggered start (`startRendererIfNeeded`
+  /// above) publishes right away instead of waiting on a decode that can never happen.
+  private func handleAiringSpinFailure(spinID: String) {
+    guard spinID == airingSpinID else { return }
+    markAiringSpinFailed()
+  }
+
+  /// A currently-airing spin (`airingSpinStartFrame` at/before `latencyFrames`, the common case — a nil
+  /// `airingSpinStartFrame` is the malformed-spin path, which never ingests and so has no position to
+  /// check either) publishes immediately once the renderer is running, exactly as before: there's nothing
+  /// left to wait for. But if `Schedule.current` handed back a first spin that hasn't started airing yet,
+  /// its failure can land minutes before its own scheduled position — publishing then would show
+  /// `.playing` for audio that was never due yet. Defer to that spin's own boundary crossing instead
+  /// (`handleSpinStarted` trusts `airingSpinFailed` the same way it trusts `airingSpinDecoded`), unless
+  /// the boundary already crossed first (`airingSpinBoundaryCrossed`), in which case wall-clock time has
+  /// already passed this spin's position and there's no boundary crossing left to wait for.
+  private func markAiringSpinFailed() {
+    airingSpinFailed = true
+    guard rendererStarted else { return }
+    publishFailureIfDue()
+  }
+
+  /// Shared gate for publishing a previously-recorded airing-spin failure, called both when the failure
+  /// lands after the renderer is already running (`markAiringSpinFailed`) and when the startup deadline
+  /// starts the renderer after a failure already landed (`startRendererIfNeeded`) — both orderings need
+  /// the same position/boundary-crossed check, or the deadline path would bypass the deferral above.
+  private func publishFailureIfDue() {
+    guard airingSpinFailed else { return }
+    guard (airingSpinStartFrame ?? latencyFrames) <= latencyFrames || airingSpinBoundaryCrossed
+    else {
+      return
+    }
+    publishPlaybackStarted()
+  }
+
+  /// Test seam: simulates the given spin's download/decode failing — the same identity check
+  /// production uses to scope the failure fallback to the TRUE airing spin — without a real download
+  /// or decode pipeline (device-verified, not unit-tested — see the type doc comment).
+  func simulateSpinFailureForTesting(spinID: String) {
+    handleAiringSpinFailure(spinID: spinID)
+  }
+
+  private func publishPlaybackStarted() {
+    guard !isStopped, !playbackPublished else { return }
+    playbackPublished = true
+    onPlaybackStarted?()
   }
 
   /// Fold in later-discovered upcoming spins (from the station player's 20s poll). Cheap append for
@@ -229,13 +438,23 @@ final class SampleBufferPlaybackController {
   private func ingest(_ spin: Spin, reportsProgress: Bool)
     -> SampleBufferStationRenderer.Scheduled?
   {
-    guard !knownSpinIDs.contains(spin.id), let remoteUrl = spin.audioBlock.downloadUrl else {
+    guard !knownSpinIDs.contains(spin.id) else { return nil }
+    guard let remoteUrl = spin.audioBlock.downloadUrl else {
+      // A malformed airing spin never reaches here in production (`PlayolaStationPlayer` validates
+      // first) — this is the controller's own defense in depth. No download/decode task will ever
+      // exist for this spin, so without this, a deadline-started renderer would sit behind
+      // `.loading` forever. Call the shared body directly (not `handleAiringSpinFailure`): id-matching
+      // doesn't apply here, `airingSpinID` is deliberately never set for a spin that never ingests
+      // (the position-not-identity rule above), so a later same-id spin can't inherit its failure.
+      if reportsProgress { markAiringSpinFailed() }
       return nil
     }
     knownSpinIDs.insert(spin.id)
     activeSpins[spin.id] = spin
+    if reportsProgress { airingSpinID = spin.id }
 
     let startFrame = mapper.frame(for: spin.airtime)
+    if reportsProgress { airingSpinStartFrame = startFrame }
     // The first authored output frame is `latencyFrames` (the timebase's head start), so the first
     // source offset actually rendered is `latencyFrames - startFrame` — decode from there, not from
     // the mapper origin, or a high-latency route's first window mixes to silence (mid-file join
@@ -264,7 +483,7 @@ final class SampleBufferPlaybackController {
         remoteUrl: remoteUrl,
         progressHandler: reportsProgress
           ? { [weak self] progress in
-            guard let self, !self.rendererStarted else { return }
+            guard let self, !self.playbackPublished else { return }
             self.onLoadProgress?(progress)
           } : nil)
       if Task.isCancelled { return }
@@ -275,6 +494,9 @@ final class SampleBufferPlaybackController {
       pump.prepare(spin: spin, fileURL: localUrl, startFrame: startFrame, initialOffset: offset)
     } catch {
       if !(error is CancellationError) {
+        // Unstick a deadline-started renderer waiting on a decode that will never come (§4.4 item 3)
+        // before the (possibly slower) error report, so the fallback isn't itself gated on that hop.
+        handleAiringSpinFailure(spinID: spin.id)
         await errorReporter.reportError(
           error, context: "Sample-buffer download failed for spin \(spin.id)", level: .error)
       }

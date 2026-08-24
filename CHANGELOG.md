@@ -87,6 +87,75 @@ flipping the backend on is a separate, server-flagged app-side step.
   are intentionally left uncapped and non-HTTP/3 (S3 has no QUIC). See
   `PlayolaTransport`. (Shipped on the maintenance line as 0.20.3.)
 
+## 0.21.0-beta.4
+
+### Fixed
+
+- **The startup deadline no longer reports `.playing` during the silent
+  pre-decode hole.** If the airing spin's download outlived the 2s startup
+  deadline, the renderer started with no audio decoded and `onPlaybackStarted`
+  fired immediately — publishing `.playing` while the renderer was still
+  silent, with `onLoadProgress` gated off. A slow download read as "loading
+  finished" followed by 1–1.5s of real dead air. The renderer still starts at
+  the deadline (§4.4 — a slow/missing download can never hang the station),
+  but `onPlaybackStarted` now only fires once audio is actually imminent: at
+  the first currently-audible decode, immediately if the airing spin's
+  download/decode fails after the deadline already started the renderer (so
+  the state machine can never sit in `.loading` forever behind a renderer
+  that's already running), or — for a malformed airing spin with no download
+  URL at all — at the deadline itself, since no download/decode will ever
+  exist for it. Loading progress now covers the deadline-started hole too —
+  it keeps flowing until playback is actually published, not just until the
+  renderer starts — and is retired the moment a LATER spin's boundary is
+  crossed (`onSpinStarted`), so a later spin becoming audible first can't
+  leave the airing spin's stale download progress regressing state back to
+  `.loading`. The airing spin's own boundary crossing does not retire
+  progress or count as a publish, and is no longer forwarded to
+  `onSpinStarted` at all while playback is unresolved — the renderer fires
+  that boundary from the spin's scheduled position, independent of whether
+  its own decode has landed, so treating it as proof of real audio (either by
+  retiring progress or by notifying the owner) would reopen the exact
+  silent-hole bug this fix exists to close — UNLESS the airing spin's decode
+  has already landed at least once by the time its boundary fires, in which
+  case the crossing is trusted: `Schedule.current` can hand back a first spin
+  that hasn't started airing yet (nothing currently on air), whose decode can
+  land well before its own airtime, and its later boundary crossing is the
+  only thing that will ever publish for it. `onPlaybackStarted` (audible
+  decode or failure) remains this spin's transition trigger when no decode
+  has landed at all yet. A later spin's boundary crossing is unaffected and
+  still publishes immediately, as before. The "currently-audible decode" gate
+  is now also identity-checked (`spinID == airingSpinID`), not just
+  position-checked: on a high-latency route (e.g. AirPlay, ~2s of
+  compensation) a later spin scheduled within that latency window could
+  decode before the airing spin's own download/decode finished and satisfy
+  the position check too, publishing early for the wrong spin. Decode-ahead
+  is driven by the renderer's own position rather than eagerly, so for a
+  future-scheduled first spin the boundary can also fire *before* its decode
+  lands — the audible-position check would then drop that late decode
+  forever too, since a future spin's fixed scheduled position never
+  satisfies it. A late-landing decode after such a boundary crossing is now
+  recognized as the last remaining publish trigger and fires immediately.
+  Finally, the airing spin's own boundary crossing is now also dropped once
+  playback has already been published by any other path (audible decode or
+  the failure fallback) — the boundary observer has no memory of whether it
+  already fired for a given spin, so without this it could forward
+  `onSpinStarted` a second time for the exact same spin already published via
+  `onPlaybackStarted`, republishing a stale duplicate `.playing(firstSpin)`.
+  A future-scheduled first spin's own failure is now also deferred the same
+  way: previously any airing-spin failure published immediately once the
+  renderer was running, which was correct for a spin already on air but wrong
+  for a first spin scheduled minutes out — it would show `.playing` for audio
+  that wasn't due yet. The failure now publishes immediately only if the
+  spin's own scheduled position has already been reached (or its boundary
+  already crossed); otherwise it waits for that boundary crossing, which
+  publishes via `onPlaybackStarted` (not `onSpinStarted` — a failed spin never
+  has real audio). This deferral applies regardless of which order the
+  failure and the startup deadline land in: a failure that lands *before* the
+  deadline previously bypassed the same-position check when the deadline
+  later started the renderer, publishing early for the same reason — both
+  orderings now go through one shared gate. `.legacyEngine` and the public
+  API are unchanged.
+
 ## 0.21.0-beta.3
 
 ### Fixed
