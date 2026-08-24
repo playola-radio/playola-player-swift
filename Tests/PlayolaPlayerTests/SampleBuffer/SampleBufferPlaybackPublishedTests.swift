@@ -279,8 +279,45 @@ struct SampleBufferPlaybackPublishedTests {
     controller.stop()
   }
 
+  @Test("a stale frozen-position check does not defer a first spin's failure past its own airtime")
+  func staleFirstSpinFailureBeforeDeadlinePublishesOnceAirtimeHasPassed() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    // Anchor 2s in the past and schedule airtime 1s after the anchor, so real "now" has already
+    // passed this spin's airtime by ~1s — but the ingest-time snapshot (`mapper.frame(for: airtime)`
+    // relative to `latencyFrames`) still reads "not yet due," since the spin's frame position is
+    // positive at ingest and no wall-clock time is baked into that snapshot.
+    let anchorDate = Date().addingTimeInterval(-2)
+    let controller = SampleBufferPlaybackController(
+      anchorDate: anchorDate, fileDownloadManager: downloadManager)
+    var startedSpinIDs: [String] = []
+    controller.onSpinStarted = { startedSpinIDs.append($0.id) }
+    var startedCount = 0
+    controller.onPlaybackStarted = { startedCount += 1 }
+
+    let url = URL(string: "https://example.com/first.m4a")!
+    let spin = Spin.mockWith(
+      id: "spin-first", airtime: anchorDate.addingTimeInterval(1),
+      audioBlock: .mockWith(downloadUrl: url))
+    controller.start(with: [spin])
+    await downloadManager.waitForCall(url)
+
+    // The failure races ahead of the deadline (renderer not started yet).
+    controller.simulateSpinFailureForTesting(spinID: spin.id)
+    #expect(startedCount == 0)
+
+    // By the time the deadline starts the renderer, real time has already passed this spin's
+    // airtime — publish now rather than waiting for a boundary crossing that already happened in
+    // the past (there is nothing left to cross).
+    controller.startRendererIfNeededForTesting()
+    #expect(startedCount == 1)
+    #expect(startedSpinIDs.isEmpty)
+
+    downloadManager.completeDownload(url)
+    controller.stop()
+  }
+
   /// mockWith(downloadUrl:) can't force a genuinely-nil URL (nil == omitted), so build it by hand.
-  private func nilUrlSpin(id: String) -> Spin {
+  private func nilURLSpin(id: String) -> Spin {
     let base = AudioBlock.mock
     let nilUrlBlock = AudioBlock(
       id: base.id, title: base.title, artist: base.artist, durationMS: base.durationMS,
@@ -305,7 +342,7 @@ struct SampleBufferPlaybackPublishedTests {
     // spin reach the controller — this exercises the controller's own defense in depth: no
     // download/decode task exists for this spin, so the deadline is the ONLY thing that can ever
     // unstick `.loading` here.
-    controller.start(with: [nilUrlSpin(id: "spin-first")])
+    controller.start(with: [nilURLSpin(id: "spin-first")])
 
     controller.startRendererIfNeededForTesting()
     #expect(startedCount == 1)

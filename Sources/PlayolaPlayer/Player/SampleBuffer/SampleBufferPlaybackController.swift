@@ -384,11 +384,19 @@ final class SampleBufferPlaybackController {
   /// the same position/boundary-crossed check, or the deadline path would bypass the deferral above.
   private func publishFailureIfDue() {
     guard airingSpinFailed else { return }
-    guard (airingSpinStartFrame ?? latencyFrames) <= latencyFrames || airingSpinBoundaryCrossed
-    else {
-      return
-    }
+    guard isAiringSpinPositionDue || airingSpinBoundaryCrossed else { return }
     publishPlaybackStarted()
+  }
+
+  /// Re-checks "due" against the CURRENT time rather than reusing `ingest()`'s frozen snapshot: this
+  /// gate can fire an arbitrary delay after ingest (the failure can land well before the startup
+  /// deadline, which then waits up to `startupDeadline` before calling this), so a spin whose airtime
+  /// was in the future at ingest can have already become due by the time this runs. A nil
+  /// `airingSpinStartFrame` (the malformed-spin path, which never ingests) has no position to check —
+  /// always due.
+  private var isAiringSpinPositionDue: Bool {
+    guard let airingSpinStartFrame else { return true }
+    return airingSpinStartFrame - mapper.frame(for: Date()) <= latencyFrames
   }
 
   /// Test seam: simulates the given spin's download/decode failing — the same identity check
