@@ -206,6 +206,13 @@ discontinuity measured and acceptable; boundary callbacks still fire correctly.
 fixed-route) so the app integrates in parallel; beta.3 is where "Sonos multi-room" becomes
 a truthful marketed claim.
 
+**Tag note (2026-08-24)**: the `.sampleBuffer` backend's missing `.loading(progress)`
+reporting during initial download (unrelated to FU-2 — a small seam fix on
+`SampleBufferPlaybackController`/`PlayolaStationPlayer`, not a route-latency change) shipped
+ahead of this stage under the `0.21.0-beta.3` changelog heading. FU-2's own tag is therefore
+`0.21.0-beta.4` (or `0.21.0-beta.3` if the two land together before either ships) — whichever
+applies, keep the tag discipline above.
+
 ## Stage 5 (post-activation, in-repo, non-blocking): optimizations
 **Goal**: Round out the render path once it's live behind the flag. Neither gates AirPlay-2 correctness.
 - **FU-1** — streaming download / time-to-first-audio (first-spin latency only; own task:

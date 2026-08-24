@@ -887,6 +887,12 @@ final public class PlayolaStationPlayer: ObservableObject {
       guard let self, self.isCurrentGeneration(generation) else { return }
       self.state = .playing(firstSpin)
     }
+    // Mirrors the legacy path's `loadSpinWithProgress`: the currently-airing spin's download progress
+    // drives `.loading(progress)` until playback actually starts (`onPlaybackStarted` above).
+    controller.onLoadProgress = { [weak self] progress in
+      guard let self, self.isCurrentGeneration(generation) else { return }
+      self.state = .loading(progress)
+    }
     // C13: a terminal renderer failure (status .failed) makes every enqueue a silent no-op — surface
     // `.error` and tear the dead pipeline down instead of staying in a silent `.playing` forever.
     controller.onRendererFailed = { [weak self] error in

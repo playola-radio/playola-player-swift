@@ -87,6 +87,22 @@ flipping the backend on is a separate, server-flagged app-side step.
   are intentionally left uncapped and non-HTTP/3 (S3 has no QUIC). See
   `PlayolaTransport`. (Shipped on the maintenance line as 0.20.3.)
 
+## 0.21.0-beta.3
+
+### Fixed
+
+- **The `.sampleBuffer` backend now reports download progress while loading.**
+  Previously it published `.loading(0)` once at `play()` and then nothing
+  until the first decode fired `.playing` — a listener could sit on a bare
+  `.loading(0)` for the whole initial download with no visible progress. The
+  currently-airing spin's download now drives `.loading(progress)` exactly
+  like the legacy path's `loadSpinWithProgress`, via a new internal
+  `onLoadProgress` seam on `SampleBufferPlaybackController`. Only that first
+  spin reports — concurrently-downloading upcoming spins never do — and once
+  playback has actually started, later/racing progress callbacks are dropped
+  so the published state can never regress from `.playing` back to
+  `.loading`. The `.legacyEngine` path and the public API are unchanged.
+
 ## 0.20.1
 
 ### Added

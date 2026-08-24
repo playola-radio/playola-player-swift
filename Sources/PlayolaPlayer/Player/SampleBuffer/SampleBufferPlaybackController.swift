@@ -45,6 +45,9 @@ final class SampleBufferPlaybackController {
   private var rendererStarted = false
   private var isStopped = false
   private var startupDeadlineTask: Task<Void, Never>?
+  /// Set once, for the very first spin ingested (`start(with:)` always hands that spin first) — only
+  /// its download reports progress, so concurrently-downloading upcoming spins don't drive `onLoadProgress`.
+  private var firstSpinIngested = false
 
   /// Local paths of files still referenced by this session (owner feeds these to `pruneCache` as
   /// exclusions so an in-use spin's audio can't be evicted mid-play).
@@ -60,6 +63,10 @@ final class SampleBufferPlaybackController {
   /// Every enqueue after that is a no-op; the owner must surface `State.error` (C13), not stay
   /// silently `.playing`.
   var onRendererFailed: ((Error?) -> Void)?
+  /// Called (on the main actor) with the currently-airing spin's download progress (0.0–1.0), matching
+  /// the legacy path's `loadSpinWithProgress`. Never fires for upcoming spins, and never fires once
+  /// `rendererStarted` (playback must not regress from `.playing` back to `.loading`).
+  var onLoadProgress: ((Float) -> Void)?
 
   /// - Parameters:
   ///   - anchorDate: output frame 0 on the station timeline (normally `now`). Incoming spins already
@@ -179,6 +186,12 @@ final class SampleBufferPlaybackController {
     onPlaybackStarted?()
   }
 
+  /// Test seam: simulates playback having started, without a real decode pipeline (device-verified,
+  /// not unit-tested — see the type doc comment).
+  func startRendererIfNeededForTesting() {
+    startRendererIfNeeded()
+  }
+
   /// Fold in later-discovered upcoming spins (from the station player's 20s poll). Cheap append for
   /// anything beyond the enqueue horizon; the renderer ignores/reports one that lands too late.
   func addUpcoming(_ spins: [Spin]) {
@@ -216,6 +229,8 @@ final class SampleBufferPlaybackController {
     }
     knownSpinIDs.insert(spin.id)
     activeSpins[spin.id] = spin
+    let reportsProgress = !firstSpinIngested
+    firstSpinIngested = true
 
     let startFrame = mapper.frame(for: spin.airtime)
     // The first authored output frame is `latencyFrames` (the timebase's head start), so the first
@@ -230,17 +245,25 @@ final class SampleBufferPlaybackController {
 
     downloadTasks[spin.id] = Task { [weak self] in
       await self?.download(
-        spin: spin, remoteUrl: remoteUrl, startFrame: startFrame, offset: initialOffset)
+        spin: spin, remoteUrl: remoteUrl, startFrame: startFrame, offset: initialOffset,
+        reportsProgress: reportsProgress)
       self?.downloadTasks[spin.id] = nil  // release the finished task (spin ids are never re-ingested)
     }
 
     return SampleBufferStationRenderer.Scheduled(spin: spin, source: placeholder)
   }
 
-  private func download(spin: Spin, remoteUrl: URL, startFrame: Int64, offset: Int64) async {
+  private func download(
+    spin: Spin, remoteUrl: URL, startFrame: Int64, offset: Int64, reportsProgress: Bool
+  ) async {
     do {
       let localUrl = try await fileDownloadManager.downloadFileAsync(
-        remoteUrl: remoteUrl, progressHandler: nil)
+        remoteUrl: remoteUrl,
+        progressHandler: reportsProgress
+          ? { [weak self] progress in
+            guard let self, !self.rendererStarted else { return }
+            self.onLoadProgress?(progress)
+          } : nil)
       if Task.isCancelled { return }
       // A download that lands after the spin was stopped/pruned must NOT re-register a stale path or
       // prepare a source the renderer no longer knows about.
