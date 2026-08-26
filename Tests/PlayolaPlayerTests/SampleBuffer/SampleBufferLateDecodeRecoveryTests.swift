@@ -133,14 +133,60 @@ struct SampleBufferLateDecodeRecoveryTests {
       controller, downloadManager, airtime: Date().addingTimeInterval(300))
 
     controller.startRendererIfNeededForTesting()
+    controller.playheadFrameOverrideForTesting = 0
     // Decode lands well before this spin's own airtime — correctly not published, nothing discarded.
     controller.simulateDecodeLandedForTesting(startFrame: 999_999)
     #expect(controller.lateDecodeRecoveriesForTesting == 0)
 
-    // At the boundary, the spin's opening region may already sit in the queue as silence (enqueued
-    // before its decode landed) — the trusted crossing discards and refills with the real audio.
+    // The boundary crosses while the playhead is still within one enqueue horizon of the decode
+    // landing, so the spin's opening region may sit in the queue as silence (enqueued before its
+    // snapshot installed) — the trusted crossing discards and refills with the real audio.
+    controller.playheadFrameOverrideForTesting = 48_000
     controller.simulateSpinBoundaryForTesting(spin)
     #expect(controller.lateDecodeRecoveriesForTesting == 1)
+
+    downloadManager.completeDownload(url)
+    controller.stop()
+  }
+
+  @Test("a future first spin decoded long before its boundary does not flush at the crossing")
+  func longSinceDecodedFutureSpinDoesNotFlushAtBoundary() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+    let (spin, url) = await startAiringSpin(
+      controller, downloadManager, airtime: Date().addingTimeInterval(300))
+
+    controller.startRendererIfNeededForTesting()
+    controller.playheadFrameOverrideForTesting = 0
+    controller.simulateDecodeLandedForTesting(startFrame: 999_999)
+    #expect(controller.lateDecodeRecoveriesForTesting == 0)
+
+    // Minutes of silent running later, the playhead has traveled far past anything enqueued before
+    // the snapshot installed — everything queued now holds the real opening audio, and flushing it
+    // at the boundary would only risk an audible glitch. Publish still happens.
+    controller.playheadFrameOverrideForTesting = 10_000_000
+    controller.simulateSpinBoundaryForTesting(spin)
+    #expect(controller.lateDecodeRecoveriesForTesting == 0)
+
+    downloadManager.completeDownload(url)
+    controller.stop()
+  }
+
+  @Test("a decode landing before the renderer ever started never flushes at the boundary")
+  func decodeBeforeRendererStartDoesNotFlushAtBoundary() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+    let (spin, url) = await startAiringSpin(
+      controller, downloadManager, airtime: Date().addingTimeInterval(300))
+
+    // Decode lands first; the renderer starts afterwards with the snapshot already installed, so
+    // every frame it ever enqueues for this spin's region is mixed from the real audio.
+    controller.playheadFrameOverrideForTesting = 0
+    controller.simulateDecodeLandedForTesting(startFrame: 999_999)
+    controller.startRendererIfNeededForTesting()
+
+    controller.simulateSpinBoundaryForTesting(spin)
+    #expect(controller.lateDecodeRecoveriesForTesting == 0)
 
     downloadManager.completeDownload(url)
     controller.stop()

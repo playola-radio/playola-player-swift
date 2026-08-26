@@ -73,6 +73,13 @@ final class SampleBufferPlaybackController {
   /// latencyFrames`), leaving nothing left to ever publish. This flag lets a late-landing decode
   /// recognize that wall-clock time already passed this spin's airtime and publish anyway.
   private var airingSpinBoundaryCrossed = false
+  /// The renderer playhead captured when the airing spin's first decode landed with the renderer
+  /// already running — the only situation that authors silence into the queue for this spin's region
+  /// (frames mixed before its snapshot installed). That silence extends at most one enqueue horizon
+  /// past this capture, which is what `queuedSilenceMayRemain` measures against. Stays nil when the
+  /// decode landed before the renderer started (every enqueued frame was mixed from the real
+  /// snapshot, nothing to flush).
+  private var airingSpinDecodePlayheadFrame: Int64?
   /// The currently-airing spin's id, recorded only once it successfully ingests (has a download URL) —
   /// mirrors `reportsProgress`'s position-not-id scoping (see `ingest`) so a later spin sharing the same
   /// id as a malformed airing spin can't masquerade as it for the failure fallback below.
@@ -222,10 +229,12 @@ final class SampleBufferPlaybackController {
           "boundary: spin \(spin.id, privacy: .public) ignored (airing spin not yet decoded)")
         return
       }
-      // Trusted crossing for an early-decoded first spin: the renderer has been running (deadline)
-      // since before this spin's airtime, so part of its opening region may already sit in the queue
-      // as silence (enqueued before its decode landed). Discard and refill with the real audio.
-      discardQueuedSilence()
+      // Trusted crossing for an early-decoded first spin: if the renderer was already running when
+      // this spin's decode landed, part of its opening region may sit in the queue as silence
+      // (enqueued before its snapshot installed). Only flush while that authored silence can still
+      // be queued — a spin decoded long before its airtime has real audio queued by now, and
+      // flushing that would risk an audible glitch at the boundary for nothing.
+      if queuedSilenceMayRemain { discardQueuedSilence() }
     }
     sampleBufferLog.info("boundary: spin \(spin.id, privacy: .public) started")
     playbackPublished = true
@@ -343,6 +352,9 @@ final class SampleBufferPlaybackController {
   private func handleAudibleDecodeLanded(spinID: String, startFrame: Int64) {
     guard spinID == airingSpinID else { return }
     airingSpinDecoded = true
+    if rendererStarted, airingSpinDecodePlayheadFrame == nil {
+      airingSpinDecodePlayheadFrame = rendererPlayheadFrame
+    }
     // Normally only a position at/near the current output frame is "audible." But if this spin's
     // own boundary already crossed with no decode landed, wall-clock time has already passed its
     // scheduled position — the position check would never be satisfied for it, so this late-landing
@@ -363,6 +375,20 @@ final class SampleBufferPlaybackController {
     guard rendererStarted, !playbackPublished else { return }
     renderer.discardQueuedAudioAndReanchor()
     lateDecodeRecoveriesForTesting += 1
+  }
+
+  /// Whether any deadline-authored silence can still sit in the queue for the airing spin's region.
+  /// Frames enqueued before the spin's snapshot installed extend at most one enqueue horizon past
+  /// the playhead captured at decode-land (`airingSpinDecodePlayheadFrame`); once the live playhead
+  /// has traveled past that, everything queued was mixed from the real snapshot. False when the
+  /// capture is nil (decode landed before the renderer started — nothing silent was ever authored
+  /// for this spin) or the playhead is unreadable, since the flush is an optimization and skipping
+  /// it is always safe.
+  private var queuedSilenceMayRemain: Bool {
+    guard let decodePlayhead = airingSpinDecodePlayheadFrame,
+      let playhead = rendererPlayheadFrame
+    else { return false }
+    return playhead - decodePlayhead < renderer.enqueueHorizonFrames
   }
 
   /// Test seam: simulates a decode landing at the given output start frame for a spin (the airing spin
@@ -564,10 +590,15 @@ final class SampleBufferPlaybackController {
   /// start — the same frame space as `Scheduled.startFrame` + write cursor), or nil while the timebase
   /// has no valid time yet.
   private var rendererPlayheadFrame: Int64? {
+    if let playheadFrameOverrideForTesting { return playheadFrameOverrideForTesting }
     let seconds = CMTimeGetSeconds(sink.synchronizer.currentTime())
     guard seconds.isFinite else { return nil }
     return Int64((seconds * sampleRate).rounded())
   }
+
+  /// Test seam: substitutes the live synchronizer read in `rendererPlayheadFrame` so tests can move
+  /// the playhead deterministically (device-verified glue — see the type doc comment).
+  var playheadFrameOverrideForTesting: Int64?
 
   /// Re-anchor the wall-clock → frame mapping to the synchronizer's current playhead so spins scheduled
   /// after this boundary track fresh wall clock (bounds long-session drift; A1). Main-actor confined.

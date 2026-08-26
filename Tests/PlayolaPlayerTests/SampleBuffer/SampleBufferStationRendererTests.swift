@@ -362,12 +362,13 @@ struct SampleBufferStationRendererTests {
     #expect(sink.enqueued.count == enqueuedBefore)
   }
 
-  @Test("the catch-up decode span covers the enqueue horizon plus the decode lead")
+  @Test("the catch-up decode span covers the horizon, the decode lead, and decode-time slack")
   func catchUpDecodeSpanCoversHorizonAndLead() {
     let sync = FakeRenderSynchronizer()
     let sink = FakeSampleBufferRenderer()
-    let renderer = makeRenderer(sync: sync, sink: sink)  // 1s horizon + 1s decode lead
-    #expect(renderer.catchUpDecodeSpanFrames == Int64(2 * 48_000))
+    // 1s horizon + 1s decode lead + 1s slack for the catch-up decode's own elapsed wall-clock
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    #expect(renderer.catchUpDecodeSpanFrames == Int64(3 * 48_000))
   }
 
   @Test("stop tears down: no further boundary publishes, sink stopped and flushed")

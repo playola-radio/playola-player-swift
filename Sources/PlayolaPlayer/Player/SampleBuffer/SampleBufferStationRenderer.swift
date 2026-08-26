@@ -249,6 +249,11 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// current snapshots — which now carry the just-landed audio. One-shot per play (the caller gates on
   /// playback not yet published), so the repeated-flush warble the auto-flush path avoids can't happen
   /// here. No setRate: a manual flush does not pause the synchronizer.
+  ///
+  /// The caller's published-state guard runs on the main actor BEFORE this op is queued and is not
+  /// re-checked here. That's deliberate: the refill regenerates frame-addressed content from the
+  /// current snapshots at the live playhead, so even if a publish races in ahead of the flush the
+  /// worst case is re-enqueuing identical audio (a momentary top-up), never lost or skipped content.
   func discardQueuedAudioAndReanchor() {
     control.execute { [self] in
       guard !stopped, !halted.withLock({ $0 }) else { return }
@@ -264,10 +269,25 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     }
   }
 
-  /// How much source audio a post-flush refill consumes immediately: the full enqueue horizon plus the
-  /// decode lead. A catch-up initial decode must cover at least this much past the playhead, or the
-  /// refill's tail mixes to silence that can never be replaced (queued buffers are immutable).
-  var catchUpDecodeSpanFrames: Int64 { maxEnqueueAheadFrames + decodeLeadFrames }
+  /// How much source audio a post-flush refill consumes immediately (the full enqueue horizon plus
+  /// the decode lead), plus slack for the wall-clock time the catch-up decode itself takes: the
+  /// window is computed against the playhead BEFORE that decode runs, but the refill consumes
+  /// against the playhead AFTER it. A catch-up initial decode must cover at least this much past
+  /// the playhead, or the refill's tail mixes to silence that can never be replaced (queued buffers
+  /// are immutable). A decode slower than the slack still under-covers — the resulting silence is
+  /// bounded by the shortfall and only on this recovery path.
+  var catchUpDecodeSpanFrames: Int64 {
+    maxEnqueueAheadFrames + decodeLeadFrames + catchUpDecodeSlackFrames
+  }
+
+  /// See `catchUpDecodeSpanFrames`: budget for the catch-up decode's own elapsed wall-clock.
+  private var catchUpDecodeSlackFrames: Int64 { Int64(sampleRate * 1.0) }
+
+  /// The enqueue horizon in frames — the most queued audio (and so the most deadline-started
+  /// known-silence) that can exist ahead of the playhead. The controller compares playhead travel
+  /// since the airing spin's decode landed against this to decide whether a boundary-time flush
+  /// (`discardQueuedAudioAndReanchor`) can still be useful.
+  var enqueueHorizonFrames: Int64 { maxEnqueueAheadFrames }
 
   // MARK: - Media pull (runs on the control domain)
 
