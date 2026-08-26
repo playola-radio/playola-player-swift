@@ -240,6 +240,35 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     }
   }
 
+  /// Deliberate flush + re-anchor for a late first decode: the startup deadline started the renderer
+  /// with no audio decoded, so the queue holds up to `maxEnqueueAheadFrames` of known-silence (queued
+  /// buffers are never edited — §7 OUT). Real audio could otherwise only join at the write cursor,
+  /// behind all of that silence — on the first play that reads as "loaded, then seconds of dead air."
+  /// Unlike `recoverAfterAutoFlush` (where the system already emptied the queue), this MUST manually
+  /// flush; like recovery, it then re-points the write cursor to the live playhead and refills from the
+  /// current snapshots — which now carry the just-landed audio. One-shot per play (the caller gates on
+  /// playback not yet published), so the repeated-flush warble the auto-flush path avoids can't happen
+  /// here. No setRate: a manual flush does not pause the synchronizer.
+  func discardQueuedAudioAndReanchor() {
+    control.execute { [self] in
+      guard !stopped, !halted.withLock({ $0 }) else { return }
+      renderer.flush()
+      let playhead = playheadFrame()
+      nextOutputFrame = playhead
+      fillLocked()
+      sampleBufferLog.notice(
+        """
+        late-decode recovery: flushed queued audio, re-anchored to \(playhead), \
+        refilled \(self.nextOutputFrame - playhead) ahead
+        """)
+    }
+  }
+
+  /// How much source audio a post-flush refill consumes immediately: the full enqueue horizon plus the
+  /// decode lead. A catch-up initial decode must cover at least this much past the playhead, or the
+  /// refill's tail mixes to silence that can never be replaced (queued buffers are immutable).
+  var catchUpDecodeSpanFrames: Int64 { maxEnqueueAheadFrames + decodeLeadFrames }
+
   // MARK: - Media pull (runs on the control domain)
 
   /// Entry point from `requestMediaDataWhenReady` (already on the request/control queue).
