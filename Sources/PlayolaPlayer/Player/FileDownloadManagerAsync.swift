@@ -110,9 +110,10 @@ public protocol FileDownloadManaging {
   /// Prunes the cache to stay under the specified size limit
   /// - Parameters:
   ///   - maxSize: Maximum size in bytes for the cache (nil uses default)
-  ///   - excludeFilepaths: Paths to exclude from pruning
+  ///   - excludeFilepaths: Paths to exclude from pruning. Excluded files are never deleted, but
+  ///     their sizes still count toward the total when deciding how much to prune.
   /// - Throws: FileDownloadError if pruning fails
-  func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) throws
+  func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) async throws
 
   /// Returns the current size of the cache in bytes
   /// - Returns: The size in bytes
@@ -144,9 +145,14 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   /// File manager for cache operations
   private let fileManager = FileManager.default
 
+  /// Overrides the on-disk cache directory. Used only by tests that need an isolated,
+  /// disposable cache directory instead of the real per-platform location.
+  private let cacheDirectoryOverride: URL?
+
   #if os(iOS) || os(tvOS)
     /// Cache directory URL
     private var cacheDirectoryURL: URL {
+      if let cacheDirectoryOverride { return cacheDirectoryOverride }
       let documentsPath = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
       return documentsPath.appendingPathComponent(Self.subfolderName)
     }
@@ -155,6 +161,7 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   #if os(macOS)
     /// Cache directory URL
     private var cacheDirectoryURL: URL {
+      if let cacheDirectoryOverride { return cacheDirectoryOverride }
       let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
         .first!
       let bundleID = Bundle.main.bundleIdentifier ?? "fm.playola.PlayolaPlayer"
@@ -162,7 +169,16 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     }
   #endif
 
+  /// Creates a download manager backed by the default per-platform cache directory,
+  /// creating that directory if it doesn't already exist.
   public init() {
+    self.cacheDirectoryOverride = nil
+    createCacheDirectoryIfNeeded()
+  }
+
+  /// Test-only initializer that isolates cache operations to a caller-supplied directory.
+  init(cacheDirectoryOverride: URL) {
+    self.cacheDirectoryOverride = cacheDirectoryOverride
     createCacheDirectoryIfNeeded()
   }
 
@@ -285,9 +301,11 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   }
 
   public func pruneCache() async {
-    await Task.detached(priority: .utility) {
-      await self.pruneCacheInternal()
-    }.value
+    do {
+      try await pruneCacheInternal()
+    } catch {
+      logger.error("Failed to prune cache: \(error)")
+    }
   }
 
   // MARK: - Cache Management
@@ -302,9 +320,10 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     return cacheDirectoryURL.appendingPathComponent(fileName)
   }
 
-  private func pruneCacheInternal(maxSize: Int64 = FileDownloadManagerAsync.MAX_AUDIO_FOLDER_SIZE)
-    async
-  {
+  private func pruneCacheInternal(
+    maxSize: Int64 = FileDownloadManagerAsync.MAX_AUDIO_FOLDER_SIZE,
+    excludedPaths: Set<String> = []
+  ) async throws {
     do {
       let contents = try fileManager.contentsOfDirectory(
         at: cacheDirectoryURL, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey],
@@ -317,7 +336,9 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
         let attributes = try fileURL.resourceValues(forKeys: [.fileSizeKey, .creationDateKey])
         if let size = attributes.fileSize, let date = attributes.creationDate {
           totalSize += Int64(size)
-          fileInfos.append(FileInfo(url: fileURL, size: Int64(size), date: date))
+          if !excludedPaths.contains(Self.normalizedPath(for: fileURL)) {
+            fileInfos.append(FileInfo(url: fileURL, size: Int64(size), date: date))
+          }
         }
       }
 
@@ -335,8 +356,14 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
         }
       }
     } catch {
-      logger.error("Failed to prune cache: \(error)")
+      throw FileDownloadError.cachePruneFailed(error.localizedDescription)
     }
+  }
+
+  /// Normalizes a file URL's path so exclusion comparisons aren't defeated by symlink or
+  /// standardization differences (e.g. `/private/var` vs `/var`, trailing components).
+  private static func normalizedPath(for url: URL) -> String {
+    url.resolvingSymlinksInPath().standardizedFileURL.path
   }
 
   // MARK: - FileDownloadManaging Protocol Implementation
@@ -505,12 +532,11 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
   }
 
   /// Prunes the cache to stay under the specified size limit
-  public func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) throws {
-    // For now, we'll use the internal prune method synchronously
-    // Note: This could block but maintains protocol compatibility
-    Task {
-      await pruneCacheInternal(maxSize: maxSize ?? Self.MAX_AUDIO_FOLDER_SIZE)
-    }
+  public func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) async throws {
+    let excludedPaths = Set(
+      excludeFilepaths.map { Self.normalizedPath(for: URL(fileURLWithPath: $0)) })
+    try await pruneCacheInternal(
+      maxSize: maxSize ?? Self.MAX_AUDIO_FOLDER_SIZE, excludedPaths: excludedPaths)
   }
 
   /// Returns the current size of the cache in bytes

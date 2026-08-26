@@ -514,6 +514,32 @@ try session.setCategory(.playback, mode: .default, policy: .longFormAudio, optio
 try session.setActive(true)
 ```
 
+#### Background playback & listening reporting
+
+The SDK keeps its listening-session heartbeat alive with a playback-state-driven
+task, not a foreground timer, so reporting continues while the app is
+backgrounded **as long as the host keeps the app alive for background audio**.
+The host must:
+
+1. **Declare the `audio` background mode.** Add `UIBackgroundModes` → `audio`
+   to your `Info.plist`. Without it, iOS suspends the process on backgrounding,
+   the audio render thread stops, and no client code (heartbeat or `/end`) can
+   run — listening time is undercounted even though a few seconds of buffered
+   audio may still be audible.
+
+2. **Keep the `.playback` session active** (the launch-time setup above).
+
+3. **Never call `stop()` on backgrounding.** `stop()` means "playback is over":
+   it ends the listening session. Calling it from a scene/lifecycle hook
+   (`scenePhase == .background`, `didEnterBackground`, `willResignActive`) ends
+   the session while audio is still playing, which is exactly the undercount
+   this design avoids. Only call `stop()` on a real user stop or teardown.
+
+4. **Use `pauseForInterruption()` for real audio interruptions only** (calls,
+   other apps grabbing the session), not for app backgrounding. A pause ends
+   the listening session because audio is genuinely silent; backgrounding is not
+   a pause.
+
 #### Interruption handling
 
 Call `pauseForInterruption()` synchronously when an interruption begins and `resumeAfterInterruption()` asynchronously when it ends:
@@ -583,6 +609,56 @@ PlayolaStationPlayer.shared.$state
     .store(in: &cancellables)
 ```
 
+### Render backends (AirPlay-2 long-form, opt-in)
+
+The SDK has two render backends behind one unchanged public contract
+(`State`, delegate, scheduling, downloads are identical on both):
+
+- **`.legacyEngine`** (default) — the proven `AVAudioEngine` graph. Runtime
+  behavior is byte-for-byte what shipped in 0.20.x.
+- **`.sampleBuffer`** — a custom software mixer feeding one
+  `AVSampleBufferAudioRenderer` + `AVSampleBufferRenderSynchronizer`, which
+  lets a station route as AirPlay-2 **long-form** audio (grouped/multi-room
+  targets) — something the engine path cannot do.
+
+Select the backend **before the first `play()`**; it locks for the life of the
+process once playback starts (`isRenderBackendLocked`):
+
+```swift
+let player = PlayolaStationPlayer.shared
+player.setRenderBackend(.sampleBuffer)   // or configure(renderBackend: .sampleBuffer)
+```
+
+**Verification status (0.21.0-beta.2):** device-verified on Apple TV
+(fixed-route long-form routing, gapless boundaries, interruption recovery,
+bounded memory). HomePod and Sonos speak the same protocol and are
+expected-compatible but have not had a hardware pass yet.
+
+#### Output-latency compensation (host contract)
+
+The SDK never reads `AVAudioSession` — including `outputLatency`. If you want
+multiple devices playing the same station to start in sync (local speaker
+≈ 18 ms vs AirPlay ≈ 2000 ms of presentation latency), the **host feeds the
+current route's latency** before each `play()`:
+
+```swift
+player.outputLatencyCompensation = AVAudioSession.sharedInstance().outputLatency
+try await player.play(stationId: stationId)
+```
+
+Contract and limitation (as of 0.21.0-beta.2):
+
+- The value is **read once per `play()`, when the playback pipeline starts**
+  (after the schedule loads, just before audio begins) and baked into the
+  render timeline. Set it before calling `play()`; changing it during playback
+  has no effect until the next `play()`.
+- **Fixed-route only.** If the route changes mid-session (e.g. the listener
+  moves playback from the phone speaker to an AirPlay target), playback
+  recovers automatically, but the compensation still reflects the old route —
+  the device is offset by the latency delta until the next `play()`. Live
+  route-switch re-sync is planned for `0.21.0-beta.3`.
+- On the `.legacyEngine` backend the value is unused.
+
 ### Migrating from 0.19.x to 0.20.0
 
 `0.20.0` makes the host the sole owner of the `AVAudioSession`. Earlier versions configured, activated, and self-handled interruptions for you. This is a breaking change; both steps are required.
@@ -615,8 +691,9 @@ let localURL = downloadManager.localURL(for: audioURL)
 // Clear entire cache
 try downloadManager.clearCache()
 
-// Prune cache with size limit
-try downloadManager.pruneCache(maxSize: 100 * 1024 * 1024, excludeFilepaths: [])
+// Prune cache with size limit (excluded files are never deleted, but still
+// count toward the total when deciding how much to prune)
+try await downloadManager.pruneCache(maxSize: 100 * 1024 * 1024, excludeFilepaths: [])
 
 // Check available disk space
 if let availableSpace = downloadManager.availableDiskSpace() {
@@ -1125,7 +1202,7 @@ public class FileDownloadManagerAsync: FileDownloadManaging {
     
     // Cache management
     public func clearCache() throws
-    public func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) throws
+    public func pruneCache(maxSize: Int64?, excludeFilepaths: [String]) async throws
     public func currentCacheSize() -> Int64
     public func availableDiskSpace() -> Int64?
 }

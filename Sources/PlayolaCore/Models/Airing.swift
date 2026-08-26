@@ -18,6 +18,20 @@ public struct Airing: Codable, Sendable, Equatable, Hashable, Identifiable {
   public let episode: Episode?
   public let station: Station?
 
+  /// The real moment the show goes on air (`MIN(spin.airtime)` across the airing's spins).
+  ///
+  /// Accounts for the "lead gap" where preceding content pushes the show later than its
+  /// nominal `airtime` slot. Present only on airings sourced from the schedule feed;
+  /// `nil` for airings sourced elsewhere.
+  public let startTime: Date?
+
+  /// The real moment the show goes off air (`MAX(spin.endOfMessageTime)`, floored at
+  /// `airtime + episode.durationMS`).
+  ///
+  /// Present only on airings sourced from the schedule feed; `nil` for airings sourced
+  /// elsewhere.
+  public let endTime: Date?
+
   public init(
     id: String,
     episodeId: String,
@@ -26,7 +40,9 @@ public struct Airing: Codable, Sendable, Equatable, Hashable, Identifiable {
     createdAt: Date,
     updatedAt: Date,
     episode: Episode? = nil,
-    station: Station? = nil
+    station: Station? = nil,
+    startTime: Date? = nil,
+    endTime: Date? = nil
   ) {
     self.id = id
     self.episodeId = episodeId
@@ -36,6 +52,8 @@ public struct Airing: Codable, Sendable, Equatable, Hashable, Identifiable {
     self.updatedAt = updatedAt
     self.episode = episode
     self.station = station
+    self.startTime = startTime
+    self.endTime = endTime
   }
 }
 
@@ -61,7 +79,9 @@ extension Airing {
     createdAt: Date? = nil,
     updatedAt: Date? = nil,
     episode: Episode?? = nil,
-    station: Station?? = nil
+    station: Station?? = nil,
+    startTime: Date?? = nil,
+    endTime: Date?? = nil
   ) -> Airing {
     let mock = Self.mock
     return Airing(
@@ -72,7 +92,9 @@ extension Airing {
       createdAt: createdAt ?? mock.createdAt,
       updatedAt: updatedAt ?? mock.updatedAt,
       episode: episode ?? mock.episode,
-      station: station ?? mock.station
+      station: station ?? mock.station,
+      startTime: startTime ?? mock.startTime,
+      endTime: endTime ?? mock.endTime
     )
   }
 }
