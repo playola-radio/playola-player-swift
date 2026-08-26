@@ -46,6 +46,17 @@ struct CatchUpDecodeWindowTests {
     #expect(window.offset == 480_000)
     #expect(window.decodeThrough == 480_000 + catchUpSpan)
   }
+
+  @Test("a window with no PCM reports empty; one with frames does not")
+  func emptyWindowDetection() {
+    let envelope = FadeEnvelope(spin: Spin.mockWith(startingVolume: 1, fades: []))
+    let empty = SpinPCMWindow(
+      spinID: "s", startFrame: 0, envelope: envelope, windowStart: 0, frames: [])
+    #expect(empty.isEmpty)
+    let full = SpinPCMWindow(
+      spinID: "s", startFrame: 0, envelope: envelope, windowStart: 0, frames: [SIMD2(0.5, 0.5)])
+    #expect(!full.isEmpty)
+  }
 }
 
 /// `.serialized`: each test constructs a real `SampleBufferPlaybackController` (real
@@ -187,6 +198,26 @@ struct SampleBufferLateDecodeRecoveryTests {
 
     controller.simulateSpinBoundaryForTesting(spin)
     #expect(controller.lateDecodeRecoveriesForTesting == 0)
+
+    downloadManager.completeDownload(url)
+    controller.stop()
+  }
+
+  @Test("an empty decode window (join already past end-of-file) publishes but does not flush")
+  func emptyDecodeWindowPublishesWithoutFlush() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+    let (_, url) = await startAiringSpin(controller, downloadManager)
+
+    var published = 0
+    controller.onPlaybackStarted = { published += 1 }
+    controller.startRendererIfNeededForTesting()
+    // The catch-up join offset was already past the file's end (short spin, long silent run): no
+    // PCM exists, so like the failure fallback this must still publish — but a flush could only
+    // re-enqueue the same silence, so it is skipped.
+    controller.simulateDecodeLandedForTesting(startFrame: 0, hasAudio: false)
+    #expect(controller.lateDecodeRecoveriesForTesting == 0)
+    #expect(published == 1)
 
     downloadManager.completeDownload(url)
     controller.stop()

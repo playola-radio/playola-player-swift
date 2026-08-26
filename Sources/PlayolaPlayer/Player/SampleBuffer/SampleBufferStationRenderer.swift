@@ -360,9 +360,20 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     CMTime(value: frame, timescale: Int32(sampleRate))
   }
 
+  /// The synchronizer's time can be invalid/indefinite around startup, teardown, or a route change;
+  /// `CMTimeGetSeconds` then returns NaN, and converting that to `Int64` traps. Fall back to the
+  /// last valid read (0 before any) — every caller treats the playhead as advisory (enqueue pacing,
+  /// re-anchoring), so a briefly stale value is safe where a crash is not. Control-queue confined,
+  /// like every caller.
   private func playheadFrame() -> Int64 {
-    Int64((CMTimeGetSeconds(synchronizer.currentTime) * sampleRate).rounded())
+    let seconds = CMTimeGetSeconds(synchronizer.currentTime)
+    guard seconds.isFinite else { return lastValidPlayheadFrame }
+    let frame = Int64((seconds * sampleRate).rounded())
+    lastValidPlayheadFrame = frame
+    return frame
   }
+
+  private var lastValidPlayheadFrame: Int64 = 0
 
   private func installBoundaryObservers() {
     removeBoundaryObservers()

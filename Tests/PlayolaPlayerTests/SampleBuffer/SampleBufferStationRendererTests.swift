@@ -326,6 +326,30 @@ struct SampleBufferStationRendererTests {
     #expect(sync.setRateCalls.count == setRatesBefore)
   }
 
+  @Test("an invalid synchronizer time during recovery falls back to the last valid playhead")
+  func invalidSynchronizerTimeDoesNotTrap() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([
+      .init(
+        spin: Spin.mockWith(id: "spin-A"),
+        source: SpinPCMWindow(
+          spinID: "spin-A", startFrame: 0, envelope: unity(), windowStart: 0, frames: []))
+    ])
+    renderer.start()
+    sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
+    sink.pump()  // establishes a valid playhead read (96_000)
+    let queuedBefore = sink.enqueued.count
+
+    // Around a route change/teardown the synchronizer can report an invalid time; converting its
+    // NaN seconds to Int64 would trap. The recovery must fall back to the last valid read instead.
+    sync.currentTime = .invalid
+    renderer.discardQueuedAudioAndReanchor()
+    #expect(sink.flushCount == 1)
+    #expect(sink.enqueued[queuedBefore...].first?.startFrame == 96_000)
+  }
+
   @Test("late-decode recovery after a halt is a no-op")
   func lateDecodeRecoveryAfterHaltIsNoOp() {
     let sync = FakeRenderSynchronizer()

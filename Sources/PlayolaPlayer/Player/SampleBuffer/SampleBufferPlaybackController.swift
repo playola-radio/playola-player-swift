@@ -273,7 +273,8 @@ final class SampleBufferPlaybackController {
     // slow/missing-download fallback.
     pump.onDataPrepared = { [weak self] window in
       Task { @MainActor in
-        self?.handleAudibleDecodeLanded(spinID: window.spinID, startFrame: window.startFrame)
+        self?.handleAudibleDecodeLanded(
+          spinID: window.spinID, startFrame: window.startFrame, hasAudio: !window.isEmpty)
       }
     }
     // §4.4: a failed decode renders as silence and the station continues — but it must be REPORTED,
@@ -349,10 +350,15 @@ final class SampleBufferPlaybackController {
   /// decode before the airing spin's own download/decode finishes and satisfy the position check too —
   /// so this also requires `spinID == airingSpinID`, the same identity guard `handleAiringSpinFailure`
   /// already uses.
-  private func handleAudibleDecodeLanded(spinID: String, startFrame: Int64) {
+  /// `hasAudio` is false when the prepared window holds no PCM at all (the catch-up join offset was
+  /// already past end-of-file — the spin is effectively over). Publish semantics are unchanged in
+  /// that case (like the failure fallback, no audio will ever come from this spin, so the state
+  /// machine must not stay stuck in `.loading`), but the flush is skipped: there is nothing real to
+  /// refill with, so a flush could only re-enqueue the same silence.
+  private func handleAudibleDecodeLanded(spinID: String, startFrame: Int64, hasAudio: Bool = true) {
     guard spinID == airingSpinID else { return }
     airingSpinDecoded = true
-    if rendererStarted, airingSpinDecodePlayheadFrame == nil {
+    if hasAudio, rendererStarted, airingSpinDecodePlayheadFrame == nil {
       airingSpinDecodePlayheadFrame = rendererPlayheadFrame
     }
     // Normally only a position at/near the current output frame is "audible." But if this spin's
@@ -363,7 +369,7 @@ final class SampleBufferPlaybackController {
     // Deferred-deadline path: the renderer has been running silently since the deadline, and its
     // queue holds up to the full enqueue horizon of silence that would otherwise have to drain
     // before this just-landed audio (which can only join at the write cursor) is heard.
-    discardQueuedSilence()
+    if hasAudio { discardQueuedSilence() }
     startRendererIfNeeded()
     publishPlaybackStarted()
   }
@@ -395,8 +401,11 @@ final class SampleBufferPlaybackController {
   /// by default) — the same audible/non-audible gate production uses to decide whether to publish
   /// playback — without a real decode pipeline (device-verified, not unit-tested — see the type doc
   /// comment).
-  func simulateDecodeLandedForTesting(spinID: String? = nil, startFrame: Int64) {
-    handleAudibleDecodeLanded(spinID: spinID ?? airingSpinID ?? "", startFrame: startFrame)
+  func simulateDecodeLandedForTesting(
+    spinID: String? = nil, startFrame: Int64, hasAudio: Bool = true
+  ) {
+    handleAudibleDecodeLanded(
+      spinID: spinID ?? airingSpinID ?? "", startFrame: startFrame, hasAudio: hasAudio)
   }
 
   /// §4.4 item 3: if the airing spin's download or decode fails, the state machine must never be able to
