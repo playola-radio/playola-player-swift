@@ -146,8 +146,8 @@ struct SampleBufferLoadingProgressTests {
     controller.stop()
   }
 
-  @Test("progress arriving after playback started is dropped")
-  func progressAfterPlaybackStartedIsDropped() async {
+  @Test("progress arriving after playback is published is dropped")
+  func progressAfterPlaybackPublishedIsDropped() async {
     let downloadManager = ProgressCapturingDownloadManager()
     let controller = makeController(downloadManager)
 
@@ -156,13 +156,96 @@ struct SampleBufferLoadingProgressTests {
     controller.start(with: [spin])
     await downloadManager.waitForCall(url)
 
-    controller.startRendererIfNeededForTesting()
+    // startFrame 0 <= the default latencyFrames (0): the audible-decode trigger, so this both
+    // starts the renderer AND publishes playback (fast path).
+    controller.simulateDecodeLandedForTesting(startFrame: 0)
 
     var progressUpdates: [Float] = []
     controller.onLoadProgress = { progressUpdates.append($0) }
     downloadManager.fireProgress(url, 0.9)
 
     #expect(progressUpdates.isEmpty)
+
+    downloadManager.completeDownload(url)
+    controller.stop()
+  }
+
+  @Test(
+    "progress after a later spin's boundary crossing is dropped, even if its own download never resolves"
+  )
+  func progressAfterBoundaryCrossingIsDroppedEvenWithoutAiringSpinResolving() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+
+    let url = URL(string: "https://example.com/first.m4a")!
+    let spin = Spin.mockWith(id: "spin-first", audioBlock: .mockWith(downloadUrl: url))
+    controller.start(with: [spin])
+    await downloadManager.waitForCall(url)
+
+    // The deadline starts the renderer silently; the airing spin's own download is still in
+    // flight (may never resolve). A later spin can still decode early and become audible first —
+    // its boundary crossing must retire the airing spin's progress reporting too, or a stale
+    // download's progress would regress state backward from `.playing` to `.loading`.
+    controller.startRendererIfNeededForTesting()
+    controller.simulateSpinBoundaryForTesting(Spin.mockWith(id: "spin-later"))
+
+    var progressUpdates: [Float] = []
+    controller.onLoadProgress = { progressUpdates.append($0) }
+    downloadManager.fireProgress(url, 0.9)
+
+    #expect(progressUpdates.isEmpty)
+
+    downloadManager.completeDownload(url)
+    controller.stop()
+  }
+
+  @Test("progress keeps flowing through the deadline-started silent hole")
+  func progressFlowsThroughDeadlineStartedHole() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+
+    let url = URL(string: "https://example.com/first.m4a")!
+    let spin = Spin.mockWith(id: "spin-first", audioBlock: .mockWith(downloadUrl: url))
+    controller.start(with: [spin])
+    await downloadManager.waitForCall(url)
+
+    // The startup deadline starts the renderer with no decode landed yet — playback is NOT
+    // published, so progress must keep updating (the host's loading UI must not disappear).
+    controller.startRendererIfNeededForTesting()
+
+    var progressUpdates: [Float] = []
+    controller.onLoadProgress = { progressUpdates.append($0) }
+    downloadManager.fireProgress(url, 0.8)
+
+    #expect(progressUpdates == [0.8])
+
+    downloadManager.completeDownload(url)
+    controller.stop()
+  }
+
+  @Test(
+    "progress keeps flowing after the airing spin's own boundary crossing, not just a later spin's")
+  func progressFlowsThroughAiringSpinsOwnBoundaryCrossing() async {
+    let downloadManager = ProgressCapturingDownloadManager()
+    let controller = makeController(downloadManager)
+
+    let url = URL(string: "https://example.com/first.m4a")!
+    let spin = Spin.mockWith(id: "spin-first", audioBlock: .mockWith(downloadUrl: url))
+    controller.start(with: [spin])
+    await downloadManager.waitForCall(url)
+
+    // The renderer's boundary observer fires for the airing spin's own scheduled position too,
+    // independent of whether its decode has landed — that must NOT be treated as proof real audio
+    // is playing (the exact original bug this PR fixes). Only a DIFFERENT (later) spin's boundary
+    // crossing may retire progress reporting.
+    controller.startRendererIfNeededForTesting()
+    controller.simulateSpinBoundaryForTesting(spin)
+
+    var progressUpdates: [Float] = []
+    controller.onLoadProgress = { progressUpdates.append($0) }
+    downloadManager.fireProgress(url, 0.8)
+
+    #expect(progressUpdates == [0.8])
 
     downloadManager.completeDownload(url)
     controller.stop()
