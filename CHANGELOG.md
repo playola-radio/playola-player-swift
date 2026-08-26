@@ -20,7 +20,9 @@ minor version.
   running silently the refill landed entirely behind the live playhead and
   mixed to yet more silence. Now, the moment playback becomes publishable —
   the late audible decode, or the trusted boundary crossing of an
-  early-decoded future first spin — the controller flushes the queued
+  early-decoded future first spin (only while queued silence can actually
+  remain — a spin decoded long before its airtime has real audio queued by
+  its boundary, and is left untouched) — the controller flushes the queued
   audio, re-anchors the write cursor to the live playhead, and refills; the
   catch-up decode starts from the playhead (not the frozen ingest offset)
   and spans the enqueue horizon plus the decode lead, so the refill carries
