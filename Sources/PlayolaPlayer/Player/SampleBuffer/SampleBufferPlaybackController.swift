@@ -86,6 +86,9 @@ final class SampleBufferPlaybackController {
   private var airingSpinStartFrame: Int64?
   private var isStopped = false
   private var startupDeadlineTask: Task<Void, Never>?
+  /// Test seam: how many times this controller asked the renderer to discard queued (silent) audio and
+  /// re-anchor after a late first decode (device-verified glue — see the type doc comment).
+  private(set) var lateDecodeRecoveriesForTesting = 0
 
   /// Local paths of files still referenced by this session (owner feeds these to `pruneCache` as
   /// exclusions so an in-use spin's audio can't be evicted mid-play).
@@ -219,6 +222,10 @@ final class SampleBufferPlaybackController {
           "boundary: spin \(spin.id, privacy: .public) ignored (airing spin not yet decoded)")
         return
       }
+      // Trusted crossing for an early-decoded first spin: the renderer has been running (deadline)
+      // since before this spin's airtime, so part of its opening region may already sit in the queue
+      // as silence (enqueued before its decode landed). Discard and refill with the real audio.
+      discardQueuedSilence()
     }
     sampleBufferLog.info("boundary: spin \(spin.id, privacy: .public) started")
     playbackPublished = true
@@ -341,8 +348,21 @@ final class SampleBufferPlaybackController {
     // scheduled position — the position check would never be satisfied for it, so this late-landing
     // decode is the only remaining signal that will ever publish for it.
     guard startFrame <= latencyFrames || airingSpinBoundaryCrossed else { return }
+    // Deferred-deadline path: the renderer has been running silently since the deadline, and its
+    // queue holds up to the full enqueue horizon of silence that would otherwise have to drain
+    // before this just-landed audio (which can only join at the write cursor) is heard.
+    discardQueuedSilence()
     startRendererIfNeeded()
     publishPlaybackStarted()
+  }
+
+  /// Ask the renderer to discard its queued (known-silence) audio and refill from the live playhead —
+  /// only meaningful while the deadline-started renderer is running with playback still unpublished;
+  /// once playback is published the queue carries real audio and must never be flushed from here.
+  private func discardQueuedSilence() {
+    guard rendererStarted, !playbackPublished else { return }
+    renderer.discardQueuedAudioAndReanchor()
+    lateDecodeRecoveriesForTesting += 1
   }
 
   /// Test seam: simulates a decode landing at the given output start frame for a spin (the airing spin
@@ -499,7 +519,19 @@ final class SampleBufferPlaybackController {
       // prepare a source the renderer no longer knows about.
       guard !isStopped, activeSpins[spin.id] != nil else { return }
       localFilePaths[spin.id] = localUrl.path
-      pump.prepare(spin: spin, fileURL: localUrl, startFrame: startFrame, initialOffset: offset)
+      // A download landing after the renderer already started (deadline-started, running silently)
+      // must decode from where the playhead IS, not from the offset frozen at ingest — and far
+      // enough ahead to cover the post-flush refill (`discardQueuedSilence`), or the refill's tail
+      // mixes silence right back into the immutable queue.
+      let window = Self.catchUpDecodeWindow(
+        ingestOffset: offset,
+        playheadFrame: rendererStarted ? rendererPlayheadFrame : nil,
+        startFrame: startFrame,
+        readAheadFrames: Int64(SpinBufferSource.readAheadFrames),
+        catchUpSpanFrames: renderer.catchUpDecodeSpanFrames)
+      pump.prepare(
+        spin: spin, fileURL: localUrl, startFrame: startFrame,
+        initialOffset: window.offset, decodeThrough: window.decodeThrough)
     } catch {
       if !(error is CancellationError) {
         // Unstick a deadline-started renderer waiting on a decode that will never come (§4.4 item 3)
@@ -509,6 +541,32 @@ final class SampleBufferPlaybackController {
           error, context: "Sample-buffer download failed for spin \(spin.id)", level: .error)
       }
     }
+  }
+
+  /// Where to start (and how far to run) a spin's initial decode when its download lands. Normally the
+  /// ingest-time frozen offset with the standard read-ahead; but when the playhead has already run past
+  /// that offset (the deadline started the renderer while the download was still in flight), decode from
+  /// the playhead instead — a window behind the playhead can only ever mix to silence — and cover the
+  /// full catch-up span so the post-flush refill (`discardQueuedSilence`) has real audio for its entire
+  /// horizon. Pure and `nonisolated` so it is unit-testable without a live sink.
+  nonisolated static func catchUpDecodeWindow(
+    ingestOffset: Int64, playheadFrame: Int64?, startFrame: Int64,
+    readAheadFrames: Int64, catchUpSpanFrames: Int64
+  ) -> (offset: Int64, decodeThrough: Int64) {
+    guard let playheadFrame, playheadFrame - startFrame > ingestOffset else {
+      return (ingestOffset, ingestOffset + readAheadFrames)
+    }
+    let offset = playheadFrame - startFrame
+    return (offset, offset + catchUpSpanFrames)
+  }
+
+  /// The synchronizer's current position on the RENDERER timeline (includes the `latencyFrames` head
+  /// start — the same frame space as `Scheduled.startFrame` + write cursor), or nil while the timebase
+  /// has no valid time yet.
+  private var rendererPlayheadFrame: Int64? {
+    let seconds = CMTimeGetSeconds(sink.synchronizer.currentTime())
+    guard seconds.isFinite else { return nil }
+    return Int64((seconds * sampleRate).rounded())
   }
 
   /// Re-anchor the wall-clock → frame mapping to the synchronizer's current playhead so spins scheduled
@@ -580,13 +638,14 @@ private final class DecodePump: @unchecked Sendable {
     self.publish = publish
   }
 
-  func prepare(spin: Spin, fileURL: URL, startFrame: Int64, initialOffset: Int64) {
+  func prepare(
+    spin: Spin, fileURL: URL, startFrame: Int64, initialOffset: Int64, decodeThrough: Int64
+  ) {
     queue.async { [self] in
       do {
         let source = try SpinBufferSource(
           spin: spin, fileURL: fileURL, startFrame: startFrame, initialSourceOffset: initialOffset)
-        try source.decode(
-          throughSourceOffset: initialOffset + Int64(SpinBufferSource.readAheadFrames))
+        try source.decode(throughSourceOffset: decodeThrough)
         sources[spin.id] = source
         let window = source.snapshot()
         publish(window)
