@@ -243,6 +243,10 @@ struct SpinPCMWindow: MixSource, Sendable {
     self.prefix = sums
   }
 
+  /// True when the window holds no PCM at all — e.g. the join offset was already past end-of-file
+  /// (spin effectively over). The controller uses this to skip a pointless post-decode flush.
+  var isEmpty: Bool { prefix[prefix.count - 1] == 0 }
+
   /// Convenience: wrap a single flat buffer (tests / a one-chunk window).
   init(
     spinID: String, startFrame: Int64, envelope: FadeEnvelope, windowStart: Int64,

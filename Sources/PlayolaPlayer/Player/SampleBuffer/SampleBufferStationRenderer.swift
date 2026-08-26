@@ -240,6 +240,55 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     }
   }
 
+  /// Deliberate flush + re-anchor for a late first decode: the startup deadline started the renderer
+  /// with no audio decoded, so the queue holds up to `maxEnqueueAheadFrames` of known-silence (queued
+  /// buffers are never edited — §7 OUT). Real audio could otherwise only join at the write cursor,
+  /// behind all of that silence — on the first play that reads as "loaded, then seconds of dead air."
+  /// Unlike `recoverAfterAutoFlush` (where the system already emptied the queue), this MUST manually
+  /// flush; like recovery, it then re-points the write cursor to the live playhead and refills from the
+  /// current snapshots — which now carry the just-landed audio. One-shot per play (the caller gates on
+  /// playback not yet published), so the repeated-flush warble the auto-flush path avoids can't happen
+  /// here. No setRate: a manual flush does not pause the synchronizer.
+  ///
+  /// The caller's published-state guard runs on the main actor BEFORE this op is queued and is not
+  /// re-checked here. That's deliberate: the refill regenerates frame-addressed content from the
+  /// current snapshots at the live playhead, so even if a publish races in ahead of the flush the
+  /// worst case is re-enqueuing identical audio (a momentary top-up), never lost or skipped content.
+  func discardQueuedAudioAndReanchor() {
+    control.execute { [self] in
+      guard !stopped, !halted.withLock({ $0 }) else { return }
+      renderer.flush()
+      let playhead = playheadFrame()
+      nextOutputFrame = playhead
+      fillLocked()
+      sampleBufferLog.notice(
+        """
+        late-decode recovery: flushed queued audio, re-anchored to \(playhead), \
+        refilled \(self.nextOutputFrame - playhead) ahead
+        """)
+    }
+  }
+
+  /// How much source audio a post-flush refill consumes immediately (the full enqueue horizon plus
+  /// the decode lead), plus slack for the wall-clock time the catch-up decode itself takes: the
+  /// window is computed against the playhead BEFORE that decode runs, but the refill consumes
+  /// against the playhead AFTER it. A catch-up initial decode must cover at least this much past
+  /// the playhead, or the refill's tail mixes to silence that can never be replaced (queued buffers
+  /// are immutable). A decode slower than the slack still under-covers — the resulting silence is
+  /// bounded by the shortfall and only on this recovery path.
+  var catchUpDecodeSpanFrames: Int64 {
+    maxEnqueueAheadFrames + decodeLeadFrames + catchUpDecodeSlackFrames
+  }
+
+  /// See `catchUpDecodeSpanFrames`: budget for the catch-up decode's own elapsed wall-clock.
+  private var catchUpDecodeSlackFrames: Int64 { Int64(sampleRate * 1.0) }
+
+  /// The enqueue horizon in frames — the most queued audio (and so the most deadline-started
+  /// known-silence) that can exist ahead of the playhead. The controller compares playhead travel
+  /// since the airing spin's decode landed against this to decide whether a boundary-time flush
+  /// (`discardQueuedAudioAndReanchor`) can still be useful.
+  var enqueueHorizonFrames: Int64 { maxEnqueueAheadFrames }
+
   // MARK: - Media pull (runs on the control domain)
 
   /// Entry point from `requestMediaDataWhenReady` (already on the request/control queue).
@@ -311,9 +360,26 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
     CMTime(value: frame, timescale: Int32(sampleRate))
   }
 
+  /// The synchronizer's time can be invalid/indefinite around startup, teardown, or a route change;
+  /// `CMTimeGetSeconds` then returns NaN, and converting that to `Int64` traps. Fall back to the
+  /// last valid read (0 before any) — every caller treats the playhead as advisory (enqueue pacing,
+  /// re-anchoring), so a briefly stale value is safe where a crash is not. Control-queue confined,
+  /// like every caller.
   private func playheadFrame() -> Int64 {
-    Int64((CMTimeGetSeconds(synchronizer.currentTime) * sampleRate).rounded())
+    let seconds = CMTimeGetSeconds(synchronizer.currentTime)
+    guard seconds.isFinite else { return lastKnownPlayheadFrame }
+    let frame = Int64((seconds * sampleRate).rounded())
+    lastValidPlayheadFrame.withLock { $0 = frame }
+    return frame
   }
+
+  /// The last valid synchronizer read (0 before any). Lock-protected because the controller reads it
+  /// from the main actor as its catch-up fallback when its own synchronizer read comes back invalid —
+  /// without it, the catch-up decode would silently degrade to the ingest-time frozen offset while the
+  /// post-flush refill anchors here, and the two would disagree about where "now" is.
+  var lastKnownPlayheadFrame: Int64 { lastValidPlayheadFrame.withLock { $0 } }
+
+  private let lastValidPlayheadFrame = OSAllocatedUnfairLock(initialState: Int64(0))
 
   private func installBoundaryObservers() {
     removeBoundaryObservers()

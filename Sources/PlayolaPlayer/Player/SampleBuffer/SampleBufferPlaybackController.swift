@@ -73,6 +73,13 @@ final class SampleBufferPlaybackController {
   /// latencyFrames`), leaving nothing left to ever publish. This flag lets a late-landing decode
   /// recognize that wall-clock time already passed this spin's airtime and publish anyway.
   private var airingSpinBoundaryCrossed = false
+  /// The renderer playhead captured when the airing spin's first decode landed with the renderer
+  /// already running — the only situation that authors silence into the queue for this spin's region
+  /// (frames mixed before its snapshot installed). That silence extends at most one enqueue horizon
+  /// past this capture, which is what `queuedSilenceMayRemain` measures against. Stays nil when the
+  /// decode landed before the renderer started (every enqueued frame was mixed from the real
+  /// snapshot, nothing to flush).
+  private var airingSpinDecodePlayheadFrame: Int64?
   /// The currently-airing spin's id, recorded only once it successfully ingests (has a download URL) —
   /// mirrors `reportsProgress`'s position-not-id scoping (see `ingest`) so a later spin sharing the same
   /// id as a malformed airing spin can't masquerade as it for the failure fallback below.
@@ -86,6 +93,9 @@ final class SampleBufferPlaybackController {
   private var airingSpinStartFrame: Int64?
   private var isStopped = false
   private var startupDeadlineTask: Task<Void, Never>?
+  /// Test seam: how many times this controller asked the renderer to discard queued (silent) audio and
+  /// re-anchor after a late first decode (device-verified glue — see the type doc comment).
+  private(set) var lateDecodeRecoveriesForTesting = 0
 
   /// Local paths of files still referenced by this session (owner feeds these to `pruneCache` as
   /// exclusions so an in-use spin's audio can't be evicted mid-play).
@@ -219,6 +229,12 @@ final class SampleBufferPlaybackController {
           "boundary: spin \(spin.id, privacy: .public) ignored (airing spin not yet decoded)")
         return
       }
+      // Trusted crossing for an early-decoded first spin: if the renderer was already running when
+      // this spin's decode landed, part of its opening region may sit in the queue as silence
+      // (enqueued before its snapshot installed). Only flush while that authored silence can still
+      // be queued — a spin decoded long before its airtime has real audio queued by now, and
+      // flushing that would risk an audible glitch at the boundary for nothing.
+      if queuedSilenceMayRemain { discardQueuedSilence() }
     }
     sampleBufferLog.info("boundary: spin \(spin.id, privacy: .public) started")
     playbackPublished = true
@@ -257,7 +273,8 @@ final class SampleBufferPlaybackController {
     // slow/missing-download fallback.
     pump.onDataPrepared = { [weak self] window in
       Task { @MainActor in
-        self?.handleAudibleDecodeLanded(spinID: window.spinID, startFrame: window.startFrame)
+        self?.handleAudibleDecodeLanded(
+          spinID: window.spinID, startFrame: window.startFrame, hasAudio: !window.isEmpty)
       }
     }
     // §4.4: a failed decode renders as silence and the station continues — but it must be REPORTED,
@@ -333,24 +350,62 @@ final class SampleBufferPlaybackController {
   /// decode before the airing spin's own download/decode finishes and satisfy the position check too —
   /// so this also requires `spinID == airingSpinID`, the same identity guard `handleAiringSpinFailure`
   /// already uses.
-  private func handleAudibleDecodeLanded(spinID: String, startFrame: Int64) {
+  /// `hasAudio` is false when the prepared window holds no PCM at all (the catch-up join offset was
+  /// already past end-of-file — the spin is effectively over). Publish semantics are unchanged in
+  /// that case (like the failure fallback, no audio will ever come from this spin, so the state
+  /// machine must not stay stuck in `.loading`), but the flush is skipped: there is nothing real to
+  /// refill with, so a flush could only re-enqueue the same silence.
+  private func handleAudibleDecodeLanded(spinID: String, startFrame: Int64, hasAudio: Bool = true) {
     guard spinID == airingSpinID else { return }
     airingSpinDecoded = true
+    if hasAudio, rendererStarted, airingSpinDecodePlayheadFrame == nil {
+      airingSpinDecodePlayheadFrame = rendererPlayheadFrame
+    }
     // Normally only a position at/near the current output frame is "audible." But if this spin's
     // own boundary already crossed with no decode landed, wall-clock time has already passed its
     // scheduled position — the position check would never be satisfied for it, so this late-landing
     // decode is the only remaining signal that will ever publish for it.
     guard startFrame <= latencyFrames || airingSpinBoundaryCrossed else { return }
+    // Deferred-deadline path: the renderer has been running silently since the deadline, and its
+    // queue holds up to the full enqueue horizon of silence that would otherwise have to drain
+    // before this just-landed audio (which can only join at the write cursor) is heard.
+    if hasAudio { discardQueuedSilence() }
     startRendererIfNeeded()
     publishPlaybackStarted()
+  }
+
+  /// Ask the renderer to discard its queued (known-silence) audio and refill from the live playhead —
+  /// only meaningful while the deadline-started renderer is running with playback still unpublished;
+  /// once playback is published the queue carries real audio and must never be flushed from here.
+  private func discardQueuedSilence() {
+    guard rendererStarted, !playbackPublished else { return }
+    renderer.discardQueuedAudioAndReanchor()
+    lateDecodeRecoveriesForTesting += 1
+  }
+
+  /// Whether any deadline-authored silence can still sit in the queue for the airing spin's region.
+  /// Frames enqueued before the spin's snapshot installed extend at most one enqueue horizon past
+  /// the playhead captured at decode-land (`airingSpinDecodePlayheadFrame`); once the live playhead
+  /// has traveled past that, everything queued was mixed from the real snapshot. False when the
+  /// capture is nil (decode landed before the renderer started — nothing silent was ever authored
+  /// for this spin) or the playhead is unreadable, since the flush is an optimization and skipping
+  /// it is always safe.
+  private var queuedSilenceMayRemain: Bool {
+    guard let decodePlayhead = airingSpinDecodePlayheadFrame,
+      let playhead = rendererPlayheadFrame
+    else { return false }
+    return playhead - decodePlayhead < renderer.enqueueHorizonFrames
   }
 
   /// Test seam: simulates a decode landing at the given output start frame for a spin (the airing spin
   /// by default) — the same audible/non-audible gate production uses to decide whether to publish
   /// playback — without a real decode pipeline (device-verified, not unit-tested — see the type doc
   /// comment).
-  func simulateDecodeLandedForTesting(spinID: String? = nil, startFrame: Int64) {
-    handleAudibleDecodeLanded(spinID: spinID ?? airingSpinID ?? "", startFrame: startFrame)
+  func simulateDecodeLandedForTesting(
+    spinID: String? = nil, startFrame: Int64, hasAudio: Bool = true
+  ) {
+    handleAudibleDecodeLanded(
+      spinID: spinID ?? airingSpinID ?? "", startFrame: startFrame, hasAudio: hasAudio)
   }
 
   /// §4.4 item 3: if the airing spin's download or decode fails, the state machine must never be able to
@@ -499,7 +554,19 @@ final class SampleBufferPlaybackController {
       // prepare a source the renderer no longer knows about.
       guard !isStopped, activeSpins[spin.id] != nil else { return }
       localFilePaths[spin.id] = localUrl.path
-      pump.prepare(spin: spin, fileURL: localUrl, startFrame: startFrame, initialOffset: offset)
+      // A download landing after the renderer already started (deadline-started, running silently)
+      // must decode from where the playhead IS, not from the offset frozen at ingest — and far
+      // enough ahead to cover the post-flush refill (`discardQueuedSilence`), or the refill's tail
+      // mixes silence right back into the immutable queue.
+      let window = Self.catchUpDecodeWindow(
+        ingestOffset: offset,
+        playheadFrame: rendererStarted ? rendererPlayheadFrame : nil,
+        startFrame: startFrame,
+        readAheadFrames: Int64(SpinBufferSource.readAheadFrames),
+        catchUpSpanFrames: renderer.catchUpDecodeSpanFrames)
+      pump.prepare(
+        spin: spin, fileURL: localUrl, startFrame: startFrame,
+        initialOffset: window.offset, decodeThrough: window.decodeThrough)
     } catch {
       if !(error is CancellationError) {
         // Unstick a deadline-started renderer waiting on a decode that will never come (§4.4 item 3)
@@ -510,6 +577,41 @@ final class SampleBufferPlaybackController {
       }
     }
   }
+
+  /// Where to start (and how far to run) a spin's initial decode when its download lands. Normally the
+  /// ingest-time frozen offset with the standard read-ahead; but when the playhead has already run past
+  /// that offset (the deadline started the renderer while the download was still in flight), decode from
+  /// the playhead instead — a window behind the playhead can only ever mix to silence — and cover the
+  /// full catch-up span so the post-flush refill (`discardQueuedSilence`) has real audio for its entire
+  /// horizon. Pure and `nonisolated` so it is unit-testable without a live sink.
+  nonisolated static func catchUpDecodeWindow(
+    ingestOffset: Int64, playheadFrame: Int64?, startFrame: Int64,
+    readAheadFrames: Int64, catchUpSpanFrames: Int64
+  ) -> (offset: Int64, decodeThrough: Int64) {
+    guard let playheadFrame, playheadFrame - startFrame > ingestOffset else {
+      return (ingestOffset, ingestOffset + readAheadFrames)
+    }
+    let offset = playheadFrame - startFrame
+    return (offset, offset + catchUpSpanFrames)
+  }
+
+  /// The synchronizer's current position on the RENDERER timeline (includes the `latencyFrames` head
+  /// start — the same frame space as `Scheduled.startFrame` + write cursor), or nil while the timebase
+  /// has no valid time yet. An invalid read while the renderer is running (route change/teardown
+  /// transient) falls back to the renderer's own cached playhead: the post-flush refill anchors there,
+  /// so the catch-up decode window must agree with it rather than degrade to the frozen ingest offset.
+  private var rendererPlayheadFrame: Int64? {
+    if let playheadFrameOverrideForTesting { return playheadFrameOverrideForTesting }
+    let seconds = CMTimeGetSeconds(sink.synchronizer.currentTime())
+    guard seconds.isFinite else {
+      return rendererStarted ? renderer.lastKnownPlayheadFrame : nil
+    }
+    return Int64((seconds * sampleRate).rounded())
+  }
+
+  /// Test seam: substitutes the live synchronizer read in `rendererPlayheadFrame` so tests can move
+  /// the playhead deterministically (device-verified glue — see the type doc comment).
+  var playheadFrameOverrideForTesting: Int64?
 
   /// Re-anchor the wall-clock → frame mapping to the synchronizer's current playhead so spins scheduled
   /// after this boundary track fresh wall clock (bounds long-session drift; A1). Main-actor confined.
@@ -580,13 +682,14 @@ private final class DecodePump: @unchecked Sendable {
     self.publish = publish
   }
 
-  func prepare(spin: Spin, fileURL: URL, startFrame: Int64, initialOffset: Int64) {
+  func prepare(
+    spin: Spin, fileURL: URL, startFrame: Int64, initialOffset: Int64, decodeThrough: Int64
+  ) {
     queue.async { [self] in
       do {
         let source = try SpinBufferSource(
           spin: spin, fileURL: fileURL, startFrame: startFrame, initialSourceOffset: initialOffset)
-        try source.decode(
-          throughSourceOffset: initialOffset + Int64(SpinBufferSource.readAheadFrames))
+        try source.decode(throughSourceOffset: decodeThrough)
         sources[spin.id] = source
         let window = source.snapshot()
         publish(window)

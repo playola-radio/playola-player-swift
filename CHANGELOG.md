@@ -5,6 +5,35 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
 minor version.
 
+## Unreleased
+
+### Fixed
+
+- **First play no longer sits silent after loading reaches 100% when the
+  startup deadline beat the first decode.** On a first play over a
+  slow-to-establish route (notably AirPlay 2's one-time route bring-up), the
+  2s startup deadline starts the renderer before the airing spin's first
+  decode lands, so the queue fills with up to the full 3s enqueue horizon of
+  silence — and, because queued buffers are immutable, that silence had to
+  drain in real time before any real audio at the write cursor was heard.
+  Worse, the decode window was frozen at its ingest-time offset, so after
+  running silently the refill landed entirely behind the live playhead and
+  mixed to yet more silence. Now, the moment playback becomes publishable —
+  the late audible decode, or the trusted boundary crossing of an
+  early-decoded future first spin (only while queued silence can actually
+  remain — a spin decoded long before its airtime has real audio queued by
+  its boundary, and is left untouched) — the controller flushes the queued
+  audio, re-anchors the write cursor to the live playhead, and refills; the
+  catch-up decode starts from the playhead (not the frozen ingest offset)
+  and spans the enqueue horizon plus the decode lead, so the refill carries
+  real audio all the way to the new horizon. The recovery runs at most once
+  per play and only in the deadline-started, not-yet-published window, so it
+  can never flush audio that is already publishably playing; the fast path
+  (decode before the deadline) is untouched. Joining from the live playhead
+  skips only audio that was physically unhearable during the silent gap —
+  playback stays wall-clock synced with the station schedule, as always.
+  `.legacyEngine` and the public API are unchanged.
+
 ## 0.21.0-beta.4
 
 ### Fixed

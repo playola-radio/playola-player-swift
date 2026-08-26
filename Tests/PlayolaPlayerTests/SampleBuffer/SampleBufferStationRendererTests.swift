@@ -290,6 +290,127 @@ struct SampleBufferStationRendererTests {
     #expect(sync.setRateCalls.last?.rate == 0)
   }
 
+  @Test("late-decode recovery flushes queued audio, re-anchors to the playhead, and refills")
+  func lateDecodeRecoveryFlushesAndRefills() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    // Placeholder = empty window, as installed for a not-yet-downloaded airing spin: mixes silence.
+    renderer.setSchedule([
+      .init(
+        spin: Spin.mockWith(id: "spin-A"),
+        source: SpinPCMWindow(
+          spinID: "spin-A", startFrame: 0, envelope: unity(), windowStart: 0, frames: []))
+    ])
+    renderer.start()
+    sink.pump()  // the queue fills with silence (deadline-started, no decode landed)
+    let queuedSilence = sink.enqueued.count
+    #expect(queuedSilence > 0)
+    let setRatesBefore = sync.setRateCalls.count
+
+    // 2s later the airing spin's decode lands, covering the playhead region and beyond.
+    sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
+    let frames = [SIMD2<Float>](repeating: SIMD2(0.5, 0.5), count: 5 * 48_000)
+    renderer.updateSnapshot(
+      SpinPCMWindow(
+        spinID: "spin-A", startFrame: 0, envelope: unity(), windowStart: 96_000, frames: frames))
+    renderer.discardQueuedAudioAndReanchor()
+
+    // The known-silence queue was deliberately flushed …
+    #expect(sink.flushCount == 1)
+    // … and refilled from the live playhead with the real audio, not more silence.
+    let refill = Array(sink.enqueued[queuedSilence...])
+    #expect(refill.first?.startFrame == 96_000)
+    #expect(abs((refill.first?.frames[0].x ?? 0) - 0.5) < 0.0001)
+    // No timebase thrash: the synchronizer kept running at rate 1.0 throughout.
+    #expect(sync.setRateCalls.count == setRatesBefore)
+  }
+
+  @Test("an invalid synchronizer time during recovery falls back to the last valid playhead")
+  func invalidSynchronizerTimeDoesNotTrap() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([
+      .init(
+        spin: Spin.mockWith(id: "spin-A"),
+        source: SpinPCMWindow(
+          spinID: "spin-A", startFrame: 0, envelope: unity(), windowStart: 0, frames: []))
+    ])
+    renderer.start()
+    sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
+    sink.pump()  // establishes a valid playhead read (96_000)
+    let queuedBefore = sink.enqueued.count
+
+    // Around a route change/teardown the synchronizer can report an invalid time; converting its
+    // NaN seconds to Int64 would trap. The recovery must fall back to the last valid read instead.
+    sync.currentTime = .invalid
+    renderer.discardQueuedAudioAndReanchor()
+    #expect(sink.flushCount == 1)
+    #expect(sink.enqueued[queuedBefore...].first?.startFrame == 96_000)
+  }
+
+  @Test("the cached playhead stays readable while the synchronizer reports an invalid time")
+  func lastKnownPlayheadSurvivesInvalidTransition() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
+    renderer.start()
+    sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
+    sink.pump()
+
+    // The controller uses this as its catch-up fallback when its own synchronizer read comes back
+    // invalid — it must reflect the last valid read, not reset or trap.
+    sync.currentTime = .invalid
+    #expect(renderer.lastKnownPlayheadFrame == 96_000)
+  }
+
+  @Test("late-decode recovery after a halt is a no-op")
+  func lateDecodeRecoveryAfterHaltIsNoOp() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
+    renderer.start()
+    sink.pump()
+
+    renderer.halt()
+    let enqueuedBefore = sink.enqueued.count
+    renderer.discardQueuedAudioAndReanchor()
+
+    #expect(sink.flushCount == 0)
+    #expect(sink.enqueued.count == enqueuedBefore)
+    #expect(sync.rate == 0)
+  }
+
+  @Test("late-decode recovery after stop is a no-op")
+  func lateDecodeRecoveryAfterStopIsNoOp() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
+    renderer.start()
+    sink.pump()
+
+    renderer.stop()
+    let flushesAfterStop = sink.flushCount
+    let enqueuedBefore = sink.enqueued.count
+    renderer.discardQueuedAudioAndReanchor()
+
+    #expect(sink.flushCount == flushesAfterStop)
+    #expect(sink.enqueued.count == enqueuedBefore)
+  }
+
+  @Test("the catch-up decode span covers the horizon, the decode lead, and decode-time slack")
+  func catchUpDecodeSpanCoversHorizonAndLead() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    // 1s horizon + 1s decode lead + 1s slack for the catch-up decode's own elapsed wall-clock
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    #expect(renderer.catchUpDecodeSpanFrames == Int64(3 * 48_000))
+  }
+
   @Test("stop tears down: no further boundary publishes, sink stopped and flushed")
   func stopTearsDown() {
     let sync = FakeRenderSynchronizer()
