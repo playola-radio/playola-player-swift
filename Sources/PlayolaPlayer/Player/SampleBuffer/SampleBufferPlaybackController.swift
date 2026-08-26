@@ -597,11 +597,15 @@ final class SampleBufferPlaybackController {
 
   /// The synchronizer's current position on the RENDERER timeline (includes the `latencyFrames` head
   /// start — the same frame space as `Scheduled.startFrame` + write cursor), or nil while the timebase
-  /// has no valid time yet.
+  /// has no valid time yet. An invalid read while the renderer is running (route change/teardown
+  /// transient) falls back to the renderer's own cached playhead: the post-flush refill anchors there,
+  /// so the catch-up decode window must agree with it rather than degrade to the frozen ingest offset.
   private var rendererPlayheadFrame: Int64? {
     if let playheadFrameOverrideForTesting { return playheadFrameOverrideForTesting }
     let seconds = CMTimeGetSeconds(sink.synchronizer.currentTime())
-    guard seconds.isFinite else { return nil }
+    guard seconds.isFinite else {
+      return rendererStarted ? renderer.lastKnownPlayheadFrame : nil
+    }
     return Int64((seconds * sampleRate).rounded())
   }
 

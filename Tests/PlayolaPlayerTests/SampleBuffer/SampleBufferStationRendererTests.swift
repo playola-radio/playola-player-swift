@@ -350,6 +350,22 @@ struct SampleBufferStationRendererTests {
     #expect(sink.enqueued[queuedBefore...].first?.startFrame == 96_000)
   }
 
+  @Test("the cached playhead stays readable while the synchronizer reports an invalid time")
+  func lastKnownPlayheadSurvivesInvalidTransition() {
+    let sync = FakeRenderSynchronizer()
+    let sink = FakeSampleBufferRenderer()
+    let renderer = makeRenderer(sync: sync, sink: sink)
+    renderer.setSchedule([.init(spin: Spin.mockWith(id: "spin-A"), source: stub(startFrame: 0))])
+    renderer.start()
+    sync.currentTime = CMTime(seconds: 2, preferredTimescale: Int32(sampleRate))
+    sink.pump()
+
+    // The controller uses this as its catch-up fallback when its own synchronizer read comes back
+    // invalid — it must reflect the last valid read, not reset or trap.
+    sync.currentTime = .invalid
+    #expect(renderer.lastKnownPlayheadFrame == 96_000)
+  }
+
   @Test("late-decode recovery after a halt is a no-op")
   func lateDecodeRecoveryAfterHaltIsNoOp() {
     let sync = FakeRenderSynchronizer()

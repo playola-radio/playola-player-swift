@@ -367,13 +367,19 @@ final class SampleBufferStationRenderer: @unchecked Sendable {
   /// like every caller.
   private func playheadFrame() -> Int64 {
     let seconds = CMTimeGetSeconds(synchronizer.currentTime)
-    guard seconds.isFinite else { return lastValidPlayheadFrame }
+    guard seconds.isFinite else { return lastKnownPlayheadFrame }
     let frame = Int64((seconds * sampleRate).rounded())
-    lastValidPlayheadFrame = frame
+    lastValidPlayheadFrame.withLock { $0 = frame }
     return frame
   }
 
-  private var lastValidPlayheadFrame: Int64 = 0
+  /// The last valid synchronizer read (0 before any). Lock-protected because the controller reads it
+  /// from the main actor as its catch-up fallback when its own synchronizer read comes back invalid —
+  /// without it, the catch-up decode would silently degrade to the ingest-time frozen offset while the
+  /// post-flush refill anchors here, and the two would disagree about where "now" is.
+  var lastKnownPlayheadFrame: Int64 { lastValidPlayheadFrame.withLock { $0 } }
+
+  private let lastValidPlayheadFrame = OSAllocatedUnfairLock(initialState: Int64(0))
 
   private func installBoundaryObservers() {
     removeBoundaryObservers()
