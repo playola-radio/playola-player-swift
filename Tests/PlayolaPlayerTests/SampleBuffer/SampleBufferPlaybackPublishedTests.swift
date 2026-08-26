@@ -13,7 +13,16 @@ import Testing
 
 @testable import PlayolaPlayer
 
+/// `.serialized`: each test constructs a real `SampleBufferPlaybackController`, which owns a real
+/// `AVSampleBufferRenderSynchronizer`/`AVSampleBufferAudioRenderer` pair (`LiveSampleBufferSink`) — the
+/// controller's own doc comment notes this glue "needs real downloads + audio hardware" and is
+/// device-verified, not unit-tested, in contrast to `SampleBufferStationRendererTests`, which injects
+/// fakes. Swift Testing's default concurrent scheduling ran this suite's 21 real-controller instances
+/// alongside the rest of the target's tests and reproducibly stalled the whole `swift test` process for
+/// ~270s on CircleCI's headless macOS runner (never locally) — serializing keeps at most one real sink
+/// alive at a time.
 @MainActor
+@Suite(.serialized)
 struct SampleBufferPlaybackPublishedTests {
   private func makeController(_ downloadManager: ProgressCapturingDownloadManager)
     -> SampleBufferPlaybackController
