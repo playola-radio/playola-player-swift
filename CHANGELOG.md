@@ -5,7 +5,15 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
 minor version.
 
-## Unreleased
+## 0.21.0
+
+Stable release of the 0.21.0 beta line. The headline is the **opt-in
+sample-buffer render backend** that routes a Playola station as AirPlay-2
+long-form audio — see the `0.21.0-beta.2` through `0.21.0-beta.4` entries below
+for the full feature history, verification status, and the publish-timing fixes
+that landed during the betas. The backend remains **dormant by default**:
+`.legacyEngine` stays the runtime default, and apps opt in via
+`renderBackend:` on `configure(...)`. Device-verified through beta.5.
 
 ### Fixed
 
