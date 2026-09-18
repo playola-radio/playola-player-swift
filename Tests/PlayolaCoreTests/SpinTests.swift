@@ -549,6 +549,19 @@ struct SpinTests {
     #expect(originalSpin.airtime == originalAirtime)
   }
 
+  @Test("withOffset preserves live-show metadata")
+  func testWithOffset_preservesLiveShowMetadata() throws {
+    let originalSpin = Spin.mockWith(
+      liveShowId: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      isFiller: true
+    )
+
+    let offsetSpin = originalSpin.withOffset(300)
+
+    #expect(offsetSpin.liveShowId == originalSpin.liveShowId)
+    #expect(offsetSpin.isFiller == originalSpin.isFiller)
+  }
+
   @Test("withOffset creates new spin with negative offset")
   func testWithOffset_negativeOffset() throws {
     let originalAirtime = Date()
