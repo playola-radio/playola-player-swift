@@ -499,7 +499,7 @@ struct StationPickerView: View {
                     AsyncImage(url: url) { image in
                       image
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .scaledToFit()
                     } placeholder: {
                       Image(systemName: "radio")
                         .foregroundColor(.blue)
