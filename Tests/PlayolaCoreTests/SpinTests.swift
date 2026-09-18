@@ -440,6 +440,84 @@ struct SpinTests {
     #expect(spin.relatedTexts == nil)
   }
 
+  // MARK: - liveShowId / isFiller Tests
+
+  @Test("Spin decodes liveShowId and isFiller from JSON correctly")
+  func testSpinDecodesLiveShowIdAndIsFiller() throws {
+    let jsonString = """
+      {
+          "id": "948fb1e9-6f86-473b-ab04-725b4de63dc4",
+          "stationId": "9d79fd38-1940-4312-8fe8-3b9b50d49c6c",
+          "audioBlockId": "b55a086b-7b31-47c0-bf3f-b355c8a23a4f",
+          "airtime": "2025-07-08T18:17:27.867Z",
+          "endOfMessageTime": "2025-07-08T14:45:18.269Z",
+          "startingVolume": 1,
+          "fades": [],
+          "createdAt": "2025-07-08T14:45:18.255Z",
+          "updatedAt": "2025-07-08T14:45:18.255Z",
+          "liveShowId": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+          "isFiller": true,
+          "audioBlock": {
+              "endOfMessageMS": 237324,
+              "s3BucketName": "playola-songs-intake",
+              "downloadUrl": "https://playola-songs-intake.s3.amazonaws.com/test.m4a",
+              "beginningOfOutroMS": 229365,
+              "endOfIntroMS": 1000,
+              "lengthOfOutroMS": 7959,
+              "id": "b55a086b-7b31-47c0-bf3f-b355c8a23a4f",
+              "type": "song",
+              "title": "Test Song",
+              "artist": "Test Artist",
+              "durationMS": 241693,
+              "s3Key": "test.m4a",
+              "createdAt": "2025-04-01T15:28:32.252Z",
+              "updatedAt": "2025-07-04T20:47:35.877Z"
+          }
+      }
+      """
+
+    let decoder = createJSONDecoderWithDateFormatting()
+    let spin = try decoder.decode(Spin.self, from: jsonString.data(using: .utf8)!)
+
+    #expect(spin.liveShowId == "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d")
+    #expect(spin.isFiller == true)
+  }
+
+  @Test("Spin decodes with nil liveShowId and isFiller when keys are absent")
+  func testSpinDecodesWithoutLiveShowIdAndIsFiller() throws {
+    // Reuse the relatedTexts fixture, which omits liveShowId and isFiller,
+    // proving older /schedule payloads remain back-compatible.
+    let decoder = createJSONDecoderWithDateFormatting()
+    let spin = try decoder.decode(
+      Spin.self, from: Self.spinWithRelatedTextsJSON.data(using: .utf8)!)
+
+    #expect(spin.liveShowId == nil)
+    #expect(spin.isFiller == nil)
+  }
+
+  @Test("Spin round-trips liveShowId and isFiller through encode then decode")
+  func testSpinRoundTripsLiveShowIdAndIsFiller() throws {
+    let original = Spin.mockWith(
+      liveShowId: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      isFiller: true
+    )
+
+    let dateFormatter = DateFormatter()
+    dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+    dateFormatter.timeZone = TimeZone(abbreviation: "UTC")
+
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .formatted(dateFormatter)
+    let data = try encoder.encode(original)
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .formatted(dateFormatter)
+    let decoded = try decoder.decode(Spin.self, from: data)
+
+    #expect(decoded.liveShowId == "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d")
+    #expect(decoded.isFiller == true)
+  }
+
   // MARK: - withOffset Tests
 
   @Test("withOffset creates new spin with positive offset")
@@ -469,6 +547,19 @@ struct SpinTests {
 
     // Verify original spin is unchanged (immutability)
     #expect(originalSpin.airtime == originalAirtime)
+  }
+
+  @Test("withOffset preserves live-show metadata")
+  func testWithOffset_preservesLiveShowMetadata() throws {
+    let originalSpin = Spin.mockWith(
+      liveShowId: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+      isFiller: true
+    )
+
+    let offsetSpin = originalSpin.withOffset(300)
+
+    #expect(offsetSpin.liveShowId == originalSpin.liveShowId)
+    #expect(offsetSpin.isFiller == originalSpin.isFiller)
   }
 
   @Test("withOffset creates new spin with negative offset")
