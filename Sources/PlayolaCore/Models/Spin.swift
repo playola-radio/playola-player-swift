@@ -59,6 +59,12 @@ public struct Spin: Codable, Sendable {
   /// The airing this spin belongs to (if any)
   public let airing: Airing?
 
+  /// The live show this spin belongs to, if any
+  public let liveShowId: String?
+
+  /// Whether this spin is a filler placed by a live show as a fallback buffer
+  public let isFiller: Bool?
+
   /// Date provider for testing time-dependent behavior
   public var dateProvider: DateProviderProtocol! = DateProvider()
 
@@ -74,6 +80,8 @@ public struct Spin: Codable, Sendable {
     spinGroupId: String? = nil,
     relatedTexts: [RelatedText]? = nil,
     airing: Airing? = nil,
+    liveShowId: String? = nil,
+    isFiller: Bool? = nil,
     dateProvider: DateProviderProtocol? = nil
   ) {
     self.id = id
@@ -87,6 +95,8 @@ public struct Spin: Codable, Sendable {
     self.spinGroupId = spinGroupId
     self.relatedTexts = relatedTexts
     self.airing = airing
+    self.liveShowId = liveShowId
+    self.isFiller = isFiller
     self.dateProvider = dateProvider ?? DateProvider()
   }
 
@@ -217,7 +227,9 @@ public struct Spin: Codable, Sendable {
       fades: fades,
       spinGroupId: spinGroupId,
       relatedTexts: relatedTexts,
-      airing: airing
+      airing: airing,
+      liveShowId: liveShowId,
+      isFiller: isFiller
     )
 
     // Preserve the dateProvider
@@ -228,7 +240,7 @@ public struct Spin: Codable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case id, stationId, airtime, createdAt, updatedAt, audioBlock, fades, spinGroupId,
-      startingVolume, relatedTexts, airing
+      startingVolume, relatedTexts, airing, liveShowId, isFiller
   }
 
   // Custom decoder to handle dateProvider
@@ -247,6 +259,8 @@ public struct Spin: Codable, Sendable {
     spinGroupId = try container.decodeIfPresent(String.self, forKey: .spinGroupId)
     relatedTexts = try container.decodeIfPresent([RelatedText].self, forKey: .relatedTexts)
     airing = try container.decodeIfPresent(Airing.self, forKey: .airing)
+    liveShowId = try container.decodeIfPresent(String.self, forKey: .liveShowId)
+    isFiller = try container.decodeIfPresent(Bool.self, forKey: .isFiller)
 
     // Initialize dateProvider with default value
     dateProvider = DateProvider()
@@ -267,6 +281,8 @@ public struct Spin: Codable, Sendable {
     try container.encodeIfPresent(spinGroupId, forKey: .spinGroupId)
     try container.encodeIfPresent(relatedTexts, forKey: .relatedTexts)
     try container.encodeIfPresent(airing, forKey: .airing)
+    try container.encodeIfPresent(liveShowId, forKey: .liveShowId)
+    try container.encodeIfPresent(isFiller, forKey: .isFiller)
   }
 }
 
@@ -291,6 +307,8 @@ extension Spin {
   ///   - updatedAt: Optional override for updated date
   ///   - relatedTexts: Optional override for related texts
   ///   - airing: Optional override for airing
+  ///   - liveShowId: Optional override for the live show this spin belongs to
+  ///   - isFiller: Optional override for whether this spin is a live-show filler
   ///   - dateProvider: Optional override for date provider
   /// - Returns: A mock Spin with specified overrides
   public static func mockWith(
@@ -305,6 +323,8 @@ extension Spin {
     updatedAt: Date? = nil,
     relatedTexts: [RelatedText]? = nil,
     airing: Airing?? = nil,
+    liveShowId: String? = nil,
+    isFiller: Bool? = nil,
     dateProvider: DateProviderProtocol? = nil
   ) -> Spin {
     // Start with the default mock
@@ -322,7 +342,9 @@ extension Spin {
       fades: fades ?? mockSpin.fades,
       spinGroupId: spinGroupId ?? mockSpin.spinGroupId,
       relatedTexts: relatedTexts ?? mockSpin.relatedTexts,
-      airing: airing ?? mockSpin.airing
+      airing: airing ?? mockSpin.airing,
+      liveShowId: liveShowId ?? mockSpin.liveShowId,
+      isFiller: isFiller ?? mockSpin.isFiller
     )
 
     // Set date provider if specified
