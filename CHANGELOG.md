@@ -5,6 +5,19 @@ All notable changes to PlayolaPlayer are documented here. This project follows
 which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
 minor version.
 
+## 0.21.1
+
+### Added
+
+- **`Spin.liveShowId` / `Spin.isFiller` — live-show metadata on each scheduled spin.**
+  Every spin returned by `GET /v1/stations/{stationId}/schedule` can now carry two
+  optional fields: `liveShowId` (the UUID of the live show a spin belongs to, or `nil`)
+  and `isFiller` (whether the spin is filler placed by a live show as a fallback
+  buffer). Both are decoded with `decodeIfPresent` and encoded with `encodeIfPresent`,
+  so older schedule payloads that omit the keys decode exactly as before and a `nil`
+  value emits no key — the change is additive and source-compatible. The fields are
+  preserved across `Spin.withOffset(_:)` and can be set via `Spin.mockWith(...)`.
+
 ## 0.21.0
 
 Stable release of the 0.21.0 beta line. The headline is the **opt-in
