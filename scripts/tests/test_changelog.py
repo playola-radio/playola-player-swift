@@ -82,6 +82,18 @@ class ParseNotesTests(unittest.TestCase):
         with self.assertRaisesRegex(ChangelogError, r"^a\.md:1: "):
             changelog.parse_notes("<!-- starts\n  ends -->\n", "a.md")
 
+    def test_rejects_text_between_two_comments(self):
+        with self.assertRaisesRegex(ChangelogError, r"^a\.md:2: "):
+            changelog.parse_notes("### Added\n<!-- a --> visible <!-- b -->\n", "a.md")
+
+    def test_keeps_trailing_spaces_inside_a_bullet(self):
+        notes = changelog.parse_notes("### Added\n- First  \n  second\n", "a.md")
+        self.assertEqual(notes["Added"], ["- First  \n  second"])
+
+    def test_counts_only_newlines_as_line_breaks(self):
+        with self.assertRaisesRegex(ChangelogError, r"^a\.md:3: "):
+            changelog.parse_notes("### Added\n- x\u2028y\nprose\n", "a.md")
+
     def test_counts_lines_from_the_given_offset(self):
         with self.assertRaisesRegex(ChangelogError, r"^CHANGELOG\.md:12: "):
             changelog.parse_notes("### Added\nprose\n", "CHANGELOG.md", first_line=11)
@@ -100,6 +112,11 @@ class CollectTests(unittest.TestCase):
     def test_reports_malformed_legacy_line_by_changelog_line_number(self):
         text = changelog_with("### Added\n\nnot a bullet\n\n")
         with self.assertRaisesRegex(ChangelogError, r"^CHANGELOG\.md:9: "):
+            changelog.collect(text, [])
+
+    def test_rejects_non_version_heading_ending_unreleased(self):
+        text = changelog_with("## Fixed\n\n- Stranded.\n\n")
+        with self.assertRaisesRegex(ChangelogError, r"^CHANGELOG\.md:7: .*'## Fixed'"):
             changelog.collect(text, [])
 
     def test_requires_unreleased_heading(self):
@@ -154,9 +171,12 @@ class RollTextTests(unittest.TestCase):
                 with self.assertRaisesRegex(ChangelogError, r"version"):
                     changelog.roll_text(changelog_with(), [("a.md", "### Added\n- x\n")], version, "2026-11-07")
 
-    def test_rejects_release_with_no_notes(self):
-        with self.assertRaisesRegex(ChangelogError, r"nothing to release"):
-            changelog.roll_text(changelog_with(), [], "0.22.0", "2026-11-07")
+    def test_rejects_existing_version_heading_with_link_or_extra_spaces(self):
+        for heading in ("## [0.20.0](https://example.com)", "##  0.20.0"):
+            with self.subTest(heading=heading):
+                text = changelog_with() + f"\n{heading}\n"
+                with self.assertRaisesRegex(ChangelogError, r"0\.20\.0"):
+                    changelog.roll_text(text, [("a.md", "### Added\n- x\n")], "0.20.0", "2026-11-07")
 
 
 class RollFilesTests(unittest.TestCase):

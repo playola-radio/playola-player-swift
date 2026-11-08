@@ -47,8 +47,7 @@ Check your note locally with `python3 scripts/changelog.py check` (CI runs it to
    This writes `## X.Y.Z - <today>` into `CHANGELOG.md` from any bullets still under
    `## [Unreleased]` followed by every file here (in filename order), empties
    `## [Unreleased]`, and deletes exactly the files it read. Nothing changes if a note is
-   malformed or `CHANGELOG.md` already has a section for `X.Y.Z`. Use `--date YYYY-MM-DD`
-   to set a different date.
+   malformed or `CHANGELOG.md` already has a section for `X.Y.Z`.
 2. Review the new section — add a lead paragraph above its headings if the release needs
    one — and commit it.
 3. Ship as usual: the `develop` → `main` release PR, then tag `X.Y.Z` (for a patch line,
