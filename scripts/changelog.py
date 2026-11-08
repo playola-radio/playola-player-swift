@@ -38,7 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _COMMENT_RE = re.compile(r"<!--(?:(?!-->).)*-->")
 _UNRELEASED_RE = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
 _NEXT_SECTION_RE = re.compile(r"^## ", re.MULTILINE)
-_VERSION_SECTION_RE = re.compile(r"##\s+\[?\d+\.\d+\.\d+")
+_VERSION_SECTION_RE = re.compile(r"##\s+\[?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\]?(?=[ \t(]|$)", re.MULTILINE)
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
 Notes = Dict[str, List[str]]

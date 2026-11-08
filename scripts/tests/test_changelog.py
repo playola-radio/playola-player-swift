@@ -119,6 +119,17 @@ class CollectTests(unittest.TestCase):
         with self.assertRaisesRegex(ChangelogError, r"^CHANGELOG\.md:7: .*'## Fixed'"):
             changelog.collect(text, [])
 
+    def test_rejects_version_lookalike_heading_ending_unreleased(self):
+        text = changelog_with("## 0.22.0Migration\n\n### Fixed\n\n- Stranded.\n\n")
+        with self.assertRaisesRegex(ChangelogError, r"^CHANGELOG\.md:7: "):
+            changelog.collect(text, [])
+
+    def test_accepts_bracketed_and_prerelease_version_headings_after_unreleased(self):
+        for heading in ("## [4.40.1] - 2026-11-04", "## 0.21.0-beta.4", "## [1.0.0](https://x)"):
+            with self.subTest(heading=heading):
+                text = f"## [Unreleased]\n\n### Added\n\n- A.\n\n{heading}\n"
+                self.assertEqual(changelog.collect(text, []), {"Added": ["- A."]})
+
     def test_requires_unreleased_heading(self):
         with self.assertRaisesRegex(ChangelogError, r"Unreleased"):
             changelog.collect("# Changelog\n\n## 0.1.0\n", [])
