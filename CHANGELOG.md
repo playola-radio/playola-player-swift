@@ -1,6 +1,7 @@
 # Changelog
 
 Don't edit this file in a pull request; add a file to changelog.d/ (see changelog.d/README.md).
+Exceptions: the bootstrap change and generated changelog edits in a `develop` → `main` release PR.
 
 All notable changes to PlayolaPlayer are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Versions correspond to git tags,

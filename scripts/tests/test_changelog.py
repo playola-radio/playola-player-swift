@@ -177,10 +177,24 @@ class RollTextTests(unittest.TestCase):
         self.assertIn("## 0.21.1-beta.1 - 2026-11-07", rolled)
 
     def test_rejects_missing_or_malformed_version(self):
-        for version in ("", "v0.22.0", "0.22"):
+        for version in ("", "v0.22.0", "0.22", "01.22.0", "0.22.0-beta..1", "0.22.0-beta."):
             with self.subTest(version=version):
                 with self.assertRaisesRegex(ChangelogError, r"version"):
                     changelog.roll_text(changelog_with(), [("a.md", "### Added\n- x\n")], version, "2026-11-07")
+
+    def test_rejects_empty_release(self):
+        with self.assertRaisesRegex(ChangelogError, r"no pending release notes"):
+            changelog.roll_text(changelog_with(), [], "0.22.0", "2026-11-07")
+
+    def test_does_not_treat_a_split_heading_as_a_version_section(self):
+        text = changelog_with(UNRELEASED_COMMENT + "\n\n## \n0.20.0\n")
+        with self.assertRaisesRegex(ChangelogError, r"expected a version heading"):
+            changelog.collect(text, [])
+
+    def test_does_not_treat_a_split_heading_as_an_existing_version(self):
+        text = changelog_with() + "\n## \n0.20.0\n"
+        rolled = changelog.roll_text(text, [("a.md", "### Added\n- x\n")], "0.20.0", "2026-11-07")
+        self.assertIn("## 0.20.0 - 2026-11-07", rolled)
 
     def test_rejects_existing_version_heading_with_link_or_extra_spaces(self):
         for heading in ("## [0.20.0](https://example.com)", "##  0.20.0"):

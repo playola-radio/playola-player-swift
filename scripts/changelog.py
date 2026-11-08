@@ -25,7 +25,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 HEADINGS = ("Added", "Changed", "Removed", "Fixed")
 UNRELEASED_COMMENT = (
@@ -38,8 +38,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _COMMENT_RE = re.compile(r"<!--(?:(?!-->).)*-->")
 _UNRELEASED_RE = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
 _NEXT_SECTION_RE = re.compile(r"^## ", re.MULTILINE)
-_VERSION_SECTION_RE = re.compile(r"##\s+\[?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\]?(?=[ \t(]|$)", re.MULTILINE)
-_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
+_VERSION_SECTION_RE = re.compile(r"##[ \t]+\[?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\]?(?=[ \t(]|$)", re.MULTILINE)
+_VERSION_RE = re.compile(r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
 
 Notes = Dict[str, List[str]]
 
@@ -56,7 +56,7 @@ def parse_notes(text: str, source: str, first_line: int = 1) -> Notes:
     """
     notes: Notes = {}
     heading = None
-    bullet: List[str] | None = None
+    bullet: Optional[List[str]] = None
 
     def finish_bullet():
         if bullet is not None:
@@ -151,11 +151,13 @@ def render(notes: Notes) -> str:
 def roll_text(changelog_text: str, fragments: List[Tuple[str, str]], version: str, date: str) -> str:
     if not _VERSION_RE.match(version or ""):
         raise ChangelogError(f"invalid version '{version}' (expected e.g. 0.22.0 or 0.22.0-beta.1)")
-    existing = re.compile(rf"^##\s+\[?{re.escape(version)}(?![\w.-])", re.MULTILINE)
+    existing = re.compile(rf"^##[ \t]+\[?{re.escape(version)}(?![\w.-])", re.MULTILINE)
     if existing.search(changelog_text):
         raise ChangelogError(f"CHANGELOG.md already has a section for {version}")
 
     notes = collect(changelog_text, fragments)
+    if not notes:
+        raise ChangelogError("no pending release notes to roll")
     start, end, _ = _unreleased_body(changelog_text)
     section = f"## {version} - {date}\n\n" + render(notes)
     return changelog_text[:start] + f"\n{UNRELEASED_COMMENT}\n\n" + section + changelog_text[end:]
