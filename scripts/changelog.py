@@ -141,6 +141,7 @@ def collect(changelog_text: str, fragments: List[Tuple[str, str]]) -> Notes:
 
 
 def render(notes: Notes) -> str:
+    """Render notes under the supported headings in their canonical order."""
     blocks = []
     for heading in HEADINGS:
         if heading in notes:
@@ -149,6 +150,7 @@ def render(notes: Notes) -> str:
 
 
 def roll_text(changelog_text: str, fragments: List[Tuple[str, str]], version: str, date: str) -> str:
+    """Return changelog text with pending notes rolled into a dated section."""
     if not _VERSION_RE.match(version or ""):
         raise ChangelogError(f"invalid version '{version}' (expected e.g. 0.22.0 or 0.22.0-beta.1)")
     existing = re.compile(rf"^##[ \t]+\[?{re.escape(version)}(?![\w.-])", re.MULTILINE)
@@ -164,6 +166,7 @@ def roll_text(changelog_text: str, fragments: List[Tuple[str, str]], version: st
 
 
 def _read_fragments(fragments_dir: Path, root: Path) -> Tuple[List[Path], List[Tuple[str, str]]]:
+    """Read valid fragment files in filename order, excluding the README."""
     paths = []
     for path in sorted(fragments_dir.iterdir()):
         if path.name.startswith(".") or path.name == FRAGMENT_README:
@@ -187,7 +190,8 @@ def roll(changelog_path: Path, fragments_dir: Path, version: str, date: str) -> 
     return paths
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
+    """Run the changelog check or roll command and return its exit status."""
     parser = argparse.ArgumentParser(description="Collect changelog.d/ fragments into CHANGELOG.md.")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="validate all pending notes and print them")
