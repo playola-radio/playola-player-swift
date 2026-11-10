@@ -40,3 +40,19 @@ jobs:
         
     - name: Run tests
       run: bundle exec fastlane tests
+
+  changelog:
+    runs-on: ubuntu-latest
+    name: Changelog notes
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: Test the changelog script
+      run: python3 -m unittest discover -s scripts/tests
+
+    - name: Validate pending release notes
+      run: python3 scripts/changelog.py check

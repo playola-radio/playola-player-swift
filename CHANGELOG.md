@@ -1,9 +1,15 @@
 # Changelog
 
+Don't edit this file in a pull request; add a file to changelog.d/ (see changelog.d/README.md).
+
 All notable changes to PlayolaPlayer are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Versions correspond to git tags,
 which Swift Package Manager consumers pin to. Pre-1.0, breaking changes bump the
 minor version.
+
+## [Unreleased]
+
+<!-- Don't add notes here. Each pull request adds a file to changelog.d/ (see changelog.d/README.md); the release collects them. -->
 
 ## 0.21.1
 
